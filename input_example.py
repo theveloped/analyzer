@@ -38,7 +38,7 @@ DIRECTIONS_FILE = "directions.npy"
 ACCESSIBILITY_FILE = "accessibility.npy"
 HIGHLIGHT_FILE = "highlights.json"
 #user args
-directory = './output'
+directory = '/output'
 
 #creating arguments object
 
@@ -85,8 +85,10 @@ class Mesh:
         ensure_directory(self.dir_path)
         
         #storing vertices 
+        print(f"Saving to path: {self.verts_path}")
         np.save(self.verts_path, verts)
         #storing faces
+        print(f"Saving to path: {self.faces_path}")
         np.save(self.faces_path, faces)
         #storing object file
         save_mesh(mesh, self.obj_path)
