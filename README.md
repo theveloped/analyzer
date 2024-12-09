@@ -1,2 +1,2 @@
-# CAM-part-analyser
-Script used to analyse parts for CAM automation
+# part acces analyser
+ part acces analyser
