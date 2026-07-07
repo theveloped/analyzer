@@ -201,18 +201,58 @@ Composition then never touches geometry again:
   at this depth" is equivalent to "the semi-infinite cylinder fits", so flat/bull
   silhouettes need no separate flank check.
 
-Two discretization choices to know about: tip gap fields measure the *vertical* gap
-(the 3D engine's `map_result_faces` measures Euclidean projection distance — both
-converge on near-tangent surfaces, but vertical gaps are larger on steep walls), and
-the closed map is eroded 3×3 before sampling so vertices lying exactly on vertical
-walls don't sample the neighbouring material column. Holder clearance maps are
-max-pooled before dilation (conservative) to keep large-radius footprints cheap.
+**Gap metric.** Tip gaps are *Euclidean* distances from each vertex to the machined
+solid the closed height map describes (material below the closed surface, including
+the vertical sheets between adjacent columns): `euclidean_gap` takes, over a window
+of nearby pixels, `min sqrt(lateral² + max(closed − h, 0)²)`. The clamp is what makes
+90° and near-90° draft walls behave: a wall vertex next to a column whose machined
+surface passes below it counts only the sub-pixel lateral distance, so walls swept by
+the tool side never flag — critical for 2D-milled parts (exact 90° walls) and molds
+(89–91° draft). Gaps up to the `--window` parameter (default 0.3) are exact to pixel
+resolution; larger gaps are reported as lower bounds, which is all thresholding
+needs. Holder clearance maps are max-pooled before dilation (conservative) to keep
+large-radius footprints cheap.
 
+**The voxel engine behind the same cache.** `DirectionCache(engine="voxel")` fills
+the very same per-vertex fields with the 3D pipeline instead — tip gaps from
+`endmill_closing` + mesh projection distances, clearance from the in-plane-grown 3D
+mesh's top surface — so `compose` works identically on either cache and the engines
+can be cross-checked. Note the voxel flat/bull fields inherit the stretch-emulation
+residual (`endmill_flag_threshold`), which the zmap engine does not have: its disk is
+rasterized directly.
+
+`benchmark_engines.py` runs both engines on a mold-like part (one pocket with exact
+90° walls, one with 1° draft). Both engines: no false flags on either wall type,
+identical region behaviour, and 97–98% per-vertex classification agreement on
+accessible vertices. Per-field wall times (47k faces, pixel 0.1):
+
+| field | zmap | voxel | speedup |
+|---|---|---|---|
+| tip ball D4 | 0.34 s | 12.1 s | ×35 |
+| tip flat D4 | 0.33 s | 46.9 s | ×140 |
+| tip bull D4 rc1 | 0.34 s | 29.6 s | ×86 |
+| clearance r=8 | 0.13 s | 46.0 s | ×365 |
+
+The zmap side additionally scales gently: 2D morphology is O(pixels × footprint)
+versus O(voxels) 3D grids that also grow ~scale× along the stretch axis (the voxel
+engine OOMs at pixel 0.05 on a 15 GB machine where the zmap needs a few MB).
 Measured on the 656k-face housing: precompute of 2 directions × 6 tips × 3 clearance
 radii ≈ 9 s total; composing a complete tool (tip + 2-cylinder holder) with a
-5-value stickout sweep ≈ 1.7 s. The equivalent per-tool 3D voxel closings would be
-~25 s each. `test_zmap.py` validates the engine against the same synthetic
-expectations as the 3D path plus exact fillet-gap and stickout values.
+5-value stickout sweep ≈ 1.7 s. `test_zmap.py` validates the engine against the same
+synthetic expectations as the 3D path plus exact Euclidean fillet-gap and stickout
+values.
+
+**Why not a vertex-cloud Z-map?** A third option considered: skip the 2D grid and
+run the morphology on the mesh vertices themselves, transformed into tool-aligned
+coordinates. It is possible, but the closing needs candidate *tool positions*, not
+just surface samples — the optimum rarely sits on a vertex — so a scattered-point
+implementation ends up binning points into a lateral grid anyway, with neighbour
+queries per vertex (O(N·k), k = vertices per footprint, thousands for realistic
+tools) in place of vectorized image filters. And its motivating benefits already
+exist in the grid pipeline: every field is sampled back per-vertex of the original
+mesh immediately (exact round-trip to the 3D mesh and viewer), and the metric
+concern is solved by the Euclidean gap above. The grid is purely an internal
+computation device — the cached artifacts are per-vertex scalars on the real mesh.
 
 ### Auxiliary — `thickness`
 

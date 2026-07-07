@@ -101,6 +101,8 @@ if __name__ == "__main__":
     parser_precompute.add_argument("--pixel", help="height map pixel size", type=float, default=1e-1)
     parser_precompute.add_argument("--tips", help="tool tips as diameter:corner_radius (0 = flat, D/2 = ball)", nargs="*", type=str, default=[])
     parser_precompute.add_argument("--clearances", help="cylinder radii for holder/shank clearance fields", nargs="*", type=float, default=[])
+    parser_precompute.add_argument("--engine", help="field computation engine", choices=["zmap", "voxel"], default="zmap")
+    parser_precompute.add_argument("--window", help="gap accuracy window: gaps up to this are Euclidean-exact (zmap engine)", type=float, default=0.3)
 
     # Create the parser for the "compose" command
     parser_compose = subparsers.add_parser("compose", help="evaluate a full tool assembly from precomputed fields")
@@ -113,6 +115,8 @@ if __name__ == "__main__":
     parser_compose.add_argument("--stickout", help="tool length out of the holder", type=float, default=None)
     parser_compose.add_argument("--holder", help="holder as stacked cylinders radius:start,radius:start,... (start measured from the tool tip at stickout 0)", type=str, default=None)
     parser_compose.add_argument("--sweep", help="additional stickout values to report coverage for", nargs="*", type=float, default=[])
+    parser_compose.add_argument("--engine", help="field computation engine", choices=["zmap", "voxel"], default="zmap")
+    parser_compose.add_argument("--window", help="gap accuracy window: gaps up to this are Euclidean-exact (zmap engine)", type=float, default=0.3)
     parser_compose.add_argument("--serve", help="serve results in browser", action="store_true")
 
     # Create the parser for the "endmill" command
@@ -448,7 +452,7 @@ if __name__ == "__main__":
 
         for direction_index in args.directions:
             logger.info(f"Direction {direction_index}")
-            cache = DirectionCache(args.directory, direction_index, verts=verts, faces=faces, pixel=args.pixel)
+            cache = DirectionCache(args.directory, direction_index, verts=verts, faces=faces, pixel=args.pixel, window=args.window, engine=args.engine)
             for diameter, corner_radius in tips:
                 cache.tip_gap(diameter, corner_radius)
             for radius in args.clearances:
@@ -469,7 +473,7 @@ if __name__ == "__main__":
                 radius, _, start = spec.partition(":")
                 cylinders.append((float(radius), float(start or 0.0)))
 
-        cache = DirectionCache(args.directory, args.direction, verts=verts, faces=faces, pixel=args.pixel)
+        cache = DirectionCache(args.directory, args.direction, verts=verts, faces=faces, pixel=args.pixel, window=args.window, engine=args.engine)
         unreachable_faces, gap, min_stick = compose_unreachable(
             cache, faces, args.diameter, args.corner_radius, args.tollerance,
             stickout=args.stickout, cylinders=cylinders,
