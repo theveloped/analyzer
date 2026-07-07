@@ -165,6 +165,55 @@ vertical internal corners — the last only when accessibility was computed with
 `--relax`, since strictly vertical walls otherwise count as undercuts and are masked
 out.
 
+#### `precompute` / `compose` — the cached height-map engine (zmap.py)
+
+Scaling the analysis to many tools (types, diameters, lengths), many holders and
+several directions on the same part needs the expensive work factored out of the
+per-tool loop. The key observation: **the undercut-fixed volume is a heightfield
+along the approach direction** — air above the visible surface stays air all the way
+up. On a heightfield, a Minkowski closing with any rotationally symmetric tool bottom
+is exactly a 2D grayscale closing of the *height map* with the tool's radial profile
+(the classic Z-map / inverse tool offset construction from CAM). And the height map
+itself is just the part's first-hit depth map along the direction — rendering it
+subsumes `fixUndercuts` entirely. Every 3D voxel offset in the pipeline collapses to
+2D image morphology:
+
+| cached item | geometry cost | answers |
+|---|---|---|
+| height map (per direction) | one depth render, < 1 s | the undercut-fixed heightfield |
+| tip gap field (per direction × tip `D:rc`) | one 2D grayscale closing, ~1 s | per-vertex gap the tip leaves — ball (`rc=D/2`), flat (`rc=0`), bull nose, exactly |
+| clearance field (per direction × cylinder radius) | one 2D flat dilation, ~0.2 s | per-vertex height of the tallest obstruction within that radius |
+
+All fields are sampled back **per vertex of the original 3D mesh** immediately
+(`project_vertices`/`sample_map`), stored in `<dir>/zcache/dir_<idx>.npz`, and turned
+into face masks the same way as the 3D path — so `highlights.json` and the three.js
+viewer work unchanged; the 2D maps are purely an internal computation device.
+
+Composition then never touches geometry again:
+
+- **any tool tip** = threshold its gap field at the tolerance;
+- **a holder/spindle modelled as stacked concentric cylinders** `(radius, start)`:
+  the cylinder collides at a vertex iff `clearance(radius) − start > stickout`, so the
+  per-vertex **minimal stickout** is `max_j(clearance(ρ_j) − start_j)`;
+- **any tool length**: compare that cached scalar against the stickout — a full
+  stickout sweep costs ~20 ms per value;
+- the tool's own flank is the disk closing itself: on a heightfield, "the disk fits
+  at this depth" is equivalent to "the semi-infinite cylinder fits", so flat/bull
+  silhouettes need no separate flank check.
+
+Two discretization choices to know about: tip gap fields measure the *vertical* gap
+(the 3D engine's `map_result_faces` measures Euclidean projection distance — both
+converge on near-tangent surfaces, but vertical gaps are larger on steep walls), and
+the closed map is eroded 3×3 before sampling so vertices lying exactly on vertical
+walls don't sample the neighbouring material column. Holder clearance maps are
+max-pooled before dilation (conservative) to keep large-radius footprints cheap.
+
+Measured on the 656k-face housing: precompute of 2 directions × 6 tips × 3 clearance
+radii ≈ 9 s total; composing a complete tool (tip + 2-cylinder holder) with a
+5-value stickout sweep ≈ 1.7 s. The equivalent per-tool 3D voxel closings would be
+~25 s each. `test_zmap.py` validates the engine against the same synthetic
+expectations as the 3D path plus exact fillet-gap and stickout values.
+
 ### Auxiliary — `thickness`
 
 Independent of tooling: `computeInSphereThicknessAtVertices` (maximal inscribed

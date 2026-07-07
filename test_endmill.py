@@ -97,9 +97,10 @@ def build_regions(verts, faces):
 
 
 # tool tip type -> corner radius, region -> should be flagged
+# (the bull corner radius is chosen so its fillet band is wider than a face)
 CASES = {
     "ball": 2.0,
-    "bull": 0.5,
+    "bull": 1.0,
     "flat": 0.0,
 }
 EXPECTATIONS = {

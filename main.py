@@ -94,6 +94,27 @@ if __name__ == "__main__":
     parser_length.add_argument("--length", help="tool length of ballmill or nose", type=float, default=3.0)
     parser_length.add_argument("--serve", help="serve results in browser", action="store_true")
     
+    # Create the parser for the "precompute" command
+    parser_precompute = subparsers.add_parser("precompute", help="cache height maps and per-radius tool fields for fast composition")
+    parser_precompute.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_precompute.add_argument("--directions", help="indices of approach directions to precompute", nargs="+", type=int, required=True)
+    parser_precompute.add_argument("--pixel", help="height map pixel size", type=float, default=1e-1)
+    parser_precompute.add_argument("--tips", help="tool tips as diameter:corner_radius (0 = flat, D/2 = ball)", nargs="*", type=str, default=[])
+    parser_precompute.add_argument("--clearances", help="cylinder radii for holder/shank clearance fields", nargs="*", type=float, default=[])
+
+    # Create the parser for the "compose" command
+    parser_compose = subparsers.add_parser("compose", help="evaluate a full tool assembly from precomputed fields")
+    parser_compose.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_compose.add_argument("direction", help="index of the approach direction", type=int)
+    parser_compose.add_argument("--pixel", help="height map pixel size", type=float, default=1e-1)
+    parser_compose.add_argument("--tollerance", help="gap threshold to flag a vertex", type=float, default=1e-1)
+    parser_compose.add_argument("--diameter", help="tool diameter", type=float, default=2.0)
+    parser_compose.add_argument("--corner_radius", help="tip corner radius: 0 = flat endmill, diameter/2 = ball nose", type=float, default=0.0)
+    parser_compose.add_argument("--stickout", help="tool length out of the holder", type=float, default=None)
+    parser_compose.add_argument("--holder", help="holder as stacked cylinders radius:start,radius:start,... (start measured from the tool tip at stickout 0)", type=str, default=None)
+    parser_compose.add_argument("--sweep", help="additional stickout values to report coverage for", nargs="*", type=float, default=[])
+    parser_compose.add_argument("--serve", help="serve results in browser", action="store_true")
+
     # Create the parser for the "endmill" command
     parser_endmill = subparsers.add_parser("endmill", help="generic endmill tip accessibility (ball, flat or radius end)")
     parser_endmill.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
@@ -413,6 +434,73 @@ if __name__ == "__main__":
             directory = os.path.dirname(obj_path)
             serve(index_path, directory, timeout=15.0)
         
+    elif args.command == "precompute":
+        logger.info("Precompute height maps and tool fields")
+        from zmap import DirectionCache
+
+        verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
+        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
+
+        tips = []
+        for spec in args.tips:
+            diameter, _, corner = spec.partition(":")
+            tips.append((float(diameter), float(corner or 0.0)))
+
+        for direction_index in args.directions:
+            logger.info(f"Direction {direction_index}")
+            cache = DirectionCache(args.directory, direction_index, verts=verts, faces=faces, pixel=args.pixel)
+            for diameter, corner_radius in tips:
+                cache.tip_gap(diameter, corner_radius)
+            for radius in args.clearances:
+                cache.clearance(radius)
+
+    elif args.command == "compose":
+        logger.info("Compose tool accessibility from precomputed fields")
+        from zmap import DirectionCache, compose_unreachable
+
+        verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
+        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
+        accessibility = np.load(os.path.join(args.directory, ACCESSIBILITY_FILE))
+
+        cylinders = None
+        if args.holder:
+            cylinders = []
+            for spec in args.holder.split(","):
+                radius, _, start = spec.partition(":")
+                cylinders.append((float(radius), float(start or 0.0)))
+
+        cache = DirectionCache(args.directory, args.direction, verts=verts, faces=faces, pixel=args.pixel)
+        unreachable_faces, gap, min_stick = compose_unreachable(
+            cache, faces, args.diameter, args.corner_radius, args.tollerance,
+            stickout=args.stickout, cylinders=cylinders,
+        )
+
+        # Keep only the faces that are accessible
+        unreachable_faces = unreachable_faces[accessibility[args.direction, unreachable_faces]]
+
+        accessible_count = int(accessibility[args.direction].sum())
+        logger.info(f"Tool D={args.diameter} rc={args.corner_radius} stickout={args.stickout} cannot reach {len(unreachable_faces)} of {accessible_count} accessible faces")
+
+        # A stickout sweep is free: threshold the cached per-vertex field
+        if args.sweep and min_stick is not None:
+            for stickout in args.sweep:
+                blocked = (gap > args.tollerance) | (min_stick > stickout + args.tollerance)
+                swept = np.where(blocked[faces].all(axis=1))[0]
+                swept = swept[accessibility[args.direction, swept]]
+                logger.info(f"  stickout {stickout:8.2f}: {len(swept)} unreachable faces")
+
+        numpyData = {"faces": unreachable_faces.tolist()}
+        highlight_path = os.path.join(args.directory, HIGHLIGHT_FILE)
+        with open(highlight_path, "w") as f:
+            json.dump(numpyData, f)
+
+        directory = os.path.abspath(args.directory)
+        obj_path = os.path.join(directory, FINE_MESH_FILE)
+        if args.serve:
+            logger.info(f"Mesh served at: {obj_path}")
+            index_path = os.path.abspath("./index.html")
+            serve(index_path, directory, timeout=15.0)
+
     elif args.command == "endmill":
         logger.info("Perform an endmill tip analysis on the mesh")
 
