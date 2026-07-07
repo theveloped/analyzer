@@ -8,7 +8,7 @@ from meshlib import mrmeshnumpy as mn
 
 from utils import has_valid_extension, ensure_directory, ensure_parent_directories
 from server import serve
-from analysis import load_mesh, save_mesh, get_mesh_data, sample_unity_vector_pairs, compute_accessibility, find_combinations_matching_best, relax_accessibility, fix_undercuts, offset_mesh, double_offset, get_distance, get_inside_mesh, get_inside_indices, single_offset, translate, map_result_faces, generate_circle_translations
+from analysis import load_mesh, save_mesh, get_mesh_data, sample_unity_vector_pairs, compute_accessibility, find_combinations_matching_best, relax_accessibility, fix_undercuts, offset_mesh, double_offset, get_distance, get_inside_mesh, get_inside_indices, single_offset, translate, map_result_faces, generate_circle_translations, endmill_closing, endmill_flag_threshold
 
 
 FINE_MESH_FILE = "fine_mesh.obj"
@@ -94,18 +94,36 @@ if __name__ == "__main__":
     parser_length.add_argument("--length", help="tool length of ballmill or nose", type=float, default=3.0)
     parser_length.add_argument("--serve", help="serve results in browser", action="store_true")
     
-    # # Create the parser for the "endmill" command
-    # parser_endmill = subparsers.add_parser("endmill", help="endmill radius accissibility")
-    # parser_endmill.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
-    # parser_endmill.add_argument("direction", help="working directory", type=int, default=0)
-    # parser_endmill.add_argument("--tollerance", help="voxel tollerance", type=float, default=1e-1)
-    # parser_endmill.add_argument("--offset", help="offset the mesh before storing", type=float, default=None)
-    # parser_endmill.add_argument("--diameter", help="endmill diameter of ballmill or nose", type=float, default=2.0)
-    # parser_endmill.add_argument("--length", help="endmill length of ballmill or nose", type=float, default=3.0)
-    # parser_endmill.add_argument("--samples", help="samples to use for circle approximation", type=int, default=18)
-    # parser_endmill.add_argument("--serve", help="serve results in browser", action="store_true")
-    
-    # parser_directions.add_argument("--serve", help="serve results in browser", action="store_true")
+    # Create the parser for the "precompute" command
+    parser_precompute = subparsers.add_parser("precompute", help="cache height maps and per-radius tool fields for fast composition")
+    parser_precompute.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_precompute.add_argument("--directions", help="indices of approach directions to precompute", nargs="+", type=int, required=True)
+    parser_precompute.add_argument("--pixel", help="height map pixel size", type=float, default=1e-1)
+    parser_precompute.add_argument("--tips", help="tool tips as diameter:corner_radius (0 = flat, D/2 = ball)", nargs="*", type=str, default=[])
+    parser_precompute.add_argument("--clearances", help="cylinder radii for holder/shank clearance fields", nargs="*", type=float, default=[])
+
+    # Create the parser for the "compose" command
+    parser_compose = subparsers.add_parser("compose", help="evaluate a full tool assembly from precomputed fields")
+    parser_compose.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_compose.add_argument("direction", help="index of the approach direction", type=int)
+    parser_compose.add_argument("--pixel", help="height map pixel size", type=float, default=1e-1)
+    parser_compose.add_argument("--tollerance", help="gap threshold to flag a vertex", type=float, default=1e-1)
+    parser_compose.add_argument("--diameter", help="tool diameter", type=float, default=2.0)
+    parser_compose.add_argument("--corner_radius", help="tip corner radius: 0 = flat endmill, diameter/2 = ball nose", type=float, default=0.0)
+    parser_compose.add_argument("--stickout", help="tool length out of the holder", type=float, default=None)
+    parser_compose.add_argument("--holder", help="holder as stacked cylinders radius:start,radius:start,... (start measured from the tool tip at stickout 0)", type=str, default=None)
+    parser_compose.add_argument("--sweep", help="additional stickout values to report coverage for", nargs="*", type=float, default=[])
+    parser_compose.add_argument("--serve", help="serve results in browser", action="store_true")
+
+    # Create the parser for the "endmill" command
+    parser_endmill = subparsers.add_parser("endmill", help="generic endmill tip accessibility (ball, flat or radius end)")
+    parser_endmill.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_endmill.add_argument("direction", help="index of the approach direction", type=int, default=0)
+    parser_endmill.add_argument("--tollerance", help="voxel tollerance", type=float, default=1e-1)
+    parser_endmill.add_argument("--diameter", help="endmill diameter", type=float, default=2.0)
+    parser_endmill.add_argument("--corner_radius", help="tip corner radius: 0 = flat endmill, diameter/2 = ball nose, in between = radius endmill", type=float, default=0.0)
+    parser_endmill.add_argument("--scale", help="anisotropy stretch factor used to emulate the in-plane offset", type=float, default=10.0)
+    parser_endmill.add_argument("--serve", help="serve results in browser", action="store_true")
 
     # Parse the arguments
     args = parser.parse_args()
@@ -416,129 +434,113 @@ if __name__ == "__main__":
             directory = os.path.dirname(obj_path)
             serve(index_path, directory, timeout=15.0)
         
-    # elif args.command == "endmill":
-    #     logger.info("Perform a tool length analyis for a endmill on the mesh")
-        
-    #     # Load mesh
-    #     verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
-    #     faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
-    #     mesh = mn.meshFromFacesVerts(faces, verts)
-        
-    #     # Load cached accessibility
-    #     directions = np.load(os.path.join(args.directory, DIRECTIONS_FILE))
-    #     accessibility = np.load(os.path.join(args.directory, ACCESSIBILITY_FILE))
-        
-    #     # Perform a undercut free mesh
-    #     undercut_mesh = fix_undercuts(mesh, directions[args.direction][0], directions[args.direction][1], directions[args.direction][2])
-        
-    #     # Offset using half of the tool diameter
-    #     # radius_mesh = single_offset(undercut_mesh, args.diameter / 2.0, args.tollerance, decimate=False)
-        
-    #     # Translate mesh
-    #     # distance = args.diameter / -2.0 - args.length
-    #     # translated_mesh = translate(radius_mesh, directions[args.direction][0], directions[args.direction][1], directions[args.direction][2], distance=distance)
-        
-    #     distance = -args.length
-    #     translated_mesh = translate(undercut_mesh, directions[args.direction][0], directions[args.direction][1], directions[args.direction][2], distance=distance)
-        
-    #     # Compute vectors
-    #     union_faces = set()
-    #     translations = generate_circle_translations(directions[args.direction][0], directions[args.direction][1], directions[args.direction][2], args.diameter / 2.0, args.samples)
-    #     for i in range(args.samples):
-    #         logger.info(f"Translation: {i}/{args.samples}")
-    #         translated_mesh = translate(translated_mesh, translations[i][0], translations[i][1], translations[i][2])
-        
-    #         # Map the results
-    #         inside_mesh = get_inside_mesh(mesh, translated_mesh)
-    #         inside_faces = map_result_faces(mesh, inside_mesh, faces, max_range=args.tollerance)
-        
-    #         # Keep only the faces that are accessible
-    #         inside_faces = inside_faces[accessibility[args.direction, inside_faces]]
-    #         inside_faces = inside_faces.tolist()
-            
-    #         union_faces.update(inside_faces)
-            
-    #     union_faces = list(union_faces)
-        
-    #     numpyData = {"faces": union_faces}
-    #     highlight_path = os.path.join(args.directory, HIGHLIGHT_FILE)
-    #     with open(highlight_path, "w") as f:
-    #         json.dump(numpyData, f)
-        
-    #     # Storage paths
-    #     directory = os.path.abspath(args.directory)
-    #     obj_path = os.path.join(directory, FINE_MESH_FILE)
-    #     save_mesh(mesh, obj_path)
-    #     if args.serve:
-    #         logger.info(f"Mesh served at: {obj_path}")
-    #         index_path = os.path.abspath("./index.html")
-    #         directory = os.path.dirname(obj_path)
-    #         serve(index_path, directory, timeout=15.0)
-    
-    
+    elif args.command == "precompute":
+        logger.info("Precompute height maps and tool fields")
+        from zmap import DirectionCache
+
+        verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
+        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
+
+        tips = []
+        for spec in args.tips:
+            diameter, _, corner = spec.partition(":")
+            tips.append((float(diameter), float(corner or 0.0)))
+
+        for direction_index in args.directions:
+            logger.info(f"Direction {direction_index}")
+            cache = DirectionCache(args.directory, direction_index, verts=verts, faces=faces, pixel=args.pixel)
+            for diameter, corner_radius in tips:
+                cache.tip_gap(diameter, corner_radius)
+            for radius in args.clearances:
+                cache.clearance(radius)
+
+    elif args.command == "compose":
+        logger.info("Compose tool accessibility from precomputed fields")
+        from zmap import DirectionCache, compose_unreachable
+
+        verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
+        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
+        accessibility = np.load(os.path.join(args.directory, ACCESSIBILITY_FILE))
+
+        cylinders = None
+        if args.holder:
+            cylinders = []
+            for spec in args.holder.split(","):
+                radius, _, start = spec.partition(":")
+                cylinders.append((float(radius), float(start or 0.0)))
+
+        cache = DirectionCache(args.directory, args.direction, verts=verts, faces=faces, pixel=args.pixel)
+        unreachable_faces, gap, min_stick = compose_unreachable(
+            cache, faces, args.diameter, args.corner_radius, args.tollerance,
+            stickout=args.stickout, cylinders=cylinders,
+        )
+
+        # Keep only the faces that are accessible
+        unreachable_faces = unreachable_faces[accessibility[args.direction, unreachable_faces]]
+
+        accessible_count = int(accessibility[args.direction].sum())
+        logger.info(f"Tool D={args.diameter} rc={args.corner_radius} stickout={args.stickout} cannot reach {len(unreachable_faces)} of {accessible_count} accessible faces")
+
+        # A stickout sweep is free: threshold the cached per-vertex field
+        if args.sweep and min_stick is not None:
+            for stickout in args.sweep:
+                blocked = (gap > args.tollerance) | (min_stick > stickout + args.tollerance)
+                swept = np.where(blocked[faces].all(axis=1))[0]
+                swept = swept[accessibility[args.direction, swept]]
+                logger.info(f"  stickout {stickout:8.2f}: {len(swept)} unreachable faces")
+
+        numpyData = {"faces": unreachable_faces.tolist()}
+        highlight_path = os.path.join(args.directory, HIGHLIGHT_FILE)
+        with open(highlight_path, "w") as f:
+            json.dump(numpyData, f)
+
+        directory = os.path.abspath(args.directory)
+        obj_path = os.path.join(directory, FINE_MESH_FILE)
+        if args.serve:
+            logger.info(f"Mesh served at: {obj_path}")
+            index_path = os.path.abspath("./index.html")
+            serve(index_path, directory, timeout=15.0)
+
     elif args.command == "endmill":
-        logger.info("Perform a tool length analyis for a endmill on the mesh")
-        
+        logger.info("Perform an endmill tip analysis on the mesh")
+
         # Load mesh
         verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
         faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
         mesh = mn.meshFromFacesVerts(faces, verts)
-        
+
         # Load cached accessibility
         directions = np.load(os.path.join(args.directory, DIRECTIONS_FILE))
         accessibility = np.load(os.path.join(args.directory, ACCESSIBILITY_FILE))
-        
-        # Perform a undercut free mesh
-        undercut_mesh = fix_undercuts(mesh, directions[args.direction][0], directions[args.direction][1], directions[args.direction][2])
-        
-        # Map the results
-        radius_mesh = double_offset(undercut_mesh, args.diameter / 2.0, -args.diameter / 2.0, args.tollerance, decimate=False)
-        # radius_mesh = single_offset(radius_mesh, args.diameter / 2.0, args.tollerance, decimate=False)
-        radius_faces = map_result_faces(mesh, radius_mesh, faces, min_range=args.tollerance)
-        
-        # Keep only the faces that are accessible
-        radius_faces = radius_faces[accessibility[args.direction, radius_faces]]
-        radius_faces = radius_faces.tolist()
-        
-        # Translate mesh
-        # distance = args.diameter / -2.0
-        # translated_mesh = translate(radius_mesh, directions[args.direction][0], directions[args.direction][1], directions[args.direction][2], distance=distance)
-        
-        # Map the results
-        # inside_mesh = get_inside_mesh(mesh, translated_mesh)
-        # inside_faces = map_result_faces(mesh, inside_mesh, faces, max_range=args.tollerance)
-        
-        # Keep only the faces that are accessible
-        # inside_faces = inside_faces[accessibility[args.direction, inside_faces]]
-        # inside_faces = inside_faces.tolist()
-        
-        # distance = -args.length
-        # translated_mesh = translate(undercut_mesh, directions[args.direction][0], directions[args.direction][1], directions[args.direction][2], distance=distance)
-        
-        # Compute vectors
-        # union_faces = set()
-        # translations = generate_circle_translations(directions[args.direction][0], directions[args.direction][1], directions[args.direction][2], args.diameter / 2.0, args.samples)
-        # for i in range(args.samples):
-        #     logger.info(f"Translation: {i}/{args.samples}")
-        #     translated_mesh = translate(translated_mesh, translations[i][0], translations[i][1], translations[i][2])
-        
-        #     # Map the results
-        #     inside_mesh = get_inside_mesh(mesh, translated_mesh)
-        #     inside_faces = map_result_faces(mesh, inside_mesh, faces, max_range=args.tollerance)
-        
-        #     # Keep only the faces that are accessible
-        #     inside_faces = inside_faces[accessibility[args.direction, inside_faces]]
-        #     inside_faces = inside_faces.tolist()
-            
-        #     union_faces.update(inside_faces)
-            
-        # union_faces = list(union_faces)
 
-        numpyData = {"faces": radius_faces}
+        # Perform a undercut free mesh
+        direction = directions[args.direction]
+        undercut_mesh = fix_undercuts(mesh, direction[0], direction[1], direction[2])
+
+        # Close the mesh with the tool bottom shape: a disk of radius
+        # (D/2 - rc) perpendicular to the approach direction, Minkowski
+        # summed with a sphere of radius rc
+        closed_mesh = endmill_closing(undercut_mesh, direction, args.diameter, args.corner_radius, args.tollerance, scale=args.scale)
+
+        # Deviations below the disk emulation residual cannot be trusted
+        threshold = endmill_flag_threshold(args.diameter, args.corner_radius, args.tollerance, args.scale)
+        if threshold > args.tollerance:
+            logger.warning(f"Flag threshold raised to {threshold:.3f} by the in-plane offset residual, increase --scale for finer sensitivity")
+
+        # Map the results
+        unreachable_faces = map_result_faces(mesh, closed_mesh, faces, min_range=threshold)
+
+        # Keep only the faces that are accessible
+        unreachable_faces = unreachable_faces[accessibility[args.direction, unreachable_faces]]
+        unreachable_faces = unreachable_faces.tolist()
+
+        logger.info(f"Endmill D={args.diameter} rc={args.corner_radius} cannot reach {len(unreachable_faces)} faces from direction {args.direction}")
+
+        numpyData = {"faces": unreachable_faces}
         highlight_path = os.path.join(args.directory, HIGHLIGHT_FILE)
         with open(highlight_path, "w") as f:
             json.dump(numpyData, f)
-        
+
         # Storage paths
         directory = os.path.abspath(args.directory)
         obj_path = os.path.join(directory, FINE_MESH_FILE)
