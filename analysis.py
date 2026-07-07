@@ -144,6 +144,110 @@ def double_offset( mesh : mm.Mesh, offset_a: float, offset_b: float, voxelSize :
 
 
 @log_execution_time
+def scale_along_axis(mesh, direction, scale):
+    """
+    Anisotropically scale a mesh along an arbitrary axis, leaving the plane
+    perpendicular to it untouched. Used to emulate in-plane (disk) offsets:
+    stretching by `scale`, offsetting isotropically and scaling back by
+    1/scale is a Minkowski sum with an oblate ellipsoid of in-plane radius
+    `offset` and axial radius `offset/scale`.
+
+    :param mesh: The mesh to transform (modified in place).
+    :param direction: The axis to scale along (need not be normalized).
+    :param scale: The scale factor along the axis.
+    :return: The transformed mesh.
+    """
+    d = np.asarray(direction, dtype=float)
+    d /= np.linalg.norm(d)
+
+    # M = I + (s - 1) * d d^T stretches by s along d, identity in-plane
+    m = np.eye(3) + (scale - 1.0) * np.outer(d, d)
+
+    matrix = mm.Matrix3f()
+    matrix.x = mm.Vector3f(float(m[0][0]), float(m[0][1]), float(m[0][2]))
+    matrix.y = mm.Vector3f(float(m[1][0]), float(m[1][1]), float(m[1][2]))
+    matrix.z = mm.Vector3f(float(m[2][0]), float(m[2][1]), float(m[2][2]))
+
+    mesh.transform(mm.AffineXf3f.linear(matrix))
+    return mesh
+
+
+@log_execution_time
+def inplane_double_offset(mesh, direction, offset_a, offset_b, voxelSize, scale=10.0, decimate=False):
+    """
+    Double offset (e.g. +r then -r for a morphological closing) restricted to
+    the plane perpendicular to `direction`. The structuring element is a disk
+    of radius `offset` (approximated by an oblate ellipsoid of axial radius
+    offset/scale). Returns a new mesh; the input is not modified.
+    """
+    work = mm.copyMesh(mesh)
+    scale_along_axis(work, direction, scale)
+    work = double_offset(work, offset_a, offset_b, voxelSize, decimate=decimate)
+    scale_along_axis(work, direction, 1.0 / scale)
+    return work
+
+
+@log_execution_time
+def endmill_closing(mesh, direction, diameter, corner_radius, voxelSize, scale=10.0):
+    """
+    Morphological closing of `mesh` with the bottom shape of an endmill whose
+    axis is aligned with `direction`. The tool bottom is modelled as the
+    Minkowski sum of a disk of radius (D/2 - rc) perpendicular to the tool
+    axis and a sphere of radius rc:
+
+    - corner_radius == D/2 -> ball nose (sphere only)
+    - corner_radius == 0   -> flat endmill (disk only)
+    - in between           -> bull nose / radius endmill
+
+    Everywhere the closed mesh deviates from the input is material the tool
+    bottom cannot reach. Run this on the undercut-fixed mesh so results are
+    consistent with the chosen approach direction.
+
+    The disk part is emulated with the scale trick (see scale_along_axis), so
+    flat regions perpendicular to the axis keep a residual rounding of about
+    0.41 * (D - 2*rc) / scale that must stay below the flagging threshold.
+
+    :return: A new closed mesh; the input is not modified.
+    """
+    radius = diameter / 2.0
+    corner_radius = min(max(corner_radius, 0.0), radius)
+    disk_radius = radius - corner_radius
+
+    # Pure ball nose: plain isotropic closing
+    if disk_radius <= 0:
+        return double_offset(mesh, corner_radius, -corner_radius, voxelSize, decimate=False)
+
+    # Pure flat endmill: closing entirely in stretched space
+    if corner_radius <= 0:
+        return inplane_double_offset(mesh, direction, disk_radius, -disk_radius, voxelSize, scale=scale)
+
+    # Bull nose: dilate by disk then sphere, erode by sphere then disk
+    work = mm.copyMesh(mesh)
+    scale_along_axis(work, direction, scale)
+    work = single_offset(work, disk_radius, voxelSize, decimate=False)
+    scale_along_axis(work, direction, 1.0 / scale)
+
+    work = double_offset(work, corner_radius, -corner_radius, voxelSize, decimate=False)
+
+    scale_along_axis(work, direction, scale)
+    work = single_offset(work, -disk_radius, voxelSize, decimate=False)
+    scale_along_axis(work, direction, 1.0 / scale)
+    return work
+
+
+def endmill_flag_threshold(diameter, corner_radius, tollerance, scale):
+    """
+    Smallest deviation that can safely be flagged as unreachable: the user
+    tolerance, but never less than the disk emulation residual (with some
+    margin). Deviations below the residual may be artifacts of the finite
+    stretch factor rather than genuine tool limitations.
+    """
+    disk_radius = diameter / 2.0 - corner_radius
+    residual = 0.5 * disk_radius / scale  # 1.2 * (sqrt(2)-1) * disk_r / scale
+    return max(tollerance, residual)
+
+
+@log_execution_time
 def get_distance(mesh_a, mesh_b, upper_limit: float = 3.4028234663852886e+38, lower_limit: float = 0.0):
     res = mm.projectAllMeshVertices(mesh_b, mesh_a, upDistLimitSq=upper_limit, loDistLimitSq=lower_limit)
     return res.vec
@@ -189,7 +293,7 @@ def map_result_faces(mesh_a, mesh_b, faces_a, min_range=None, max_range=None):
     
     # Compute all vertices where distance is abbove tollerance of 0.1
     if min_range is not None and max_range is not None:
-        indices = np.where(np.abs(distances) >= min_range and np.abs(distances) <= max_range)[0]
+        indices = np.where((np.abs(distances) >= min_range) & (np.abs(distances) <= max_range))[0]
         indices_set = set(indices)
     
     elif min_range is not None:
@@ -212,10 +316,14 @@ def get_undercuts(mesh, x, y, z):
     dir.x = x
     dir.y = y
     dir.z = z
-    
-    # Find undercuts
+
+    # Find undercuts (meshlib >= 3 moved this into the FixUndercuts namespace)
     undercuts = mm.FaceBitSet()
-    mm.findUndercuts(mesh, dir, undercuts)
+    if hasattr(mm, "FixUndercuts"):
+        params = mm.FixUndercuts.FindParams(dir, 0.0)
+        mm.FixUndercuts.find(mesh, params, undercuts)
+    else:
+        mm.findUndercuts(mesh, dir, undercuts)
 
     # Extract face indices
     return mn.getNumpyBitSet(undercuts)
@@ -232,13 +340,16 @@ def fix_undercuts(input_mesh, x, y, z, tollerance=1e-1, bottom_offset=0.0):
     
     # Copy mesh to avoid modifying the input
     mesh = mm.copyMesh(input_mesh)
-    
-    # Find undercuts
-    undercuts = mm.FaceBitSet()
-    mm.findUndercuts(mesh, dir, undercuts)
-    
-    # Remove undercuts
-    mm.fixUndercuts(mesh, dir, tollerance, bottom_offset)
+
+    # Remove undercuts (meshlib >= 3 moved this into the FixUndercuts namespace)
+    if hasattr(mm, "FixUndercuts"):
+        params = mm.FixUndercuts.FixParams()
+        params.findParameters = mm.FixUndercuts.FindParams(dir, 0.0)
+        params.voxelSize = tollerance
+        params.bottomExtension = bottom_offset
+        mm.FixUndercuts.fix(mesh, params)
+    else:
+        mm.fixUndercuts(mesh, dir, tollerance, bottom_offset)
 
     # Return the updated mesh
     return mesh

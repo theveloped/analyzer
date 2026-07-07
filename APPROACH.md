@@ -119,19 +119,51 @@ original mesh that falls *inside* this translated volume is deeper than the tool
 reach without the holder colliding — extracted with a mesh boolean (`InsideA`), mapped
 back to face indices via projection distances, and again masked by accessibility.
 
-#### `endmill` — flat endmill (work in progress)
+#### `endmill` — unified tip model (ball, flat and radius end)
 
-A ball mill is exactly a sphere Minkowski sum, so offsets model it natively. A flat
-endmill is a cylinder, which offsets don't directly express. Two attempts live in the
-code:
+A ball mill is exactly a sphere Minkowski sum, so isotropic offsets model it natively.
+A flat endmill needs a **disk** perpendicular to the tool axis, and a radius (bull
+nose) endmill needs a disk with a rounded rim. Both reduce to one element:
 
-1. (Commented out) Approximate the cylinder by **sampling K translations on a circle**
-   of radius `diameter/2` perpendicular to the axis (`generate_circle_translations`),
-   running the inside-boolean test at each station, and unioning the per-face results.
-2. (Currently active) Reuse the `double_offset` closing as an approximation — correct
-   for the nose radius but not for the flat bottom.
+```
+tool bottom = disk(D/2 − rc) ⊕ sphere(rc)      rc = corner radius
+```
 
-This is the main open geometric problem in the repo.
+- `rc = D/2` → ball nose (sphere only)
+- `rc = 0`   → flat endmill (disk only)
+- in between → radius / bull-nose endmill
+
+MeshLib has no in-plane offset (see MeshInspector/MeshLib#2598), but linear transforms
+commute with Minkowski sums: `T(A ⊕ B) = T(A) ⊕ T(B)`. So the disk offset is emulated
+by the **scale trick** (`scale_along_axis` / `inplane_double_offset` in analysis.py):
+
+1. stretch the mesh along the tool axis by factor `s` (matrix `I + (s−1)·ddᵀ`),
+2. run the ordinary isotropic offset by the disk radius,
+3. scale back by `1/s`.
+
+The effective structuring element is an oblate ellipsoid: radius `r` in the plane
+perpendicular to the axis, `r/s` along it — a disk to within `r/s`. Flat regions
+perpendicular to the axis keep a residual rounding of about `0.41·(D − 2rc)/s`, so the
+flagging threshold is raised to at least that residual (`endmill_flag_threshold`) and
+`--scale` trades runtime (the voxel grid grows ~s× along the axis) against sensitivity.
+
+The closing sequence for the general tip interleaves the two elements (dilations and
+erosions each commute, so the disk/sphere order can be nested):
+
+```
+stretch → +(D/2−rc) → unstretch     dilate by disk
+        → +rc → −rc                  dilate and erode by sphere
+stretch → −(D/2−rc) → unstretch      erode by disk
+```
+
+Everything else matches the ball-mill flow: run on the undercut-fixed mesh, project
+the original vertices onto the closed mesh, flag faces whose deviation exceeds the
+threshold, and mask with the accessibility row. Validated end-to-end by
+`test_endmill.py` (synthetic pocket + slot part): a ball flags the pocket floor edges,
+a flat endmill leaves them clean, all tip types flag the too-narrow slot and the
+vertical internal corners — the last only when accessibility was computed with
+`--relax`, since strictly vertical walls otherwise count as undercuts and are masked
+out.
 
 ### Auxiliary — `thickness`
 
@@ -164,10 +196,8 @@ Every check in the repo follows the same pattern:
 
 ## Known rough edges (as found in the code)
 
-- `map_result_faces` uses Python `and` between two numpy conditions in the
-  `min_range and max_range` branch — this raises on arrays; only the single-bound
-  branches currently work. Also `projectAllMeshVertices`' limits are *squared*
-  distances (`upDistLimitSq`), which the call sites treat as plain distances.
+- `projectAllMeshVertices`' limits are *squared* distances (`upDistLimitSq`), which
+  the `map_result_faces` call sites treat as plain distances.
 - `find_combinations_matching_best` duplicates its sort/truncate block, and the slide
   search enumerates `combinations` over *all* perpendicular directions, which explodes
   for large direction counts.
