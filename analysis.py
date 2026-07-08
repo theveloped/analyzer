@@ -248,6 +248,24 @@ def endmill_flag_threshold(diameter, corner_radius, tollerance, scale):
 
 
 @log_execution_time
+def subdivide_mesh(mesh, max_edge_len):
+    """
+    Refine the mesh in place until no edge is longer than `max_edge_len`,
+    WITHOUT changing the shape (maxDeviationAfterFlip = 0): planar facets
+    stay planar and sharp edges stay sharp. Use this instead of healing for
+    clean CAD tessellations (STEP): analysis results are reported per face,
+    so face density sets how finely results localize on the part, while the
+    geometry stays exact.
+    """
+    settings = mm.SubdivideSettings()
+    settings.maxEdgeLen = max_edge_len
+    settings.maxEdgeSplits = 100_000_000
+    settings.maxDeviationAfterFlip = 0.0
+    mm.subdivideMesh(mesh, settings)
+    return mesh
+
+
+@log_execution_time
 def get_distance(mesh_a, mesh_b, upper_limit: float = 3.4028234663852886e+38, lower_limit: float = 0.0):
     res = mm.projectAllMeshVertices(mesh_b, mesh_a, upDistLimitSq=upper_limit, loDistLimitSq=lower_limit)
     return res.vec

@@ -8,7 +8,7 @@ from meshlib import mrmeshnumpy as mn
 
 from utils import has_valid_extension, ensure_directory, ensure_parent_directories
 from server import serve
-from analysis import load_mesh, save_mesh, get_mesh_data, sample_unity_vector_pairs, compute_accessibility, find_combinations_matching_best, relax_accessibility, fix_undercuts, offset_mesh, double_offset, get_distance, get_inside_mesh, get_inside_indices, single_offset, translate, map_result_faces, generate_circle_translations, endmill_closing, endmill_flag_threshold
+from analysis import load_mesh, save_mesh, get_mesh_data, sample_unity_vector_pairs, compute_accessibility, find_combinations_matching_best, relax_accessibility, fix_undercuts, offset_mesh, double_offset, get_distance, get_inside_mesh, get_inside_indices, single_offset, translate, map_result_faces, generate_circle_translations, endmill_closing, endmill_flag_threshold, subdivide_mesh
 
 
 FINE_MESH_FILE = "fine_mesh.obj"
@@ -40,7 +40,8 @@ if __name__ == "__main__":
     parser_mesh.add_argument("input", help="path of the input .stl/.step file", type=PathType(type='file', dash_ok=True, exists=True))
     parser_mesh.add_argument("-o", "--output", help="path of the output dir", type=PathType(type='dir', dash_ok=True))
     parser_mesh.add_argument("--tollerance", help="voxel tollerance", type=float, default=1e-1)
-    parser_mesh.add_argument("--heal", help="heal the mesh before storing", action="store_true")
+    parser_mesh.add_argument("--heal", help="heal the mesh before storing (voxel remesh - for dirty STLs, NOT for clean STEP)", action="store_true")
+    parser_mesh.add_argument("--subdivide", help="max edge length: refine without changing the shape (use for clean STEP input)", type=float, default=None)
     parser_mesh.add_argument("--offset", help="offset the mesh before storing", type=float, default=None)
     parser_mesh.add_argument("--serve", help="serve results in browser", action="store_true")
     
@@ -154,6 +155,9 @@ if __name__ == "__main__":
         
         # load the mesh
         mesh = load_mesh(args.input, heal=args.heal, offset=args.offset, tollerance=args.tollerance)
+
+        if args.subdivide:
+            mesh = subdivide_mesh(mesh, args.subdivide)
         verts, faces = get_mesh_data(mesh)
         
         dir_path = args.output

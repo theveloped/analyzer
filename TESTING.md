@@ -22,12 +22,21 @@ behaviour end to end (takes a few minutes).
 
 ## Analyzing a part
 
-Stage 1 — mesh (accepts .stl, .stp, .step; the healed result is cached in a
-working directory named after the part):
+Stage 1 — mesh (accepts .stl, .stp, .step; the result is cached in a working
+directory named after the part). Two preparation modes:
 
 ```bash
-python main.py mesh tests/testpart_42.stp --heal --tollerance 0.15
+# clean CAD input (STEP): keep the exact geometry, refine for reporting only
+python main.py mesh tests/testpart_42.stp --subdivide 0.6
+
+# dirty STL: voxel-remesh it watertight (this DOES change the geometry:
+# edges get rounded to the voxel size - do not use it on clean STEP)
+python main.py mesh part.stl --heal --tollerance 0.15
 ```
+
+`--subdivide` splits edges without moving anything (planar faces stay planar,
+walls stay exactly 90°); face size is the reporting resolution, since results
+are per-face masks over per-vertex fields.
 
 Stage 2 — accessibility per direction. `--axes` prepends exact ±X/±Y/±Z as
 indices 0..5 (so +Z is index 4). `--relax` is important for endmill work:
@@ -109,6 +118,21 @@ after which every (tip, length, holder) query composes in ~0.2 s. The exact
 voxel `endmill` path stays useful as a spot-check (it agrees within a couple
 percent of flagged faces: 885 vs 904 on testpart_42, the difference being the
 holder/stickout constraints only `compose` models).
+
+## Resolution knobs
+
+Three independent resolutions stack; jagged results usually mean the first
+one is wrong:
+
+| Knob | What it controls | Cost |
+|---|---|---|
+| `mesh --subdivide` (STEP) or `--heal --tollerance` (STL) | geometry fidelity + how finely results localize (faces are the reporting unit) | faces ~ area / edge² |
+| `precompute --pixel` | field accuracy: gap/clearance quantization, wall noise threshold (2.5 × pixel) | maps + closings ~ 1/pixel², fields ~ verts |
+| `precompute --window` | range in which gaps are Euclidean-exact (keep ≥ wall threshold) | per-vertex window² |
+
+Reference: testpart_42 exact STEP at `--subdivide 0.6` = 683k faces; full
+precompute (4 tips, 3 clearance radii, 12 coupled stickout fields) at
+`--pixel 0.05` ≈ 6 min for one direction; composing any tool stays < 1 s.
 
 ## Knobs vs runtime (exact voxel path)
 
