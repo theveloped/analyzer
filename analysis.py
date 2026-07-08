@@ -188,6 +188,21 @@ def inplane_double_offset(mesh, direction, offset_a, offset_b, voxelSize, scale=
 
 
 @log_execution_time
+def inplane_offset(mesh, direction, offset, voxelSize, scale=10.0, decimate=False):
+    """
+    Single offset restricted to the plane perpendicular to `direction`: a
+    Minkowski sum with a disk of radius `offset` (approximated by an oblate
+    ellipsoid of axial radius offset/scale). Returns a new mesh; the input is
+    not modified.
+    """
+    work = mm.copyMesh(mesh)
+    scale_along_axis(work, direction, scale)
+    work = single_offset(work, offset, voxelSize, decimate=decimate)
+    scale_along_axis(work, direction, 1.0 / scale)
+    return work
+
+
+@log_execution_time
 def endmill_closing(mesh, direction, diameter, corner_radius, voxelSize, scale=10.0):
     """
     Morphological closing of `mesh` with the bottom shape of an endmill whose
@@ -233,6 +248,32 @@ def endmill_closing(mesh, direction, diameter, corner_radius, voxelSize, scale=1
     work = single_offset(work, -disk_radius, voxelSize, decimate=False)
     scale_along_axis(work, direction, 1.0 / scale)
     return work
+
+
+@log_execution_time
+def endmill_depth_obstacle(mesh, direction, holder_diameter, length, voxelSize, scale=10.0):
+    """
+    C-space obstacle for the tool holder: the undercut-fixed part grown by
+    the holder radius in the plane perpendicular to the approach direction,
+    then shifted down along the direction by the usable tool length. A tip
+    contact point q collides iff the holder bottom disk at q + length * d
+    intersects the part, i.e. iff q lies inside this obstacle.
+
+    Only the holder BOTTOM disk needs checking: cross sections of the
+    undercut-fixed part only shrink along the approach direction, so if the
+    bottom disk is clear every higher disk is clear too. For the same reason
+    the cylindrical tool body below the holder adds no constraint beyond the
+    tip closing.
+
+    :param mesh: The undercut-fixed mesh (not modified).
+    :param direction: The approach direction (tool axis, pointing away from the part).
+    :param holder_diameter: Diameter of the holder (or shank) above the usable length.
+    :param length: Usable tool length from tip to holder bottom.
+    :return: The obstacle mesh; part faces inside it are deeper than the tool can reach.
+    """
+    obstacle = inplane_offset(mesh, direction, holder_diameter / 2.0, voxelSize, scale=scale)
+    translate(obstacle, direction[0], direction[1], direction[2], distance=-length)
+    return obstacle
 
 
 def endmill_flag_threshold(diameter, corner_radius, tollerance, scale):

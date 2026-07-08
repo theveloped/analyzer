@@ -102,12 +102,16 @@
                 colorAttribute.needsUpdate = true;
             }
 
-            // Load indices from JSON and color the faces
+            // Load indices from JSON and color the faces; "groups" carry
+            // their own colors, plain "faces" render red
             fetch('highlights.json?' + cacheBuster)
               .then(response => response.json())
               .then(data => {
-                  //const trueIndices = data.undercut;
-                  colorFaces(mesh, data.faces, new THREE.Color(0xff0000)); // Example color: red
+                  if (data.groups) {
+                      data.groups.forEach(group => colorFaces(mesh, group.faces, new THREE.Color(group.color)));
+                  } else {
+                      colorFaces(mesh, data.faces, new THREE.Color(0xff0000));
+                  }
               })
               .catch(error => console.error('Error loading indices:', error));
 

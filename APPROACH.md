@@ -158,12 +158,31 @@ stretch → −(D/2−rc) → unstretch      erode by disk
 
 Everything else matches the ball-mill flow: run on the undercut-fixed mesh, project
 the original vertices onto the closed mesh, flag faces whose deviation exceeds the
-threshold, and mask with the accessibility row. Validated end-to-end by
-`test_endmill.py` (synthetic pocket + slot part): a ball flags the pocket floor edges,
-a flat endmill leaves them clean, all tip types flag the too-narrow slot and the
-vertical internal corners — the last only when accessibility was computed with
-`--relax`, since strictly vertical walls otherwise count as undercuts and are masked
-out.
+threshold, and mask with the accessibility row.
+
+**Depth / holder check** (`--length` and `--holder_diameter`): because cross sections
+of the undercut-fixed part only shrink along the approach direction, two things hold:
+
+1. the cylindrical tool body adds no constraint beyond the tip closing (if the tip
+   disk fits at some height, every higher disk fits), and
+2. the holder only needs checking at its **bottom** disk.
+
+So a tip contact point `q` is depth-reachable iff the holder disk clears the part at
+`q + L·d`. The set of blocked points is one construction (`endmill_depth_obstacle`):
+the undercut-fixed part grown by the holder radius **in-plane** (the same scale
+trick), translated down the tool axis by the usable length `L`; part faces inside it
+(mesh boolean `InsideA`) are deeper than the tool can reach. This supersedes the older
+`length` command, which approximated the holder with a spherical offset. The
+`highlights.json` written by `endmill` now carries color groups: red for
+tip-unreachable faces, orange for depth-blocked ones (`index.html` renders both).
+
+Validated end-to-end by `test_endmill.py` (synthetic pocket + slot part): a ball flags
+the pocket floor edges, a flat endmill leaves them clean, all tip types flag the
+too-narrow slot and the vertical internal corners, and with a holder wider than the
+pocket a usable length shorter than the pocket depth flags the floor while a longer
+one clears it. The vertical-corner cases only appear when accessibility was computed
+with `--relax`, since strictly vertical walls otherwise count as undercuts and are
+masked out.
 
 #### `precompute` / `compose` — the cached height-map engine (zmap.py)
 

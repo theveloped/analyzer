@@ -8,7 +8,7 @@ from meshlib import mrmeshnumpy as mn
 
 from utils import has_valid_extension, ensure_directory, ensure_parent_directories
 from server import serve
-from analysis import load_mesh, save_mesh, get_mesh_data, sample_unity_vector_pairs, compute_accessibility, find_combinations_matching_best, relax_accessibility, fix_undercuts, offset_mesh, double_offset, get_distance, get_inside_mesh, get_inside_indices, single_offset, translate, map_result_faces, generate_circle_translations, endmill_closing, endmill_flag_threshold
+from analysis import load_mesh, save_mesh, get_mesh_data, sample_unity_vector_pairs, compute_accessibility, find_combinations_matching_best, relax_accessibility, fix_undercuts, offset_mesh, double_offset, get_distance, get_inside_mesh, get_inside_indices, single_offset, translate, map_result_faces, generate_circle_translations, endmill_closing, endmill_flag_threshold, endmill_depth_obstacle
 
 
 FINE_MESH_FILE = "fine_mesh.obj"
@@ -133,6 +133,8 @@ if __name__ == "__main__":
     parser_endmill.add_argument("--tollerance", help="voxel tollerance", type=float, default=1e-1)
     parser_endmill.add_argument("--diameter", help="endmill diameter", type=float, default=2.0)
     parser_endmill.add_argument("--corner_radius", help="tip corner radius: 0 = flat endmill, diameter/2 = ball nose, in between = radius endmill", type=float, default=0.0)
+    parser_endmill.add_argument("--length", help="usable tool length from tip to holder, omit to skip the depth check", type=float, default=None)
+    parser_endmill.add_argument("--holder_diameter", help="holder diameter above the usable length, defaults to the tool diameter", type=float, default=None)
     parser_endmill.add_argument("--scale", help="anisotropy stretch factor used to emulate the in-plane offset", type=float, default=10.0)
     parser_endmill.add_argument("--serve", help="serve results in browser", action="store_true")
 
@@ -566,7 +568,32 @@ if __name__ == "__main__":
 
         logger.info(f"Endmill D={args.diameter} rc={args.corner_radius} cannot reach {len(unreachable_faces)} faces from direction {args.direction}")
 
-        numpyData = {"faces": unreachable_faces}
+        # Optional depth check: the holder bottom disk at --length above the
+        # tip contact point must clear the part
+        depth_faces = []
+        if args.length is not None:
+            holder_diameter = args.holder_diameter if args.holder_diameter is not None else args.diameter
+            obstacle = endmill_depth_obstacle(undercut_mesh, direction, holder_diameter, args.length, args.tollerance, scale=args.scale)
+
+            # Map the results
+            inside_mesh = get_inside_mesh(mesh, obstacle)
+            depth_faces = map_result_faces(mesh, inside_mesh, faces, max_range=args.tollerance)
+
+            # Keep only the faces that are accessible
+            depth_faces = depth_faces[accessibility[args.direction, depth_faces]]
+            depth_faces = depth_faces.tolist()
+
+            logger.info(f"Holder D={holder_diameter} at length {args.length} blocks {len(depth_faces)} faces from direction {args.direction}")
+
+        # Tip violations drawn last so red wins where both apply
+        depth_only_faces = sorted(set(depth_faces) - set(unreachable_faces))
+        numpyData = {
+            "faces": sorted(set(unreachable_faces) | set(depth_faces)),
+            "groups": [
+                {"color": "#ff9900", "faces": depth_only_faces},
+                {"color": "#ff2222", "faces": unreachable_faces},
+            ],
+        }
         highlight_path = os.path.join(args.directory, HIGHLIGHT_FILE)
         with open(highlight_path, "w") as f:
             json.dump(numpyData, f)

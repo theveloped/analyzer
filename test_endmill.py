@@ -96,17 +96,16 @@ def build_regions(verts, faces):
     }
 
 
-# tool tip type -> corner radius, region -> should be flagged
-# (the bull corner radius is chosen so its fillet band is wider than a face)
+# case name -> (corner radius, extra CLI args, region -> should be flagged)
+# The bull corner radius is chosen so its fillet band is wider than a face.
+# The pocket is 5 deep and 8 wide: a holder of diameter 10 cannot enter it,
+# so a usable length of 4 blocks the floor while a length of 6 clears it.
 CASES = {
-    "ball": 2.0,
-    "bull": 1.0,
-    "flat": 0.0,
-}
-EXPECTATIONS = {
-    "ball": {"pocket floor edge": True, "pocket floor center": False, "pocket vertical corner": True, "slot floor": True, "top face": False},
-    "bull": {"pocket floor edge": True, "pocket floor center": False, "pocket vertical corner": True, "slot floor": True, "top face": False},
-    "flat": {"pocket floor edge": False, "pocket floor center": False, "pocket vertical corner": True, "slot floor": True, "top face": False},
+    "ball": (2.0, [], {"pocket floor edge": True, "pocket floor center": False, "pocket vertical corner": True, "slot floor": True, "top face": False}),
+    "bull": (1.0, [], {"pocket floor edge": True, "pocket floor center": False, "pocket vertical corner": True, "slot floor": True, "top face": False}),
+    "flat": (0.0, [], {"pocket floor edge": False, "pocket floor center": False, "pocket vertical corner": True, "slot floor": True, "top face": False}),
+    "flat short": (0.0, ["--length", "4", "--holder_diameter", "10"], {"pocket floor edge": True, "pocket floor center": True, "pocket vertical corner": True, "slot floor": True, "top face": False}),
+    "flat long": (0.0, ["--length", "6", "--holder_diameter", "10"], {"pocket floor edge": False, "pocket floor center": False, "pocket vertical corner": True, "slot floor": True, "top face": False}),
 }
 
 
@@ -116,11 +115,11 @@ def main():
         verts, faces = prepare_workdir(workdir)
         regions = build_regions(verts, faces)
 
-        for name, corner_radius in CASES.items():
+        for name, (corner_radius, extra_args, expectations) in CASES.items():
             cmd = [
                 sys.executable, "main.py", "endmill", workdir, "0",
                 "--diameter", "4.0", "--corner_radius", str(corner_radius), "--tollerance", "0.1",
-            ]
+            ] + extra_args
             print(f"=== {name} (corner radius {corner_radius}) ===")
             res = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=1200)
             if res.returncode != 0:
@@ -131,7 +130,7 @@ def main():
             with open(os.path.join(workdir, "highlights.json")) as f:
                 flagged = set(json.load(f)["faces"])
 
-            for region, should_flag in EXPECTATIONS[name].items():
+            for region, should_flag in expectations.items():
                 idx = regions[region]
                 frac = np.mean([i in flagged for i in idx])
                 ok = frac > 0.5 if should_flag else frac < 0.2
