@@ -91,9 +91,9 @@ def render_heightmap(mesh, direction, pixel):
 
 def project_vertices(verts, frame):
     """
-    Project vertices into map coordinates. Returns (ix, iy, height) where
-    ix/iy are integer pixel indices (clipped to the map) and height is the
-    vertex coordinate along the approach direction axis.
+    Project vertices into map coordinates. Returns (fx, fy, height) where
+    fx/fy are continuous pixel coordinates (pixel i covers [i, i+1)) and
+    height is the vertex coordinate along the approach direction axis.
     """
     rel = verts - frame["origin"]
     x_axis = frame["x_axis"]
@@ -102,19 +102,16 @@ def project_vertices(verts, frame):
     fx = rel @ x_axis / (x_axis @ x_axis)
     fy = rel @ y_axis / (y_axis @ y_axis)
     height = rel @ frame["direction"]
-
-    ix = np.floor(fx).astype(int)
-    iy = np.floor(fy).astype(int)
-    return ix, iy, height
+    return fx, fy, height
 
 
-def sample_map(map2d, ix, iy):
-    ix = np.clip(ix, 0, map2d.shape[1] - 1)
-    iy = np.clip(iy, 0, map2d.shape[0] - 1)
+def sample_map(map2d, fx, fy):
+    ix = np.clip(np.floor(fx).astype(int), 0, map2d.shape[1] - 1)
+    iy = np.clip(np.floor(fy).astype(int), 0, map2d.shape[0] - 1)
     return map2d[iy, ix]
 
 
-def euclidean_gap(closed, ix, iy, height, pixel, window_px):
+def euclidean_gap(closed, fx, fy, height, pixel, window_px):
     """
     Euclidean distance from each vertex to the machined solid described by the
     closed height map (material below closed(x, y), including the vertical
@@ -124,21 +121,61 @@ def euclidean_gap(closed, ix, iy, height, pixel, window_px):
     whose machined surface passes below the vertex count only laterally, which
     is what keeps swept vertical (and near-vertical draft) walls unflagged.
 
-    Gaps up to window_px * pixel are exact to pixel resolution; larger gaps
-    are lower bounds - fine for thresholding at tolerances within the window.
+    Lateral distances are measured from the vertex to the nearest EDGE of each
+    pixel column (columns are pixel-sized squares, not points), so a vertex
+    exactly on a machined face reads ~0 no matter which column it falls in.
+
+    The window must cover the tool's lateral scale (tip_gap passes at least
+    the tool radius): a vertex whose whole window is unmachined would
+    otherwise fall back to the vertical distance to the surface above it -
+    the full wall depth - instead of the small lateral distance to the
+    machined boundary. Beyond the window, gaps are lower bounds
+    (>= window_px * pixel), fine for thresholding and display saturation.
+
+    Offsets are visited in rings of increasing minimal lateral distance and
+    vertices leave the search once no farther column can improve them, so
+    flat/machined regions (the vast majority) cost only the first few rings.
     """
-    ix = np.clip(ix, 0, closed.shape[1] - 1)
-    iy = np.clip(iy, 0, closed.shape[0] - 1)
+    h_map, w_map = closed.shape
+    fx = np.asarray(fx, dtype=np.float64)
+    fy = np.asarray(fy, dtype=np.float64)
+    height = np.asarray(height, dtype=np.float64)
+    ix = np.clip(np.floor(fx).astype(int), 0, w_map - 1)
+    iy = np.clip(np.floor(fy).astype(int), 0, h_map - 1)
+
+    # offsets sorted by the smallest lateral distance any vertex in the
+    # center cell can have to the offset cell
+    offsets = sorted(
+        (max(abs(dx) - 1, 0) ** 2 + max(abs(dy) - 1, 0) ** 2, dx, dy)
+        for dy in range(-window_px, window_px + 1)
+        for dx in range(-window_px, window_px + 1)
+    )
 
     best = np.full(height.shape, np.inf)
-    for dy in range(-window_px, window_px + 1):
-        qy = np.clip(iy + dy, 0, closed.shape[0] - 1)
-        for dx in range(-window_px, window_px + 1):
-            qx = np.clip(ix + dx, 0, closed.shape[1] - 1)
-            dz = closed[qy, qx] - height
-            np.maximum(dz, 0.0, out=dz)
-            d2 = (dx * dx + dy * dy) * pixel * pixel + dz * dz
-            np.minimum(best, d2, out=best)
+    active = np.arange(len(best))
+    afx, afy, ah, aix, aiy = fx, fy, height, ix, iy
+    for lat_min2_px, dx, dy in offsets:
+        lat_min2 = lat_min2_px * pixel * pixel
+        resolved = best[active] <= lat_min2
+        if resolved.any():
+            keep = ~resolved
+            active = active[keep]
+            if len(active) == 0:
+                break
+            afx, afy, ah = afx[keep], afy[keep], ah[keep]
+            aix, aiy = aix[keep], aiy[keep]
+
+        qx = np.clip(aix + dx, 0, w_map - 1)
+        qy = np.clip(aiy + dy, 0, h_map - 1)
+        lx = np.maximum(np.abs(afx - (qx + 0.5)) - 0.5, 0.0) * pixel
+        ly = np.maximum(np.abs(afy - (qy + 0.5)) - 0.5, 0.0) * pixel
+        dz = closed[qy, qx] - ah
+        np.maximum(dz, 0.0, out=dz)
+        d2 = lx * lx + ly * ly + dz * dz
+
+        cur = best[active]
+        np.minimum(cur, d2, out=cur)
+        best[active] = cur
     return np.sqrt(best)
 
 
@@ -203,36 +240,31 @@ def close_heightmap(heights, footprint, profile):
 
 
 @log_execution_time
-def clearance_heightmap(heights, radius, pixel, max_footprint=32):
+def clearance_heightmap(heights, radius, pixel):
     """
     Height of the tallest obstruction within `radius` of each pixel: a flat
-    grayscale dilation. A cylinder of this radius whose bottom sits at height
-    h above a vertex collides iff clearance(vertex) - height(vertex) > h.
+    grayscale dilation with a disk. A cylinder of this radius whose bottom
+    sits at height h above a vertex collides iff
+    clearance(vertex) - height(vertex) > h.
 
-    Holder radii are typically much larger than the pixel size and a direct
-    footprint would explode, so the map is max-pooled first until the
-    footprint radius fits in `max_footprint` pixels. Pooling is conservative:
-    obstructions are rounded up and outward by at most one pooled pixel.
+    The disk is decomposed into one horizontal chord per row offset, each a
+    1D running-max filter, so the dilation runs exactly at full resolution
+    for any radius (no pooling, no conservative rounding) in
+    O(radius/pixel) linear passes.
     """
-    pool = int(np.ceil(radius / (max_footprint * pixel)))
+    n = int(np.floor(radius / pixel + 1e-9))
     work = heights.astype(np.float64)
+    out = np.full_like(work, FREE_SPACE)
 
-    if pool > 1:
-        pad_y = (-work.shape[0]) % pool
-        pad_x = (-work.shape[1]) % pool
-        work = np.pad(work, ((0, pad_y), (0, pad_x)), constant_values=FREE_SPACE)
-        work = work.reshape(work.shape[0] // pool, pool, work.shape[1] // pool, pool).max(axis=(1, 3))
-
-    eff_pixel = pixel * pool
-    # grow the radius by the pooled cell half-diagonal to stay conservative
-    eff_radius = radius + (0.71 * eff_pixel if pool > 1 else 0.0)
-    footprint = disk_footprint(eff_radius, eff_pixel)
-    dilated = ndimage.grey_dilation(work, footprint=footprint, mode="constant", cval=FREE_SPACE)
-
-    if pool > 1:
-        dilated = np.repeat(np.repeat(dilated, pool, axis=0), pool, axis=1)
-        dilated = dilated[: heights.shape[0], : heights.shape[1]]
-    return dilated.astype(np.float32)
+    for dy in range(-n, n + 1):
+        chord = np.sqrt(max(radius * radius - (dy * pixel) ** 2, 0.0)) / pixel
+        size = 2 * int(np.floor(chord + 1e-9)) + 1
+        row_max = ndimage.maximum_filter1d(work, size=size, axis=1, mode="constant", cval=FREE_SPACE)
+        if dy >= 0:
+            np.maximum(out[: out.shape[0] - dy], row_max[dy:], out=out[: out.shape[0] - dy])
+        else:
+            np.maximum(out[-dy:], row_max[:dy], out=out[-dy:])
+    return out.astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +295,7 @@ class DirectionCache:
     compose_unreachable works on either cache.
     """
 
-    VERSION = 2  # gap metric: windowed Euclidean distance to the machined solid
+    VERSION = 3  # gap window covers the tool radius; exact chord-decomposed clearance
 
     def __init__(self, workdir, direction_index, verts=None, faces=None, pixel=0.1,
                  window=0.3, engine="zmap", scale=10.0):
@@ -320,7 +352,7 @@ class DirectionCache:
             }
             self.heights = self._fields["heights"]
             if verts is not None:
-                self._ix, self._iy, self._vheight = project_vertices(verts, self.frame)
+                self._fx, self._fy, self._vheight = project_vertices(verts, self.frame)
 
     def _save(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -342,9 +374,9 @@ class DirectionCache:
         return self._undercut_mesh
 
     def _vertex_samples(self):
-        if not hasattr(self, "_ix"):
+        if not hasattr(self, "_fx"):
             raise ValueError("Vertex projections need verts passed to the constructor")
-        return self._ix, self._iy, self._vheight
+        return self._fx, self._fy, self._vheight
 
     def tip_gap(self, diameter, corner_radius):
         """
@@ -359,9 +391,17 @@ class DirectionCache:
                 pixel = self.frame["pixel"]
                 footprint, profile = tip_profile(diameter, corner_radius, pixel)
                 closed = close_heightmap(self.heights, footprint, profile)
-                ix, iy, vheight = self._vertex_samples()
-                window_px = max(2, int(np.ceil(self.window / pixel)))
-                gap = euclidean_gap(closed, ix, iy, vheight, pixel, window_px)
+                fx, fy, vheight = self._vertex_samples()
+                # the window must cover the tool's lateral scale, otherwise
+                # wall vertices near unreachable pockets read the vertical
+                # distance to the surface above instead of the small lateral
+                # distance to the machined boundary
+                window_px = max(
+                    2,
+                    int(np.ceil(self.window / pixel)),
+                    int(np.ceil(diameter / 2.0 / pixel)) + 2,
+                )
+                gap = euclidean_gap(closed, fx, fy, vheight, pixel, window_px)
             else:
                 from analysis import endmill_closing, get_distance
                 closed_mesh = endmill_closing(
@@ -384,8 +424,8 @@ class DirectionCache:
             logger.debug(f"Computing clearance field {key} for direction {self.direction_index} ({self.engine})")
             if self.engine == "zmap":
                 dilated = clearance_heightmap(self.heights, radius, self.frame["pixel"])
-                ix, iy, vheight = self._vertex_samples()
-                clear = sample_map(dilated, ix, iy) - vheight
+                fx, fy, vheight = self._vertex_samples()
+                clear = sample_map(dilated, fx, fy) - vheight
             else:
                 # grow the undercut-fixed mesh in-plane by the cylinder
                 # radius (3D, exact), then read the grown volume's top
@@ -397,8 +437,8 @@ class DirectionCache:
                 work = single_offset(work, radius, self.pixel, decimate=False)
                 scale_along_axis(work, self.direction, 1.0 / self.scale)
                 grown_heights, frame = render_heightmap(work, self.direction, self.pixel)
-                ix, iy, vheight = project_vertices(self.verts, frame)
-                clear = sample_map(grown_heights, ix, iy) - vheight
+                fx, fy, vheight = project_vertices(self.verts, frame)
+                clear = sample_map(grown_heights, fx, fy) - vheight
             self._fields[key] = clear.astype(np.float32)
             self._save()
         return self._fields[key]

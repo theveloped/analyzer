@@ -22,7 +22,7 @@ import time
 
 import numpy as np
 
-from test_endmill import CASES, EXPECTATIONS, build_regions, prepare_workdir
+from test_endmill import CASES, build_regions, prepare_workdir
 from zmap import DirectionCache, compose_unreachable
 
 REPO = os.path.dirname(os.path.abspath(__file__))
@@ -47,13 +47,19 @@ def main():
         regions = build_regions(verts, faces)
         accessibility = np.load(os.path.join(workdir, "accessibility.npy"))
 
-        # --- tip fields through the CLI (same expectations as the 3D engine)
-        for name, corner_radius in CASES.items():
+        # --- tip fields through the CLI (same expectations as the 3D engine);
+        # the voxel engine's --length/--holder_diameter cases translate to
+        # compose's --stickout/--holder (one cylinder from the tip)
+        for name, (corner_radius, extra_args, expectations) in CASES.items():
             cmd = [
                 sys.executable, "main.py", "compose", workdir, "0",
                 "--diameter", "4.0", "--corner_radius", str(corner_radius),
                 "--pixel", str(PIXEL), "--tollerance", "0.1",
             ]
+            if "--length" in extra_args:
+                stickout = extra_args[extra_args.index("--length") + 1]
+                holder_radius = float(extra_args[extra_args.index("--holder_diameter") + 1]) / 2.0
+                cmd += ["--stickout", stickout, "--holder", f"{holder_radius:g}:0"]
             t0 = time.time()
             res = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=600)
             print(f"=== {name} (corner radius {corner_radius}) via CLI [{time.time() - t0:.1f}s] ===")
@@ -65,7 +71,7 @@ def main():
             with open(os.path.join(workdir, "highlights.json")) as f:
                 flagged = set(json.load(f)["faces"])
 
-            for region, should_flag in EXPECTATIONS[name].items():
+            for region, should_flag in expectations.items():
                 idx = regions[region]
                 frac = np.mean([i in flagged for i in idx])
                 ok = frac > 0.5 if should_flag else frac < 0.2
@@ -81,25 +87,34 @@ def main():
         probes = np.array([
             [0.0, -3.0, -5.0],   # floor, 1.0 from the wall: inside the ball fillet only
             [0.0, -3.9, -5.0],   # floor, 0.1 from the wall: inside every fillet
-            [-3.9, -3.9, -5.0],  # floor at the vertical corner: nothing reaches below the rim
+            [-3.9, -3.9, -5.0],  # floor at the vertical corner: inside the corner wedge
             [0.0, -4.0, -2.5],   # mid-height on the vertical wall: swept by every tool side
         ])
-        ix, iy, ph = project_vertices(probes, cache.frame)
+        fx, fy, ph = project_vertices(probes, cache.frame)
 
         def fillet_gap(rc, delta):
             if rc <= 0 or delta >= rc:
                 return 0.0
             return float(np.hypot(delta - rc, rc) - rc)
 
-        window_px = max(2, int(np.ceil(cache.window / PIXEL)))
+        # the window covers the tool radius so gaps are true distances to the
+        # nearest tool-reachable surface even deep inside unreachable wedges:
+        # the corner probe reads its LATERAL distance to the machined arc
+        # (sqrt(2)*3.9 - (sqrt(2) - 1)*rc - 2 for the wedge geometry, always
+        # well below the pocket depth), not the vertical distance to the rim
+        window_px = max(2, int(np.ceil(2.0 / PIXEL)) + 2)
         for name, corner_radius in [("ball", 2.0), ("bull", 1.0), ("flat", 0.0)]:
             footprint, profile = tip_profile(4.0, corner_radius, PIXEL)
             closed = close_heightmap(cache.heights, footprint, profile)
-            gaps = euclidean_gap(closed, ix, iy, ph, PIXEL, window_px)
-            expected = [fillet_gap(corner_radius, 1.0), fillet_gap(corner_radius, 0.1), 4.5, 0.0]
+            gaps = euclidean_gap(closed, fx, fy, ph, PIXEL, window_px)
+            expected = [fillet_gap(corner_radius, 1.0), fillet_gap(corner_radius, 0.1), None, 0.0]
             for label, gap, want in zip(["floor d=1.0", "floor d=0.1", "corner", "wall mid"], gaps, expected):
-                ok = gap > want - 0.15 if label == "corner" else abs(gap - want) < 0.15
-                check(f"gap/{name}/{label}", ok, f"gap {gap:.3f} expected {'>' if label == 'corner' else ''}{want:.3f}")
+                if label == "corner":
+                    ok = 0.2 < gap < 1.6
+                    check(f"gap/{name}/{label}", ok, f"gap {gap:.3f} expected in (0.2, 1.6): wedge distance, far below the pocket depth")
+                else:
+                    ok = abs(gap - want) < 0.15
+                    check(f"gap/{name}/{label}", ok, f"gap {gap:.3f} expected {want:.3f}")
 
         # --- holder clearance and stickout sweep (pure numpy on cached fields)
         print("=== holder clearance (cylinder radius 6 from the tip) ===")

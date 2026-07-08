@@ -225,12 +225,26 @@ solid the closed height map describes (material below the closed surface, includ
 the vertical sheets between adjacent columns): `euclidean_gap` takes, over a window
 of nearby pixels, `min sqrt(lateral² + max(closed − h, 0)²)`. The clamp is what makes
 90° and near-90° draft walls behave: a wall vertex next to a column whose machined
-surface passes below it counts only the sub-pixel lateral distance, so walls swept by
-the tool side never flag — critical for 2D-milled parts (exact 90° walls) and molds
-(89–91° draft). Gaps up to the `--window` parameter (default 0.3) are exact to pixel
-resolution; larger gaps are reported as lower bounds, which is all thresholding
-needs. Holder clearance maps are max-pooled before dilation (conservative) to keep
-large-radius footprints cheap.
+surface passes below it counts only the lateral distance — measured to the nearest
+*edge* of the column, so a vertex exactly on a machined face reads ~0 no matter which
+pixel it falls in — and walls swept by the tool side never flag. Critical for
+2D-milled parts (exact 90° walls) and molds (89–91° draft).
+
+The window always covers at least the tool radius (plus the `--window` accuracy
+floor): a smaller window would make wall vertices near unreachable wedges (vertical
+corners, too-narrow slots) miss every machined column and fall back to the *vertical*
+distance to the surface above them — painting whole walls with depth gradients
+instead of the small lateral distance to the machined boundary. Offsets are visited
+in rings of increasing lateral distance with per-vertex early exit, so the larger
+window costs little (machined regions resolve in the first rings). Beyond the window,
+gaps are lower bounds, which is all thresholding and display saturation need.
+
+**Clearance metric.** Holder clearance maps are exact flat disk dilations at full
+resolution: the disk is decomposed into one 1D horizontal running-max per row offset
+(each row covers a chord), `O(radius/pixel)` linear passes with no big 2D footprint.
+An earlier max-pooled implementation smeared tall edges outward by up to a pooled
+block — isolated pixels on boss tops and stripe bands inside bores read the full
+obstruction height — which showed up as speckle in the required-stickout heatmap.
 
 **The voxel engine behind the same cache.** `DirectionCache(engine="voxel")` fills
 the very same per-vertex fields with the 3D pipeline instead — tip gaps from
