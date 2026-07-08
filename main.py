@@ -120,6 +120,12 @@ if __name__ == "__main__":
     parser_compose.add_argument("--window", help="gap accuracy window: gaps up to this are Euclidean-exact (zmap engine)", type=float, default=0.3)
     parser_compose.add_argument("--serve", help="serve results in browser", action="store_true")
 
+    # Create the parser for the "view" command
+    parser_view = subparsers.add_parser("view", help="interactive viewer over all cached analysis fields")
+    parser_view.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_view.add_argument("--timeout", help="seconds to keep the server alive", type=float, default=600.0)
+    parser_view.add_argument("--port", help="port to serve on", type=int, default=8080)
+
     # Create the parser for the "endmill" command
     parser_endmill = subparsers.add_parser("endmill", help="generic endmill tip accessibility (ball, flat or radius end)")
     parser_endmill.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
@@ -448,6 +454,16 @@ if __name__ == "__main__":
             directory = os.path.dirname(obj_path)
             serve(index_path, directory, timeout=15.0)
         
+    elif args.command == "view":
+        logger.info("Exporting cached fields and serving the interactive viewer")
+
+        from viewer import export_viewer_bundle
+        export_viewer_bundle(args.directory)
+
+        index_path = os.path.abspath("./viewer.html")
+        directory = os.path.abspath(args.directory)
+        serve(index_path, directory, port=args.port, timeout=args.timeout)
+
     elif args.command == "precompute":
         logger.info("Precompute height maps and tool fields")
         from zmap import DirectionCache

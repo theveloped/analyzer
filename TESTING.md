@@ -85,6 +85,23 @@ reports coverage per stickout without recomputing anything. Lengths are free:
 the clearance fields already encode the tallest obstruction within each
 radius, so all 45 catalog lengths are thresholds over the same field.
 
+## Interactive viewer
+
+Everything the caches know can be inspected interactively:
+
+```bash
+python main.py view testpart_42            # exports <dir>/viewer/ and serves it
+```
+
+Views: unified verdict (reachable / tip-blocked / holder-blocked /
+inaccessible), accessibility, tip gap heatmap, required-stickout heatmap,
+engine diff (zmap vs voxel, needs the same tip precomputed with both
+engines), and the last CLI highlights.json. Tolerance, stickout and the
+holder stack are recomputed live in the browser from the cached per-vertex
+fields — no Python round trips — and clicking a face prints its exact gap /
+clearance / accessibility values for step-by-step debugging. The bundle is
+self-contained (three.js is vendored into it), so it also works offline.
+
 Catalog math: of the 16 x 13 nose-radius/diameter grid, ~156 combinations are
 valid (rc <= D/2). Per direction that is ~156 tip closings at ~8 s each
 (pixel 0.1 on a 100 mm part) ~ 20 min once, plus ~1 s per clearance radius —
