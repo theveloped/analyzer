@@ -403,6 +403,11 @@
         try { highlights = (await (await fetch('highlights.json')).json()).faces; } catch (e) { highlights = null; }
         fillSources();
         fillTips();
+        if (!manifest.sources.length) {
+            $('stats').textContent = '⚠ no cached fields found — run:\npython main.py precompute <dir> --directions <i> --tips D:rc … --clearances r …\nthen restart the viewer';
+        } else if (manifest.sources.every(s => !s.tips.length)) {
+            $('stats').textContent = '⚠ direction caches exist but hold no tip fields — precompute with --tips (e.g. --tips 6:0 6:3)';
+        }
 
         new THREE.OBJLoader().load('fine_mesh.obj?v=' + Date.now(), object => {
             object.traverse(child => {
