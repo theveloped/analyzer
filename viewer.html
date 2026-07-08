@@ -267,6 +267,14 @@
         return access ? (f => !!access[f]) : null;
     }
 
+    // gap threshold for near-90° walls: reachable walls carry ~1 pixel of
+    // height-map quantization noise, unreachable ones (e.g. inside a slot
+    // narrower than the tool) sit whole millimetres inside the closed solid,
+    // so a few pixels cleanly separates them
+    function wallThreshold(src, tol) {
+        return Math.max(tol, 2.5 * (src.pixel || tol));
+    }
+
     // --------------------------------------------------------- view modes
     async function update() {
         if (!mesh) return;
@@ -292,18 +300,24 @@
                 const gap = await vertexGap(src, tip);
                 const keep = await accessKeep(src);
                 const vals = faceValues(gap, keep);
+                const angles = faceAngles(src);
+                const wallTol = parseFloat($('walltol').value) || 0;
+                const wallGapTol = wallThreshold(src, tol);
+                const thr = f => (Math.abs(angles[f] - 90) <= wallTol ? wallGapTol : tol);
                 const auto = Math.max(percentile(vals, 0.98), tol * 3, 0.2);
                 const max = parseFloat($('scale').value) || auto;
                 $('scale').placeholder = 'auto ' + auto.toFixed(2);
                 paintFaces(f => {
                     if (isNaN(vals[f])) return COL.inaccess;
-                    return vals[f] <= tol ? COL.below : rampColor((vals[f] - tol) / (max - tol));
+                    const t = thr(f);
+                    return vals[f] <= t ? COL.below : rampColor((vals[f] - t) / (max - t));
                 });
-                legend([[COL.below, `gap ≤ tolerance (tip reaches)`], [rampColor(0.001), `just above tolerance`], [rampColor(1), `gap ≥ ${max.toFixed(2)} mm`], [COL.inaccess, 'inaccessible (greyed)']]);
+                legend([[COL.below, `gap ≤ threshold (tool reaches)`], [rampColor(0.001), `just above threshold`], [rampColor(1), `gap ≥ ${max.toFixed(2)} mm`], [COL.inaccess, 'inaccessible (greyed)']]);
                 let n = 0;
                 for (let f = 0; f < faceCount; f++)
-                    if (!isNaN(vals[f]) && faceBlocked(f, v => gap[v] > tol, rule)) n++;
-                $('stats').textContent = `${n} accessible faces blocked by the tip at tolerance ${tol}`;
+                    if (!isNaN(vals[f]) && faceBlocked(f, v => gap[v] > thr(f), rule)) n++;
+                $('stats').textContent = `${n} accessible faces blocked at tolerance ${tol}` +
+                    ` (walls thresholded at ${wallGapTol.toFixed(2)} to absorb pixel noise)`;
 
             } else if (mode === 'class') {
                 const angles = faceAngles(src);
@@ -381,13 +395,17 @@
                 const angles = faceAngles(src);
                 const wallTol = parseFloat($('walltol').value) || 0;
                 const sideMill = $('sidemill').checked;
-                let nTip = 0, nHold = 0, nOk = 0, nInv = 0, nSide = 0;
+                const wallGapTol = wallThreshold(src, tol);
+                let nTip = 0, nWall = 0, nHold = 0, nOk = 0, nInv = 0, nSide = 0;
                 paintFaces(f => {
                     if (access && !access[f]) { nInv++; return COL.inaccess; }
                     const holderBlocked = useHolder && faceBlocked(f, v => minStick[v] > stickoutVal + tol, rule);
                     if (sideMill && Math.abs(angles[f] - 90) <= wallTol) {
-                        // near-vertical wall: finished by the tool flank, so the
-                        // (bottom-)gap field does not apply — only the holder does
+                        // near-vertical wall: finished by the tool flank. The gap
+                        // field still decides whether the flank can get there at
+                        // all (a slot narrower than the tool fills up in the
+                        // closing), just with a pixel-noise-proof threshold.
+                        if (faceBlocked(f, v => gap[v] > wallGapTol, rule)) { nWall++; return COL.tip; }
                         if (holderBlocked) { nHold++; return COL.holder; }
                         nSide++; return COL.side;
                     }
@@ -395,11 +413,12 @@
                     if (holderBlocked) { nHold++; return COL.holder; }
                     nOk++; return COL.ok;
                 });
-                const entries = [[COL.ok, 'reachable (tool bottom)'], [COL.tip, 'blocked by tool tip'], [COL.inaccess, 'not accessible (undercut)']];
+                const entries = [[COL.ok, 'reachable (tool bottom)'], [COL.tip, 'blocked — tool cannot reach'], [COL.inaccess, 'not accessible (undercut)']];
                 if (sideMill) entries.splice(1, 0, [COL.side, 'wall — side-milled']);
                 if (useHolder) entries.splice(entries.length - 1, 0, [COL.holder, 'blocked by holder / stickout']);
                 legend(entries);
-                $('stats').textContent = `reachable ${nOk}` + (sideMill ? ` · side-milled ${nSide}` : '') + ` · tip ${nTip}` +
+                $('stats').textContent = `reachable ${nOk}` + (sideMill ? ` · side-milled ${nSide}` : '') +
+                    ` · blocked ${nTip + nWall}` + (sideMill && nWall ? ` (${nWall} walls)` : '') +
                     (useHolder ? ` · holder ${nHold}` : '') + ` · inaccessible ${nInv}` +
                     (useHolder && vertexMinStickout.approx ? '\n⚠ holder check is vertex-centred (no sreq fields for this tip)' : '') +
                     (!useHolder && holderCylinders().length ? '\n(enter a stickout to apply the holder)' : '');
