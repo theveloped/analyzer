@@ -68,7 +68,11 @@ def main():
             for region, should_flag in EXPECTATIONS[name].items():
                 idx = regions[region]
                 frac = np.mean([i in flagged for i in idx])
-                ok = frac > 0.5 if should_flag else frac < 0.2
+                # bull rc=1 leaves a 0.54 mm blocked band at the floor edge -
+                # thinner than the 0.8 mm test faces, so only a partial face
+                # row can flag (the exact-gap probes cover the band itself)
+                lo = 0.2 if (name, region) == ("bull", "pocket floor edge") else 0.5
+                ok = frac > lo if should_flag else frac < 0.2
                 check(f"{name}/{region}", ok, f"flagged {frac * 100:.1f}% (expected {'flagged' if should_flag else 'clear'})")
 
         # --- Euclidean gaps against theory at deterministic probe points:
@@ -76,7 +80,7 @@ def main():
         # arc a tip of corner radius rc leaves: hypot(delta - rc, rc) - rc
         print("=== Euclidean gaps on the pocket floor ===")
         cache = DirectionCache(workdir, 0, verts=verts, faces=faces, pixel=PIXEL)
-        from zmap import close_heightmap, euclidean_gap, project_vertices
+        from zmap import close_heightmap, euclidean_gap, project_vertices_float
 
         probes = np.array([
             [0.0, -3.0, -5.0],   # floor, 1.0 from the wall: inside the ball fillet only
@@ -84,7 +88,7 @@ def main():
             [-3.9, -3.9, -5.0],  # floor at the vertical corner: nothing reaches below the rim
             [0.0, -4.0, -2.5],   # mid-height on the vertical wall: swept by every tool side
         ])
-        ix, iy, ph = project_vertices(probes, cache.frame)
+        fx, fy, ph = project_vertices_float(probes, cache.frame)
 
         def fillet_gap(rc, delta):
             if rc <= 0 or delta >= rc:
@@ -94,7 +98,7 @@ def main():
         window_px = max(2, int(np.ceil(cache.window / PIXEL)))
         for name, corner_radius in [("ball", 2.0), ("bull", 1.0), ("flat", 0.0)]:
             closed = close_heightmap(cache.heights, 4.0, corner_radius, PIXEL)
-            gaps = euclidean_gap(closed, ix, iy, ph, PIXEL, window_px)
+            gaps = euclidean_gap(closed, fx, fy, ph, PIXEL, window_px)
             expected = [fillet_gap(corner_radius, 1.0), fillet_gap(corner_radius, 0.1), 4.5, 0.0]
             for label, gap, want in zip(["floor d=1.0", "floor d=0.1", "corner", "wall mid"], gaps, expected):
                 ok = gap > want - 0.15 if label == "corner" else abs(gap - want) < 0.15

@@ -89,11 +89,11 @@ def render_heightmap(mesh, direction, pixel):
     return heights, frame
 
 
-def project_vertices(verts, frame):
+def project_vertices_float(verts, frame):
     """
-    Project vertices into map coordinates. Returns (ix, iy, height) where
-    ix/iy are integer pixel indices (clipped to the map) and height is the
-    vertex coordinate along the approach direction axis.
+    Project vertices into fractional map coordinates. Returns (fx, fy, height)
+    where fx/fy are continuous pixel coordinates (pixel i spans [i, i+1)) and
+    height is the vertex coordinate along the approach direction axis.
     """
     rel = verts - frame["origin"]
     x_axis = frame["x_axis"]
@@ -102,10 +102,26 @@ def project_vertices(verts, frame):
     fx = rel @ x_axis / (x_axis @ x_axis)
     fy = rel @ y_axis / (y_axis @ y_axis)
     height = rel @ frame["direction"]
+    return fx, fy, height
 
-    ix = np.floor(fx).astype(int)
-    iy = np.floor(fy).astype(int)
-    return ix, iy, height
+
+def project_vertices(verts, frame):
+    """Integer-pixel variant of project_vertices_float."""
+    fx, fy, height = project_vertices_float(verts, frame)
+    return np.floor(fx).astype(int), np.floor(fy).astype(int), height
+
+
+def bilinear_sample(map2d, fx, fy):
+    """Bilinear interpolation of a map at fractional pixel coordinates
+    (values live at pixel centers i + 0.5)."""
+    gx = np.clip(fx - 0.5, 0.0, map2d.shape[1] - 1.000001)
+    gy = np.clip(fy - 0.5, 0.0, map2d.shape[0] - 1.000001)
+    x0 = np.floor(gx).astype(int)
+    y0 = np.floor(gy).astype(int)
+    wx = gx - x0
+    wy = gy - y0
+    return ((map2d[y0, x0] * (1 - wx) + map2d[y0, x0 + 1] * wx) * (1 - wy)
+            + (map2d[y0 + 1, x0] * (1 - wx) + map2d[y0 + 1, x0 + 1] * wx) * wy)
 
 
 def sample_map(map2d, ix, iy):
@@ -114,7 +130,7 @@ def sample_map(map2d, ix, iy):
     return map2d[iy, ix]
 
 
-def euclidean_gap(closed, ix, iy, height, pixel, window_px):
+def euclidean_gap(closed, fx, fy, height, pixel, window_px):
     """
     Euclidean distance from each vertex to the machined solid described by the
     closed height map (material below closed(x, y), including the vertical
@@ -124,20 +140,34 @@ def euclidean_gap(closed, ix, iy, height, pixel, window_px):
     whose machined surface passes below the vertex count only laterally, which
     is what keeps swept vertical (and near-vertical draft) walls unflagged.
 
+    Takes FRACTIONAL pixel coordinates: lateral distances are measured from
+    the true vertex position, and the vertex's own column is additionally
+    sampled bilinearly - on smooth sloped/curved surfaces this removes the
+    +-(slope x pixel) quantization noise that otherwise speckles verdicts
+    whose true gap sits near the threshold.
+
     Gaps up to window_px * pixel are exact to pixel resolution; larger gaps
     are lower bounds - fine for thresholding at tolerances within the window.
     """
-    ix = np.clip(ix, 0, closed.shape[1] - 1)
-    iy = np.clip(iy, 0, closed.shape[0] - 1)
+    ix = np.clip(np.floor(fx).astype(int), 0, closed.shape[1] - 1)
+    iy = np.clip(np.floor(fy).astype(int), 0, closed.shape[0] - 1)
 
-    best = np.full(height.shape, np.inf)
+    # bilinear center candidate (exact on smooth surfaces)
+    dz0 = bilinear_sample(closed, fx, fy) - height
+    np.maximum(dz0, 0.0, out=dz0)
+    best = dz0 * dz0
+
     for dy in range(-window_px, window_px + 1):
         qy = np.clip(iy + dy, 0, closed.shape[0] - 1)
+        # columns are cells, not points: distance to the cell's epigraph
+        # sheet is measured to the nearest cell edge, not the centre
+        laty = np.maximum(np.abs(qy + 0.5 - fy) - 0.5, 0.0) * pixel
         for dx in range(-window_px, window_px + 1):
             qx = np.clip(ix + dx, 0, closed.shape[1] - 1)
+            latx = np.maximum(np.abs(qx + 0.5 - fx) - 0.5, 0.0) * pixel
             dz = closed[qy, qx] - height
             np.maximum(dz, 0.0, out=dz)
-            d2 = (dx * dx + dy * dy) * pixel * pixel + dz * dz
+            d2 = latx * latx + laty * laty + dz * dz
             np.minimum(best, d2, out=best)
     return np.sqrt(best)
 
@@ -240,6 +270,13 @@ def _sphere_dilate(work, rc, pixel, max_step_px=12, erode=False):
     return work
 
 
+def _mink_pad(radius, pixel):
+    """Padding (pixels) so the morphology sees the air beyond the rendered
+    map: without it, erosions treat out-of-map columns as bottomless and
+    everything within a tool radius of the border reads as machinable."""
+    return int(np.ceil(radius / pixel)) + 2
+
+
 @log_execution_time
 def tip_position_map(heights, diameter, corner_radius, pixel):
     """
@@ -255,10 +292,11 @@ def tip_position_map(heights, diameter, corner_radius, pixel):
     """
     radius = diameter / 2.0
     corner_radius = min(max(corner_radius, 0.0), radius)
-    work = heights.astype(np.float64)
+    pad = _mink_pad(radius, pixel)
+    work = np.pad(heights.astype(np.float64), pad, constant_values=FREE_SPACE)
     work = _flat_dilate(work, radius - corner_radius, pixel)
     work = _sphere_dilate(work, corner_radius, pixel)
-    return work
+    return work[pad:-pad, pad:-pad]
 
 
 @log_execution_time
@@ -268,16 +306,20 @@ def close_heightmap(heights, diameter, corner_radius, pixel):
     the machined surface, i.e. the lowest surface the tool tip envelope can
     generate above the current one. closing >= heights everywhere; the
     difference is material the tool cannot remove. Decomposed like
-    tip_position_map (disk part pooled, sphere part chunked).
+    tip_position_map (disk part pooled, sphere part chunked); the map is
+    padded with free space so borders behave like the real air outside.
     """
     radius = diameter / 2.0
     corner_radius = min(max(corner_radius, 0.0), radius)
     flat_radius = radius - corner_radius
 
-    lifted = tip_position_map(heights, diameter, corner_radius, pixel)
-    work = _sphere_dilate(lifted, corner_radius, pixel, erode=True)
+    pad = _mink_pad(radius, pixel)
+    work = np.pad(heights.astype(np.float64), pad, constant_values=FREE_SPACE)
+    work = _flat_dilate(work, flat_radius, pixel)
+    work = _sphere_dilate(work, corner_radius, pixel)
+    work = _sphere_dilate(work, corner_radius, pixel, erode=True)
     work = -_flat_dilate(-work, flat_radius, pixel, cval=-FREE_SPACE)
-    return work.astype(np.float32)
+    return work[pad:-pad, pad:-pad].astype(np.float32)
 
 
 def _contact_offsets(diameter, corner_radius, pixel, max_rings=24, max_angles=48):
@@ -365,33 +407,16 @@ def tip_aware_min_stickout(tip_map, clear_map, diameter, corner_radius, pixel,
 def clearance_heightmap(heights, radius, pixel, max_footprint=32):
     """
     Height of the tallest obstruction within `radius` of each pixel: a flat
-    grayscale dilation. A cylinder of this radius whose bottom sits at height
-    h above a vertex collides iff clearance(vertex) - height(vertex) > h.
-
-    Holder radii are typically much larger than the pixel size and a direct
-    footprint would explode, so the map is max-pooled first until the
-    footprint radius fits in `max_footprint` pixels. Pooling is conservative:
-    obstructions are rounded up and outward by at most one pooled pixel.
+    grayscale dilation (padded with free space so the border behaves like the
+    real air outside the rendered map). A cylinder of this radius whose
+    bottom sits at height h above a vertex collides iff
+    clearance(vertex) - height(vertex) > h. Implemented with the pooled flat
+    dilation used everywhere else.
     """
-    pool = int(np.ceil(radius / (max_footprint * pixel)))
-    work = heights.astype(np.float64)
-
-    if pool > 1:
-        pad_y = (-work.shape[0]) % pool
-        pad_x = (-work.shape[1]) % pool
-        work = np.pad(work, ((0, pad_y), (0, pad_x)), constant_values=FREE_SPACE)
-        work = work.reshape(work.shape[0] // pool, pool, work.shape[1] // pool, pool).max(axis=(1, 3))
-
-    eff_pixel = pixel * pool
-    # grow the radius by the pooled cell half-diagonal to stay conservative
-    eff_radius = radius + (0.71 * eff_pixel if pool > 1 else 0.0)
-    footprint = disk_footprint(eff_radius, eff_pixel)
-    dilated = ndimage.grey_dilation(work, footprint=footprint, mode="constant", cval=FREE_SPACE)
-
-    if pool > 1:
-        dilated = np.repeat(np.repeat(dilated, pool, axis=0), pool, axis=1)
-        dilated = dilated[: heights.shape[0], : heights.shape[1]]
-    return dilated.astype(np.float32)
+    pad = _mink_pad(radius, pixel)
+    work = np.pad(heights.astype(np.float64), pad, constant_values=FREE_SPACE)
+    dilated = _flat_dilate(work, radius, pixel, max_footprint=max_footprint)
+    return dilated[pad:-pad, pad:-pad].astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +451,7 @@ class DirectionCache:
     compose_unreachable works on either cache.
     """
 
-    VERSION = 2  # gap metric: windowed Euclidean distance to the machined solid
+    VERSION = 3  # padded-border morphology + subpixel Euclidean gap sampling
 
     def __init__(self, workdir, direction_index, verts=None, faces=None, pixel=0.1,
                  window=0.3, engine="zmap", scale=10.0):
@@ -484,7 +509,9 @@ class DirectionCache:
             }
             self.heights = self._fields["heights"]
             if verts is not None:
-                self._ix, self._iy, self._vheight = project_vertices(verts, self.frame)
+                self._fx, self._fy, self._vheight = project_vertices_float(verts, self.frame)
+                self._ix = np.floor(self._fx).astype(int)
+                self._iy = np.floor(self._fy).astype(int)
 
     def _save(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -522,9 +549,9 @@ class DirectionCache:
             if self.engine == "zmap":
                 pixel = self.frame["pixel"]
                 closed = close_heightmap(self.heights, diameter, corner_radius, pixel)
-                ix, iy, vheight = self._vertex_samples()
+                self._vertex_samples()  # ensure projections exist
                 window_px = max(2, int(np.ceil(self.window / pixel)))
-                gap = euclidean_gap(closed, ix, iy, vheight, pixel, window_px)
+                gap = euclidean_gap(closed, self._fx, self._fy, self._vheight, pixel, window_px)
             else:
                 from analysis import endmill_closing, get_distance
                 closed_mesh = endmill_closing(
