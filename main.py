@@ -37,7 +37,7 @@ if __name__ == "__main__":
     
     # Create the parser for the "mesh" command
     parser_mesh = subparsers.add_parser("mesh", help="mesh a file and derive the mesh")
-    parser_mesh.add_argument("input", help="path of the input .stl file", type=PathType(type='file', dash_ok=True, exists=True))
+    parser_mesh.add_argument("input", help="path of the input .stl/.step file", type=PathType(type='file', dash_ok=True, exists=True))
     parser_mesh.add_argument("-o", "--output", help="path of the output dir", type=PathType(type='dir', dash_ok=True))
     parser_mesh.add_argument("--tollerance", help="voxel tollerance", type=float, default=1e-1)
     parser_mesh.add_argument("--heal", help="heal the mesh before storing", action="store_true")
@@ -53,6 +53,7 @@ if __name__ == "__main__":
     parser_directions = subparsers.add_parser("directions", help="directions a file and derive the mesh")
     parser_directions.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
     parser_directions.add_argument("--count", help="number of directions determin", type=int, default=64)
+    parser_directions.add_argument("--axes", help="prepend the six principal +/-X/Y/Z directions", action="store_true")
     parser_directions.add_argument("--relax", help="relax the winning directions", action="store_true")
     parser_directions.add_argument("--relax_tollerance", help="angle tollerance of slides in degrees", type=float, default=1.0)
     parser_directions.add_argument("--relax_samples", help="the number of additional sampels used in relaxation", type=int, default=4)
@@ -101,6 +102,8 @@ if __name__ == "__main__":
     parser_precompute.add_argument("--pixel", help="height map pixel size", type=float, default=1e-1)
     parser_precompute.add_argument("--tips", help="tool tips as diameter:corner_radius (0 = flat, D/2 = ball)", nargs="*", type=str, default=[])
     parser_precompute.add_argument("--clearances", help="cylinder radii for holder/shank clearance fields", nargs="*", type=float, default=[])
+    parser_precompute.add_argument("--engine", help="field computation engine", choices=["zmap", "voxel"], default="zmap")
+    parser_precompute.add_argument("--window", help="gap accuracy window: gaps up to this are Euclidean-exact (zmap engine)", type=float, default=0.3)
 
     # Create the parser for the "compose" command
     parser_compose = subparsers.add_parser("compose", help="evaluate a full tool assembly from precomputed fields")
@@ -113,6 +116,8 @@ if __name__ == "__main__":
     parser_compose.add_argument("--stickout", help="tool length out of the holder", type=float, default=None)
     parser_compose.add_argument("--holder", help="holder as stacked cylinders radius:start,radius:start,... (start measured from the tool tip at stickout 0)", type=str, default=None)
     parser_compose.add_argument("--sweep", help="additional stickout values to report coverage for", nargs="*", type=float, default=[])
+    parser_compose.add_argument("--engine", help="field computation engine", choices=["zmap", "voxel"], default="zmap")
+    parser_compose.add_argument("--window", help="gap accuracy window: gaps up to this are Euclidean-exact (zmap engine)", type=float, default=0.3)
     parser_compose.add_argument("--serve", help="serve results in browser", action="store_true")
 
     # Create the parser for the "endmill" command
@@ -139,7 +144,7 @@ if __name__ == "__main__":
         logger.debug(f"Meshing file: {args.input}")
         
         # Check if the file has a valid extension
-        has_valid_extension(args.input, [".stl"])
+        has_valid_extension(args.input, [".stl", ".stp", ".step"])
         
         # load the mesh
         mesh = load_mesh(args.input, heal=args.heal, offset=args.offset, tollerance=args.tollerance)
@@ -245,6 +250,15 @@ if __name__ == "__main__":
     elif args.command == "directions":
         logger.debug(f"Computing {args.count} directions")
         directions = sample_unity_vector_pairs(args.count)
+
+        if args.axes:
+            # principal axes as antipodal pairs, matching the pair layout
+            axes = np.array([
+                [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0], [0.0, -1.0, 0.0],
+                [0.0, 0.0, 1.0], [0.0, 0.0, -1.0],
+            ])
+            directions = np.vstack([axes, directions])
         
         logger.debug("Cheking accessibility per direction")
         verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
@@ -448,7 +462,7 @@ if __name__ == "__main__":
 
         for direction_index in args.directions:
             logger.info(f"Direction {direction_index}")
-            cache = DirectionCache(args.directory, direction_index, verts=verts, faces=faces, pixel=args.pixel)
+            cache = DirectionCache(args.directory, direction_index, verts=verts, faces=faces, pixel=args.pixel, window=args.window, engine=args.engine)
             for diameter, corner_radius in tips:
                 cache.tip_gap(diameter, corner_radius)
             for radius in args.clearances:
@@ -469,7 +483,7 @@ if __name__ == "__main__":
                 radius, _, start = spec.partition(":")
                 cylinders.append((float(radius), float(start or 0.0)))
 
-        cache = DirectionCache(args.directory, args.direction, verts=verts, faces=faces, pixel=args.pixel)
+        cache = DirectionCache(args.directory, args.direction, verts=verts, faces=faces, pixel=args.pixel, window=args.window, engine=args.engine)
         unreachable_faces, gap, min_stick = compose_unreachable(
             cache, faces, args.diameter, args.corner_radius, args.tollerance,
             stickout=args.stickout, cylinders=cylinders,

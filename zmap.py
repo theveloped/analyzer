@@ -114,6 +114,34 @@ def sample_map(map2d, ix, iy):
     return map2d[iy, ix]
 
 
+def euclidean_gap(closed, ix, iy, height, pixel, window_px):
+    """
+    Euclidean distance from each vertex to the machined solid described by the
+    closed height map (material below closed(x, y), including the vertical
+    sheets between adjacent columns). For every pixel q in a window around the
+    vertex the distance to the column's epigraph is
+    sqrt(lateral(q)^2 + max(closed(q) - h, 0)^2): the clamp makes a column
+    whose machined surface passes below the vertex count only laterally, which
+    is what keeps swept vertical (and near-vertical draft) walls unflagged.
+
+    Gaps up to window_px * pixel are exact to pixel resolution; larger gaps
+    are lower bounds - fine for thresholding at tolerances within the window.
+    """
+    ix = np.clip(ix, 0, closed.shape[1] - 1)
+    iy = np.clip(iy, 0, closed.shape[0] - 1)
+
+    best = np.full(height.shape, np.inf)
+    for dy in range(-window_px, window_px + 1):
+        qy = np.clip(iy + dy, 0, closed.shape[0] - 1)
+        for dx in range(-window_px, window_px + 1):
+            qx = np.clip(ix + dx, 0, closed.shape[1] - 1)
+            dz = closed[qy, qx] - height
+            np.maximum(dz, 0.0, out=dz)
+            d2 = (dx * dx + dy * dy) * pixel * pixel + dz * dz
+            np.minimum(best, d2, out=best)
+    return np.sqrt(best)
+
+
 # ---------------------------------------------------------------------------
 # tool bottom profiles and morphology
 # ---------------------------------------------------------------------------
@@ -221,59 +249,97 @@ def _clear_key(radius):
 
 class DirectionCache:
     """
-    Cached per-vertex fields for one approach direction: the rendered height
-    map plus any number of tip gap fields and clearance fields. Persisted as
-    an .npz so repeated tool queries never touch geometry again.
+    Cached per-vertex fields for one approach direction: any number of tip
+    gap fields and clearance fields, persisted as an .npz so repeated tool
+    queries never touch geometry again.
+
+    Two interchangeable engines fill the fields:
+    - "zmap" (default): 2D grayscale morphology on a rendered height map;
+      gaps are windowed Euclidean distances to the machined solid
+    - "voxel": 3D voxel closings on the undercut-fixed mesh (analysis.py);
+      gaps are mesh projection distances
+
+    Both produce per-vertex float fields with identical semantics, so
+    compose_unreachable works on either cache.
     """
 
-    def __init__(self, workdir, direction_index, verts=None, faces=None, pixel=0.1):
-        self.path = os.path.join(workdir, "zcache", f"dir_{direction_index:04d}.npz")
+    VERSION = 2  # gap metric: windowed Euclidean distance to the machined solid
+
+    def __init__(self, workdir, direction_index, verts=None, faces=None, pixel=0.1,
+                 window=0.3, engine="zmap", scale=10.0):
+        suffix = "" if engine == "zmap" else f"_{engine}"
+        self.path = os.path.join(workdir, "zcache", f"dir_{direction_index:04d}{suffix}.npz")
         self.direction_index = direction_index
         self.verts = verts
+        self.faces = faces
         self.pixel = pixel
+        self.window = window  # gap accuracy window: gaps up to this are Euclidean-exact
+        self.engine = engine
+        self.scale = scale  # anisotropy stretch factor for voxel in-plane offsets
         self._fields = {}
+        self._mesh = None
+        self._undercut_mesh = None
 
         directions = np.load(os.path.join(workdir, "directions.npy"))
         self.direction = directions[direction_index]
 
         if os.path.exists(self.path):
             stored = np.load(self.path, allow_pickle=False)
-            if abs(stored["pixel"][0] - pixel) < 1e-12:
+            same_pixel = abs(stored["pixel"][0] - pixel) < 1e-12
+            same_version = "version" in stored.files and stored["version"][0] == self.VERSION
+            if same_pixel and same_version:
                 self._fields = {k: stored[k] for k in stored.files}
-                logger.debug(f"Loaded zmap cache {self.path} with {len(self._fields)} arrays")
+                logger.debug(f"Loaded cache {self.path} with {len(self._fields)} arrays")
             else:
-                logger.warning(f"Pixel size changed, discarding cache {self.path}")
+                logger.warning(f"Pixel size or cache version changed, discarding cache {self.path}")
+                self._fields = {}
 
-        if "heights" not in self._fields:
-            if verts is None or faces is None:
-                raise ValueError("No cache present: verts and faces are required to render")
-            from meshlib import mrmeshnumpy as mn
-            mesh = mn.meshFromFacesVerts(faces, verts)
-            heights, frame = render_heightmap(mesh, self.direction, pixel)
+        if not self._fields:
             self._fields = {
-                "heights": heights,
+                "version": np.array([self.VERSION]),
                 "pixel": np.array([pixel]),
-                "origin": frame["origin"],
-                "x_axis": frame["x_axis"],
-                "y_axis": frame["y_axis"],
-                "direction": frame["direction"],
             }
+            if engine == "zmap":
+                heights, frame = render_heightmap(self._get_mesh(), self.direction, pixel)
+                self._fields.update({
+                    "heights": heights,
+                    "origin": frame["origin"],
+                    "x_axis": frame["x_axis"],
+                    "y_axis": frame["y_axis"],
+                    "direction": frame["direction"],
+                })
             self._save()
 
-        self.frame = {
-            "origin": self._fields["origin"],
-            "x_axis": self._fields["x_axis"],
-            "y_axis": self._fields["y_axis"],
-            "direction": self._fields["direction"],
-            "pixel": self._fields["pixel"][0],
-        }
-        self.heights = self._fields["heights"]
-        if verts is not None:
-            self._ix, self._iy, self._vheight = project_vertices(verts, self.frame)
+        if engine == "zmap":
+            self.frame = {
+                "origin": self._fields["origin"],
+                "x_axis": self._fields["x_axis"],
+                "y_axis": self._fields["y_axis"],
+                "direction": self._fields["direction"],
+                "pixel": self._fields["pixel"][0],
+            }
+            self.heights = self._fields["heights"]
+            if verts is not None:
+                self._ix, self._iy, self._vheight = project_vertices(verts, self.frame)
 
     def _save(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         np.savez_compressed(self.path, **self._fields)
+
+    def _get_mesh(self):
+        if self._mesh is None:
+            if self.verts is None or self.faces is None:
+                raise ValueError("verts and faces are required to compute new fields")
+            from meshlib import mrmeshnumpy as mn
+            self._mesh = mn.meshFromFacesVerts(self.faces, self.verts)
+        return self._mesh
+
+    def _get_undercut_mesh(self):
+        if self._undercut_mesh is None:
+            from analysis import fix_undercuts
+            d = self.direction
+            self._undercut_mesh = fix_undercuts(self._get_mesh(), d[0], d[1], d[2], tollerance=self.pixel)
+        return self._undercut_mesh
 
     def _vertex_samples(self):
         if not hasattr(self, "_ix"):
@@ -288,16 +354,22 @@ class DirectionCache:
         """
         key = _tip_key(diameter, corner_radius)
         if key not in self._fields:
-            logger.debug(f"Computing tip field {key} for direction {self.direction_index}")
-            footprint, profile = tip_profile(diameter, corner_radius, self.frame["pixel"])
-            closed = close_heightmap(self.heights, footprint, profile)
-            # one pixel of lateral tolerance: a vertex lying exactly on a
-            # vertical wall may project into the neighbouring material
-            # column; the tool side sweeping the adjacent column down to the
-            # vertex height still reaches the vertex
-            closed = ndimage.grey_erosion(closed, size=(3, 3), mode="nearest")
-            ix, iy, vheight = self._vertex_samples()
-            gap = sample_map(closed, ix, iy) - vheight
+            logger.debug(f"Computing tip field {key} for direction {self.direction_index} ({self.engine})")
+            if self.engine == "zmap":
+                pixel = self.frame["pixel"]
+                footprint, profile = tip_profile(diameter, corner_radius, pixel)
+                closed = close_heightmap(self.heights, footprint, profile)
+                ix, iy, vheight = self._vertex_samples()
+                window_px = max(2, int(np.ceil(self.window / pixel)))
+                gap = euclidean_gap(closed, ix, iy, vheight, pixel, window_px)
+            else:
+                from analysis import endmill_closing, get_distance
+                closed_mesh = endmill_closing(
+                    self._get_undercut_mesh(), self.direction, diameter, corner_radius,
+                    self.pixel, scale=self.scale,
+                )
+                distances = get_distance(self._get_mesh(), closed_mesh)
+                gap = np.abs(np.asarray(distances))
             self._fields[key] = gap.astype(np.float32)
             self._save()
         return self._fields[key]
@@ -309,10 +381,24 @@ class DirectionCache:
         """
         key = _clear_key(radius)
         if key not in self._fields:
-            logger.debug(f"Computing clearance field {key} for direction {self.direction_index}")
-            dilated = clearance_heightmap(self.heights, radius, self.frame["pixel"])
-            ix, iy, vheight = self._vertex_samples()
-            clear = sample_map(dilated, ix, iy) - vheight
+            logger.debug(f"Computing clearance field {key} for direction {self.direction_index} ({self.engine})")
+            if self.engine == "zmap":
+                dilated = clearance_heightmap(self.heights, radius, self.frame["pixel"])
+                ix, iy, vheight = self._vertex_samples()
+                clear = sample_map(dilated, ix, iy) - vheight
+            else:
+                # grow the undercut-fixed mesh in-plane by the cylinder
+                # radius (3D, exact), then read the grown volume's top
+                # surface: its height above a vertex is the clearance
+                from meshlib import mrmeshpy as mm_
+                from analysis import scale_along_axis, single_offset
+                work = mm_.copyMesh(self._get_undercut_mesh())
+                scale_along_axis(work, self.direction, self.scale)
+                work = single_offset(work, radius, self.pixel, decimate=False)
+                scale_along_axis(work, self.direction, 1.0 / self.scale)
+                grown_heights, frame = render_heightmap(work, self.direction, self.pixel)
+                ix, iy, vheight = project_vertices(self.verts, frame)
+                clear = sample_map(grown_heights, ix, iy) - vheight
             self._fields[key] = clear.astype(np.float32)
             self._save()
         return self._fields[key]
