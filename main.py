@@ -37,7 +37,7 @@ if __name__ == "__main__":
     
     # Create the parser for the "mesh" command
     parser_mesh = subparsers.add_parser("mesh", help="mesh a file and derive the mesh")
-    parser_mesh.add_argument("input", help="path of the input .stl file", type=PathType(type='file', dash_ok=True, exists=True))
+    parser_mesh.add_argument("input", help="path of the input .stl/.step file", type=PathType(type='file', dash_ok=True, exists=True))
     parser_mesh.add_argument("-o", "--output", help="path of the output dir", type=PathType(type='dir', dash_ok=True))
     parser_mesh.add_argument("--tollerance", help="voxel tollerance", type=float, default=1e-1)
     parser_mesh.add_argument("--heal", help="heal the mesh before storing", action="store_true")
@@ -53,6 +53,7 @@ if __name__ == "__main__":
     parser_directions = subparsers.add_parser("directions", help="directions a file and derive the mesh")
     parser_directions.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
     parser_directions.add_argument("--count", help="number of directions determin", type=int, default=64)
+    parser_directions.add_argument("--axes", help="prepend the six principal +/-X/Y/Z directions", action="store_true")
     parser_directions.add_argument("--relax", help="relax the winning directions", action="store_true")
     parser_directions.add_argument("--relax_tollerance", help="angle tollerance of slides in degrees", type=float, default=1.0)
     parser_directions.add_argument("--relax_samples", help="the number of additional sampels used in relaxation", type=int, default=4)
@@ -143,7 +144,7 @@ if __name__ == "__main__":
         logger.debug(f"Meshing file: {args.input}")
         
         # Check if the file has a valid extension
-        has_valid_extension(args.input, [".stl"])
+        has_valid_extension(args.input, [".stl", ".stp", ".step"])
         
         # load the mesh
         mesh = load_mesh(args.input, heal=args.heal, offset=args.offset, tollerance=args.tollerance)
@@ -249,6 +250,15 @@ if __name__ == "__main__":
     elif args.command == "directions":
         logger.debug(f"Computing {args.count} directions")
         directions = sample_unity_vector_pairs(args.count)
+
+        if args.axes:
+            # principal axes as antipodal pairs, matching the pair layout
+            axes = np.array([
+                [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0], [0.0, -1.0, 0.0],
+                [0.0, 0.0, 1.0], [0.0, 0.0, -1.0],
+            ])
+            directions = np.vstack([axes, directions])
         
         logger.debug("Cheking accessibility per direction")
         verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))

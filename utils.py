@@ -3,8 +3,8 @@ import time
 from loguru import logger
 
 def has_valid_extension(path: str, extensions: list[str] = []):
-    if not any(path.endswith(extension) for extension in extensions):
-        raise(f"The file {path} does not have a valid extension! Allowed extensions: {extensions}")
+    if not any(path.lower().endswith(extension) for extension in extensions):
+        raise ValueError(f"The file {path} does not have a valid extension! Allowed extensions: {extensions}")
     
     return
 
