@@ -242,6 +242,43 @@ radii ≈ 9 s total; composing a complete tool (tip + 2-cylinder holder) with a
 synthetic expectations as the 3D path plus exact Euclidean fillet-gap and stickout
 values.
 
+**Tip-aware holder coupling.** The plain clearance field is vertex-centred: it
+assumes the tool axis passes through the contact point with the tip at the vertex
+height — exact only for a tool of negligible diameter (or pure bottom contact).
+Real tools couple the tip with the holder: a ball touching a wall does so with its
+flank, putting the axis up to D/2 away from the contact and the tip `rc` *below*
+it, so the required stickout is `depth + rc`, not `depth`. The cache therefore also
+stores per-(tip, cylinder radius) fields (`sreq_D_rc_r`, `tip_min_stickout`):
+
+```
+min_stickout(v) = min over feasible contact offsets o of
+                  clearance_map(axis) - height(v) + profile(o)
+    axis = v - o,  feasible iff  height(v) - profile(o) >= tip_position(axis)
+```
+
+built from two maps that already exist in the pipeline: the **inverse tool offset**
+`tip_position_map` (the grey dilation that is the first half of the closing) and the
+per-radius clearance dilation. Contact offsets are ring/angle *sampled* (constant
+budget, ~1k samples regardless of tool size; skipping candidates is strictly
+conservative), so each field costs O(samples × verts) — ~0.7 s at 34k verts —
+independent of the tool diameter. Both dilations are decomposed by the same
+Minkowski identity as the 3D path (tool bottom = disk ⊕ sphere → pooled flat
+dilation + chunked spherical dilations, `ball(r1) ⊕ ball(r2) = ball(r1+r2)`), which
+turns the naive O((D/pixel)²) structuring elements into ~O(D/pixel): a D16 ball-nose
+ITO drops from 48 s to 6 s, a D10 flat from 11 s to 0.8 s.
+
+Catalog scaling (156 valid tips, a handful of holder radii, 45 lengths): gap fields
+≈ 156 × 2-4 s, stickout fields ≈ 156 × radii × 0.7 s — both linear, no length term
+(lengths remain thresholds). Arbitrary holder stacks not precomputed are built on
+demand at compose time and cached.
+
+**Surface classification.** Face normals are exported once (direction-independent);
+the angle between a face normal and any approach direction is then a dot product.
+Near-90° faces (vertical walls) are finished by the tool *flank*, not its bottom, so
+the gap field does not apply to them — the viewer classifies them as "side-milled"
+(and the classification floor / slope / wall / overhang is the seed for assigning
+finishing strategies: bottom milling, ball/step milling, side milling, chamfering).
+
 **Why not a vertex-cloud Z-map?** A third option considered: skip the 2D grid and
 run the morphology on the mesh vertices themselves, transformed into tool-aligned
 coordinates. It is possible, but the closing needs candidate *tool positions*, not

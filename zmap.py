@@ -182,24 +182,183 @@ def disk_footprint(radius, pixel):
     return rr <= radius
 
 
+def _flat_dilate(work, radius, pixel, max_footprint=32, cval=FREE_SPACE):
+    """
+    Grayscale dilation with a FLAT disk, max-pooling the map first when the
+    footprint would be large (same conservative trick as clearance_heightmap:
+    obstructions round up and outward by at most one pooled pixel). `cval` is
+    the border value: FREE_SPACE for plain dilations, -FREE_SPACE when the
+    caller erodes via negation (outside the map is air either way).
+    """
+    if radius <= 0:
+        return work
+    pool = int(np.ceil(radius / (max_footprint * pixel)))
+    src = work
+    if pool > 1:
+        pad_y = (-src.shape[0]) % pool
+        pad_x = (-src.shape[1]) % pool
+        src = np.pad(src, ((0, pad_y), (0, pad_x)), constant_values=cval)
+        src = src.reshape(src.shape[0] // pool, pool, src.shape[1] // pool, pool).max(axis=(1, 3))
+    eff_pixel = pixel * pool
+    eff_radius = radius + (0.71 * eff_pixel if pool > 1 else 0.0)
+    footprint = disk_footprint(eff_radius, eff_pixel)
+    out = ndimage.grey_dilation(src, footprint=footprint, mode="constant", cval=cval)
+    if pool > 1:
+        out = np.repeat(np.repeat(out, pool, axis=0), pool, axis=1)
+        out = out[: work.shape[0], : work.shape[1]]
+    return out
+
+
+def _sphere_structure(rc, pixel):
+    n = int(np.ceil(rc / pixel))
+    offsets = (np.arange(2 * n + 1) - n) * pixel
+    rr = np.hypot(offsets[None, :], offsets[:, None])
+    footprint = rr <= rc
+    profile = rc - np.sqrt(np.clip(rc**2 - rr**2, 0.0, None))
+    return footprint, np.where(footprint, -profile, 0.0)
+
+
+def _sphere_dilate(work, rc, pixel, max_step_px=12, erode=False):
+    """
+    Grayscale dilation (or erosion) with a spherical cap of radius rc,
+    chunked into steps: ball(r1) + ball(r2) = ball(r1 + r2) under Minkowski
+    sums, so a big cap is a sequence of small-cap dilations - O(rc) instead
+    of O(rc^2) pixels. Chunking is conservative (the sampled cap is never
+    larger than the true cap).
+    """
+    if rc <= 0:
+        return work
+    step = max_step_px * pixel
+    remaining = rc
+    op = ndimage.grey_erosion if erode else ndimage.grey_dilation
+    while remaining > 1e-12:
+        r = min(step, remaining)
+        footprint, structure = _sphere_structure(r, pixel)
+        work = op(work, footprint=footprint, structure=structure,
+                  mode="constant", cval=FREE_SPACE)
+        remaining -= r
+    return work
+
+
 @log_execution_time
-def close_heightmap(heights, footprint, profile):
+def tip_position_map(heights, diameter, corner_radius, pixel):
+    """
+    Inverse tool offset (ITO): the lowest tip height at which the tool, with
+    its axis over each pixel, rests on the part without gouging it. This is
+    the classic CAM tool-position surface; the machined surface is its
+    forward offset (see close_heightmap).
+
+    The tool bottom is disk(D/2 - rc) + sphere(rc) under Minkowski sums, and
+    dilation by a sum is sequential dilation, so the flat part runs pooled
+    and the spherical part chunked - cost grows ~linearly with the tool
+    radius instead of quadratically.
+    """
+    radius = diameter / 2.0
+    corner_radius = min(max(corner_radius, 0.0), radius)
+    work = heights.astype(np.float64)
+    work = _flat_dilate(work, radius - corner_radius, pixel)
+    work = _sphere_dilate(work, corner_radius, pixel)
+    return work
+
+
+@log_execution_time
+def close_heightmap(heights, diameter, corner_radius, pixel):
     """
     Grayscale closing of the height map with the tool bottom profile: returns
     the machined surface, i.e. the lowest surface the tool tip envelope can
     generate above the current one. closing >= heights everywhere; the
-    difference is material the tool cannot remove.
+    difference is material the tool cannot remove. Decomposed like
+    tip_position_map (disk part pooled, sphere part chunked).
     """
-    structure = np.where(footprint, -profile, 0.0)
-    lifted = ndimage.grey_dilation(
-        heights.astype(np.float64), footprint=footprint, structure=structure,
-        mode="constant", cval=FREE_SPACE,
-    )
-    closed = ndimage.grey_erosion(
-        lifted, footprint=footprint, structure=structure,
-        mode="constant", cval=FREE_SPACE,
-    )
-    return closed.astype(np.float32)
+    radius = diameter / 2.0
+    corner_radius = min(max(corner_radius, 0.0), radius)
+    flat_radius = radius - corner_radius
+
+    lifted = tip_position_map(heights, diameter, corner_radius, pixel)
+    work = _sphere_dilate(lifted, corner_radius, pixel, erode=True)
+    work = -_flat_dilate(-work, flat_radius, pixel, cval=-FREE_SPACE)
+    return work.astype(np.float32)
+
+
+def _contact_offsets(diameter, corner_radius, pixel, max_rings=24, max_angles=48):
+    """
+    Sampled contact offsets (dy_px, dx_px, profile_height) covering the tool
+    silhouette as rings x angles instead of every footprint pixel: the profile
+    only depends on the ring radius, so the offset budget stays constant no
+    matter how large the tool is relative to the pixel size. Skipping
+    candidate axis positions is strictly conservative for the stickout min.
+    """
+    radius = diameter / 2.0
+    corner_radius = min(max(corner_radius, 0.0), radius)
+    flat_radius = radius - corner_radius
+    n = int(np.ceil(radius / pixel))
+
+    ring_radii = np.unique(np.round(np.linspace(0, n, min(n + 1, max_rings))).astype(int))
+    offsets = []
+    for rr_px in ring_radii:
+        rr = min(rr_px * pixel, radius)
+        if rr <= flat_radius or corner_radius <= 0:
+            prof = 0.0
+        else:
+            prof = corner_radius - np.sqrt(max(corner_radius**2 - (rr - flat_radius) ** 2, 0.0))
+        if rr_px == 0:
+            offsets.append((0, 0, prof))
+            continue
+        n_angles = int(min(max(8, np.ceil(2 * np.pi * rr_px / 2)), max_angles))
+        seen = set()
+        for k in range(n_angles):
+            theta = 2 * np.pi * k / n_angles
+            dy = int(round(rr_px * np.sin(theta)))
+            dx = int(round(rr_px * np.cos(theta)))
+            if (dy, dx) not in seen:
+                seen.add((dy, dx))
+                offsets.append((dy, dx, prof))
+    return offsets
+
+
+@log_execution_time
+def tip_aware_min_stickout(tip_map, clear_map, diameter, corner_radius, pixel,
+                           ix, iy, height):
+    """
+    Per-vertex minimal stickout for ONE holder cylinder (measured from the
+    tool tip), coupling the tip geometry with the holder:
+
+    For a vertex v the tool can touch it with its axis at any offset o inside
+    the tool silhouette - bottom contact through the tip profile, flank
+    contact at the rim. Touching v via offset o puts the tip at
+    t = height(v) - profile(o), feasible iff t >= tip_map(axis) (no gouging;
+    for bottom contact this reduces to exact tangency). The cylinder whose
+    lower end sits `stickout` above the tip clears iff
+    clear_map(axis) <= t + stickout, so:
+
+        min_stickout(v) = min over feasible o of clear_map(a) - height(v) + profile(o)
+
+    This is what the vertex-centred clearance field gets wrong for ball and
+    bull noses: flank contact adds profile(o) (up to the corner radius) of
+    extra stickout, and the axis - where the holder actually is - sits up to
+    D/2 away from the contact point. Contact offsets are ring/angle sampled
+    (see _contact_offsets) so the cost per field is O(samples x verts),
+    independent of the tool diameter.
+    """
+    eps = 1.5 * pixel
+
+    ix = np.clip(ix, 0, tip_map.shape[1] - 1)
+    iy = np.clip(iy, 0, tip_map.shape[0] - 1)
+
+    best = np.full(height.shape, np.inf)
+    for dy, dx, prof in _contact_offsets(diameter, corner_radius, pixel):
+        ax = np.clip(ix - dx, 0, tip_map.shape[1] - 1)
+        ay = np.clip(iy - dy, 0, tip_map.shape[0] - 1)
+        tip_req = height - prof
+        feasible = tip_map[ay, ax] <= tip_req + eps
+        value = clear_map[ay, ax] - tip_req
+        np.minimum(best, np.where(feasible, value, np.inf), out=best)
+
+    # vertices no contact offset can touch are tip-blocked anyway; fall back
+    # to the vertex-centred estimate so the field stays finite
+    fallback = clear_map[iy, ix] - height
+    best = np.where(np.isfinite(best), best, fallback)
+    return np.maximum(best, 0.0)
 
 
 @log_execution_time
@@ -247,6 +406,10 @@ def _clear_key(radius):
     return f"clear_{radius:.6g}"
 
 
+def _sreq_key(diameter, corner_radius, radius):
+    return f"sreq_{diameter:.6g}_{corner_radius:.6g}_{radius:.6g}"
+
+
 class DirectionCache:
     """
     Cached per-vertex fields for one approach direction: any number of tip
@@ -277,6 +440,7 @@ class DirectionCache:
         self.engine = engine
         self.scale = scale  # anisotropy stretch factor for voxel in-plane offsets
         self._fields = {}
+        self._maps = {}  # in-memory full-resolution maps (not persisted)
         self._mesh = None
         self._undercut_mesh = None
 
@@ -357,8 +521,7 @@ class DirectionCache:
             logger.debug(f"Computing tip field {key} for direction {self.direction_index} ({self.engine})")
             if self.engine == "zmap":
                 pixel = self.frame["pixel"]
-                footprint, profile = tip_profile(diameter, corner_radius, pixel)
-                closed = close_heightmap(self.heights, footprint, profile)
+                closed = close_heightmap(self.heights, diameter, corner_radius, pixel)
                 ix, iy, vheight = self._vertex_samples()
                 window_px = max(2, int(np.ceil(self.window / pixel)))
                 gap = euclidean_gap(closed, ix, iy, vheight, pixel, window_px)
@@ -374,16 +537,52 @@ class DirectionCache:
             self._save()
         return self._fields[key]
 
+    def _clearance_map(self, radius):
+        key = "map_" + _clear_key(radius)
+        if key not in self._maps:
+            self._maps[key] = clearance_heightmap(self.heights, radius, self.frame["pixel"])
+        return self._maps[key]
+
+    def _tip_map(self, diameter, corner_radius):
+        key = "map_" + _tip_key(diameter, corner_radius)
+        if key not in self._maps:
+            self._maps[key] = tip_position_map(self.heights, diameter, corner_radius, self.frame["pixel"])
+        return self._maps[key]
+
+    def tip_min_stickout(self, diameter, corner_radius, radius):
+        """
+        Per-vertex minimal stickout (from the tool tip) for one holder
+        cylinder of `radius`, coupled with the tip geometry of
+        (diameter, corner_radius) - see tip_aware_min_stickout. zmap engine
+        only; computed once per (tip, radius) and cached.
+        """
+        key = _sreq_key(diameter, corner_radius, radius)
+        if key not in self._fields:
+            if self.engine != "zmap":
+                raise NotImplementedError("tip-aware stickout fields need the zmap engine")
+            logger.debug(f"Computing stickout field {key} for direction {self.direction_index}")
+            pixel = self.frame["pixel"]
+            ix, iy, vheight = self._vertex_samples()
+            sreq = tip_aware_min_stickout(
+                self._tip_map(diameter, corner_radius), self._clearance_map(radius),
+                diameter, corner_radius, pixel, ix, iy, vheight,
+            )
+            self._fields[key] = sreq.astype(np.float32)
+            self._save()
+        return self._fields[key]
+
     def clearance(self, radius):
         """
         Per-vertex clearance: height of the tallest obstruction within
         `radius`, measured above the vertex. Computed once per radius.
+        NOTE: vertex-centred - only exact for a tool of negligible radius or
+        pure bottom contact; prefer tip_min_stickout for real tools.
         """
         key = _clear_key(radius)
         if key not in self._fields:
             logger.debug(f"Computing clearance field {key} for direction {self.direction_index} ({self.engine})")
             if self.engine == "zmap":
-                dilated = clearance_heightmap(self.heights, radius, self.frame["pixel"])
+                dilated = self._clearance_map(radius)
                 ix, iy, vheight = self._vertex_samples()
                 clear = sample_map(dilated, ix, iy) - vheight
             else:
@@ -403,16 +602,24 @@ class DirectionCache:
             self._save()
         return self._fields[key]
 
-    def min_stickout(self, cylinders):
+    def min_stickout(self, cylinders, tip=None):
         """
         Per-vertex minimal stickout (tool length out of the holder) so that a
         holder modelled as stacked concentric cylinders [(radius, start), ...]
         (start = distance from the tool tip to the cylinder's lower end for
         stickout 0) clears the part.
+
+        Pass tip=(diameter, corner_radius) to couple the holder with the tip
+        geometry (flank contact, axis offset) - required for correct results
+        with ball and bull noses. Without a tip the vertex-centred clearance
+        approximation is used (a tool of negligible diameter).
         """
         stickout = None
         for radius, start in cylinders:
-            required = self.clearance(radius) - start
+            if tip is not None and self.engine == "zmap":
+                required = self.tip_min_stickout(tip[0], tip[1], radius) - start
+            else:
+                required = self.clearance(radius) - start
             stickout = required if stickout is None else np.maximum(stickout, required)
         return stickout
 
@@ -442,7 +649,7 @@ def compose_unreachable(cache, faces, diameter, corner_radius, tollerance,
 
     min_stick = None
     if cylinders:
-        min_stick = cache.min_stickout(cylinders)
+        min_stick = cache.min_stickout(cylinders, tip=(diameter, corner_radius))
         if stickout is not None:
             blocked = blocked | (min_stick > stickout + tollerance)
 

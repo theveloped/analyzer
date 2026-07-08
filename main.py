@@ -483,6 +483,11 @@ if __name__ == "__main__":
                 cache.tip_gap(diameter, corner_radius)
             for radius in args.clearances:
                 cache.clearance(radius)
+            if args.engine == "zmap":
+                # tip-aware holder stickout fields per (tip, cylinder radius)
+                for diameter, corner_radius in tips:
+                    for radius in args.clearances:
+                        cache.tip_min_stickout(diameter, corner_radius, radius)
 
     elif args.command == "compose":
         logger.info("Compose tool accessibility from precomputed fields")

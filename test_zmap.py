@@ -76,7 +76,7 @@ def main():
         # arc a tip of corner radius rc leaves: hypot(delta - rc, rc) - rc
         print("=== Euclidean gaps on the pocket floor ===")
         cache = DirectionCache(workdir, 0, verts=verts, faces=faces, pixel=PIXEL)
-        from zmap import close_heightmap, euclidean_gap, project_vertices, tip_profile
+        from zmap import close_heightmap, euclidean_gap, project_vertices
 
         probes = np.array([
             [0.0, -3.0, -5.0],   # floor, 1.0 from the wall: inside the ball fillet only
@@ -93,8 +93,7 @@ def main():
 
         window_px = max(2, int(np.ceil(cache.window / PIXEL)))
         for name, corner_radius in [("ball", 2.0), ("bull", 1.0), ("flat", 0.0)]:
-            footprint, profile = tip_profile(4.0, corner_radius, PIXEL)
-            closed = close_heightmap(cache.heights, footprint, profile)
+            closed = close_heightmap(cache.heights, 4.0, corner_radius, PIXEL)
             gaps = euclidean_gap(closed, ix, iy, ph, PIXEL, window_px)
             expected = [fillet_gap(corner_radius, 1.0), fillet_gap(corner_radius, 0.1), 4.5, 0.0]
             for label, gap, want in zip(["floor d=1.0", "floor d=0.1", "corner", "wall mid"], gaps, expected):
@@ -125,8 +124,31 @@ def main():
             ok = frac > 0.8 if should_flag else frac < 0.2
             check(f"stickout {stickout}", ok, f"pocket floor flagged {frac * 100:.1f}% (expected {'flagged' if should_flag else 'clear'})")
 
+        # --- tip-aware stickout: the holder must be evaluated at the tool
+        # AXIS, with the tip at its true depth. A ball touching a wall does so
+        # with its flank: the tip sits corner_radius below the contact, so the
+        # required stickout is depth + rc, not the vertex-centred depth.
+        print("=== tip-aware stickout (ball D4 rc2, holder radius 6) ===")
+        sreq_ball = cache.min_stickout([(6.0, 0.0)], tip=(4.0, 2.0))
+        for label, point, expected in [
+            ("pocket wall mid-height", (0.0, -4.0, -2.5), 4.5),  # 2.5 depth + 2.0 rc
+            ("pocket floor center", (0.0, 0.0, -5.0), 5.0),      # bottom contact, unchanged
+            ("top face", (-8.0, 8.0, 0.0), 0.0),
+        ]:
+            value = sreq_ball[nearest_vertex(verts, point)]
+            ok = abs(value - expected) < 0.2
+            check(f"sreq ball/{label}", ok, f"{value:.3f} expected {expected:.3f}")
+
+        naive = cache.min_stickout([(6.0, 0.0)])
+        value = naive[nearest_vertex(verts, (0.0, -4.0, -2.5))]
+        check("vertex-centred wall estimate (for contrast)", abs(value - 2.5) < 0.2,
+              f"{value:.3f} expected 2.5 (underestimates flank contact by rc)")
+
         # --- a tool assembled from cached fields (new stickout, new holder
-        # stack) must be near-instant: pure numpy over stored scalars
+        # stack) must be near-instant: pure numpy over stored scalars. The
+        # per-(tip, radius) stickout fields are part of the cache, so warm
+        # them first (precompute does this) and time the composition itself.
+        cache.min_stickout([(6.0, 0.0), (9.0, 15.0)], tip=(4.0, 1.0))
         t0 = time.time()
         compose_unreachable(cache, faces, 4.0, 1.0, 0.1, stickout=25.0,
                             cylinders=[(6.0, 0.0), (9.0, 15.0)])

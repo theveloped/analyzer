@@ -26,6 +26,7 @@ STATIC_FILES = ["three.min.js", "OrbitControls.js", "OBJLoader.js"]
 CACHE_FILE_RE = re.compile(r"^dir_(\d+)(?:_([a-z]+))?\.npz$")
 TIP_KEY_RE = re.compile(r"^tip_([0-9.eE+-]+)_([0-9.eE+-]+)$")
 CLEAR_KEY_RE = re.compile(r"^clear_([0-9.eE+-]+)$")
+SREQ_KEY_RE = re.compile(r"^sreq_([0-9.eE+-]+)_([0-9.eE+-]+)_([0-9.eE+-]+)$")
 
 
 def _num(text):
@@ -48,6 +49,14 @@ def export_viewer_bundle(workdir):
     directions = np.load(os.path.join(workdir, "directions.npy"))
 
     faces.astype("<u4").tofile(os.path.join(out_dir, "faces.bin"))
+
+    # unit face normals: the angle to any approach direction is then a client
+    # side dot product (surface classification, wall detection)
+    tri = verts[faces]
+    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    normals = normals / np.maximum(lengths, 1e-30)
+    normals.astype("<f4").tofile(os.path.join(out_dir, "normals.bin"))
 
     manifest = {
         "counts": {"verts": int(len(verts)), "faces": int(len(faces))},
@@ -79,9 +88,11 @@ def export_viewer_bundle(workdir):
             "clearances": [],
         }
 
+        sreqs = {}
         for key in stored.files:
             tip = TIP_KEY_RE.match(key)
             clear = CLEAR_KEY_RE.match(key)
+            sreq = SREQ_KEY_RE.match(key)
             if tip:
                 diameter, corner = _num(tip.group(1)), _num(tip.group(2))
                 fname = f"gap_{dir_index}_{diameter}_{corner}{suffix}.bin"
@@ -92,6 +103,16 @@ def export_viewer_bundle(workdir):
                 fname = f"clear_{dir_index}_{radius}{suffix}.bin"
                 stored[key].astype("<f4").tofile(os.path.join(out_dir, fname))
                 source["clearances"].append({"radius": radius, "file": fname})
+            elif sreq:
+                diameter, corner, radius = (_num(sreq.group(i)) for i in (1, 2, 3))
+                fname = f"sreq_{dir_index}_{diameter}_{corner}_{radius}{suffix}.bin"
+                stored[key].astype("<f4").tofile(os.path.join(out_dir, fname))
+                sreqs.setdefault((diameter, corner), []).append({"radius": radius, "file": fname})
+
+        # attach tip-aware stickout fields to their tips
+        for tip_entry in source["tips"]:
+            entry_key = (tip_entry["diameter"], tip_entry["corner_radius"])
+            tip_entry["stickouts"] = sorted(sreqs.get(entry_key, []), key=lambda s: s["radius"])
 
         if accessibility is not None and dir_index < accessibility.shape[0]:
             fname = f"access_{dir_index}.bin"
