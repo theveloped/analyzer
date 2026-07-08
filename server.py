@@ -24,11 +24,15 @@ class CustomHTTPRequestHandler(SimpleHTTPRequestHandler):
         return original_path
 
 def serve(index_path, directory, port=8080, timeout=2.0):
-    # Setup server configuration  
+    # Setup server configuration
     handler = partial(CustomHTTPRequestHandler, index_path=index_path, directory=directory)
     with socketserver.TCPServer(("", port), handler) as httpd:
         # Open index.html in the default browser
-        webbrowser.get('windows-default').open(f'http://localhost:{port}/')
+        logger.info(f"Serving at http://localhost:{port}/ for {timeout:.0f}s")
+        try:
+            webbrowser.get('windows-default').open(f'http://localhost:{port}/')
+        except webbrowser.Error:
+            webbrowser.open(f'http://localhost:{port}/')
         
         # Set a timer to stop the server after 2 seconds
         stop_timer = threading.Timer(timeout, httpd.shutdown)
