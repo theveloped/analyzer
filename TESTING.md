@@ -60,7 +60,40 @@ Tool length checks are still the separate `length` command (ball model):
 python main.py length testpart_42 4 --diameter 6 --length 120
 ```
 
-## Knobs vs runtime
+## Fast path — testing a whole tool catalog
+
+The `endmill` command runs one 3D voxel closing per tool: exact, but minutes
+per (direction, D, rc). To sweep a catalog, use the Z-map engine instead
+(`zmap.py`, `precompute` + `compose`): the undercut-fixed volume is a
+heightfield along the approach direction, so each tool tip becomes a 2D
+grayscale closing of a rendered depth map, cached per direction as
+per-vertex scalar fields:
+
+```bash
+# once per direction: depth map + gap field per tip + clearance field per shank/holder radius
+python main.py precompute testpart_42 --directions 4 5 --pixel 0.1 \
+    --tips 6:0 6:1 6:3 10:0 10:2 --clearances 3 5 8
+
+# then any full tool assembly is a sub-second numpy threshold over the cache
+python main.py compose testpart_42 4 --diameter 6 --corner_radius 0 \
+    --stickout 120 --holder 5:0,8:40 --serve
+```
+
+`--holder` stacks concentric cylinders (radius:start-height from the tip), so
+shank, holder and spindle nose are all one string; `--sweep 93 120 150 210`
+reports coverage per stickout without recomputing anything. Lengths are free:
+the clearance fields already encode the tallest obstruction within each
+radius, so all 45 catalog lengths are thresholds over the same field.
+
+Catalog math: of the 16 x 13 nose-radius/diameter grid, ~156 combinations are
+valid (rc <= D/2). Per direction that is ~156 tip closings at ~8 s each
+(pixel 0.1 on a 100 mm part) ~ 20 min once, plus ~1 s per clearance radius —
+after which every (tip, length, holder) query composes in ~0.2 s. The exact
+voxel `endmill` path stays useful as a spot-check (it agrees within a couple
+percent of flagged faces: 885 vs 904 on testpart_42, the difference being the
+holder/stickout constraints only `compose` models).
+
+## Knobs vs runtime (exact voxel path)
 
 Reference timings, testpart_42 (100 x 100 x 40 mm) at voxel 0.15 mm, one
 direction: ball ~1 min, flat ~4.5 min, bull nose ~6 min. The flat/bull cost
