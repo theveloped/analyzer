@@ -3,13 +3,14 @@
 ## Setup
 
 ```bash
-git fetch origin
-git checkout claude/cnc-tool-accessibility-analysis-rmm8wq
-pip install meshlib numpy loguru
+pip install -r requirements.txt          # meshlib, numpy, scipy, loguru, fastapi, uvicorn
+cd frontend && npm install && npm run build && cd ..   # builds the viewer UI once
 ```
 
 Requires meshlib >= 3 (the code also still runs on 2.x via API fallbacks).
 STEP input needs the pip meshlib wheel (bundles the STEP reader); STL always works.
+The web UI needs node >= 18 for the one-time `npm run build` (or `npm run dev`
+while hacking on it).
 
 ## Sanity check
 
@@ -59,9 +60,8 @@ python main.py endmill testpart_42 4 --diameter 6 --corner_radius 3 --tollerance
 ```
 
 Unreachable-face indices land in `<dir>/highlights.json`; add `--serve` to
-open the three.js viewer (Windows only as written — elsewhere run
-`python -m http.server` in the repo root and open `index.html` served from
-the working directory).
+open the interactive viewer on the working directory (the "Last CLI
+highlights.json" view replays exactly what the command flagged).
 
 Tool length checks are still the separate `length` command (ball model):
 
@@ -94,22 +94,43 @@ reports coverage per stickout without recomputing anything. Lengths are free:
 the clearance fields already encode the tallest obstruction within each
 radius, so all 45 catalog lengths are thresholds over the same field.
 
-## Interactive viewer
+## Interactive viewer (web app)
 
-Everything the caches know can be inspected interactively:
+Everything the caches know can be inspected interactively, and everything
+the CLI can compute can also be launched from the browser:
 
 ```bash
-python main.py view testpart_42            # exports <dir>/viewer/ and serves it
+python main.py view testpart_42            # open the app preloaded on a workdir
+python main.py view tests/testpart_42.stp  # register a raw STEP/STL and open on it
+python main.py view large_part --port 9000 --no-browser --timeout 3600
 ```
 
-Views: unified verdict (reachable / tip-blocked / holder-blocked /
-inaccessible), accessibility, tip gap heatmap, required-stickout heatmap,
+The app is a FastAPI server (`api/`) plus a Vite/React frontend
+(`frontend/`, built once with `npm run build`; `npm run dev` proxies `/api`
+to port 8000 for live-reload hacking — start `uvicorn api.app:app` next to
+it). The server treats the parent directory of the target as the parts
+root, so sibling working directories all show up in the part picker, and
+the UI can upload a new STEP/STL, mesh it, sample directions, precompute
+tool fields and run any other registered analysis — all through the same
+`pipeline.py` code the CLI uses, writing to the same per-part cache. A field
+precomputed in the UI is immediately visible to `compose` on the CLI and
+vice versa.
+
+Processes are tabs (CNC machining, injection molding, sheet metal —
+the registry seam for future DFM rules). CNC views: unified verdict
+(reachable / tip-blocked / holder-blocked / side-milled / inaccessible),
+accessibility, surface class, tip gap heatmap, required-stickout heatmap,
 engine diff (zmap vs voxel, needs the same tip precomputed with both
 engines), and the last CLI highlights.json. Tolerance, stickout and the
 holder stack are recomputed live in the browser from the cached per-vertex
 fields — no Python round trips — and clicking a face prints its exact gap /
-clearance / accessibility values for step-by-step debugging. The bundle is
-self-contained (three.js is vendored into it), so it also works offline.
+clearance / accessibility values for step-by-step debugging. Injection
+molding shows ranked parting-direction options with per-option coverage
+masks.
+
+`frontend/smoke.mjs` is a Playwright smoke test that walks every view mode
+against a running server (`node smoke.mjs` inside `frontend/`, with
+`CHROMIUM_PATH` pointing at a Chromium binary).
 
 Catalog math: of the 16 x 13 nose-radius/diameter grid, ~156 combinations are
 valid (rc <= D/2). Per direction that is ~156 tip closings at ~8 s each

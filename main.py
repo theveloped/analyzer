@@ -6,7 +6,6 @@ import numpy as np
 from meshlib import mrmeshpy as mm
 from meshlib import mrmeshnumpy as mn
 
-from server import serve
 from analysis import save_mesh, fix_undercuts, double_offset, get_inside_mesh, single_offset, translate, map_result_faces, endmill_closing, endmill_flag_threshold
 from pipeline import (
     FINE_MESH_FILE, FINE_VERTS_FILE, FINE_FACES_FILE,
@@ -14,6 +13,14 @@ from pipeline import (
     mesh_part, compute_directions, parting_options, highlight_union,
     precompute_fields, compose_tool, parse_tips, parse_holder,
 )
+
+
+def serve_workdir(directory, timeout=600.0, port=8080, open_browser=True):
+    """Open the interactive viewer preloaded on one working directory."""
+    from api.app import serve_app
+    workdir = os.path.abspath(directory)
+    serve_app(root=os.path.dirname(workdir) or ".", preload=os.path.basename(workdir),
+              port=port, open_browser=open_browser, timeout=timeout)
 
 if __name__ == "__main__":
     import argparse
@@ -120,9 +127,10 @@ if __name__ == "__main__":
 
     # Create the parser for the "view" command
     parser_view = subparsers.add_parser("view", help="interactive viewer over all cached analysis fields")
-    parser_view.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
-    parser_view.add_argument("--timeout", help="seconds to keep the server alive", type=float, default=600.0)
+    parser_view.add_argument("target", help="working directory or STEP/STL file to open")
+    parser_view.add_argument("--timeout", help="seconds to keep the server alive (default: until Ctrl-C)", type=float, default=None)
     parser_view.add_argument("--port", help="port to serve on", type=int, default=8080)
+    parser_view.add_argument("--no-browser", help="do not open a browser window", action="store_true")
 
     # Create the parser for the "endmill" command
     parser_endmill = subparsers.add_parser("endmill", help="generic endmill tip accessibility (ball, flat or radius end)")
@@ -152,11 +160,7 @@ if __name__ == "__main__":
                            tollerance=args.tollerance)
 
         if args.serve:
-            dir_path = result["workdir"]
-            obj_path = os.path.join(dir_path, FINE_MESH_FILE)
-            logger.info(f"Mesh served at: {obj_path}")
-            index_path = os.path.abspath("./index.html")
-            serve(index_path, dir_path, timeout=10.0)
+            serve_workdir(result["workdir"])
             
     elif args.command == "thickness":
         logger.debug("Computing thickness")
@@ -218,11 +222,8 @@ if __name__ == "__main__":
         obj_path = os.path.join(directory, FINE_MESH_FILE)
         save_mesh(mesh, obj_path)
         if args.serve:
-            logger.info(f"Mesh served at: {obj_path}")
-            index_path = os.path.abspath("./index.html")
-            directory = os.path.dirname(obj_path)
-            serve(index_path, directory, timeout=15.0)
-        
+            serve_workdir(args.directory)
+
     elif args.command == "directions":
         compute_directions(args.directory, count=args.count, axes=args.axes,
                            relax=args.relax, relax_tollerance=args.relax_tollerance,
@@ -239,9 +240,7 @@ if __name__ == "__main__":
 
         highlight_union(args.directory, include=args.include, exclude=args.exclude)
 
-        index_path = os.path.abspath("./index.html")
-        directory = os.path.abspath(args.directory)
-        serve(index_path, directory, timeout=15.0)
+        serve_workdir(args.directory)
         
         
     elif args.command == "tool":
@@ -300,10 +299,7 @@ if __name__ == "__main__":
     
         save_mesh(mesh, obj_path)
         if args.serve:
-            logger.info(f"Mesh served at: {obj_path}")
-            index_path = os.path.abspath("./index.html")
-            directory = os.path.dirname(obj_path)
-            serve(index_path, directory, timeout=15.0)
+            serve_workdir(args.directory)
             
             
             
@@ -348,20 +344,30 @@ if __name__ == "__main__":
         obj_path = os.path.join(directory, FINE_MESH_FILE)
         save_mesh(mesh, obj_path)
         if args.serve:
-            logger.info(f"Mesh served at: {obj_path}")
-            index_path = os.path.abspath("./index.html")
-            directory = os.path.dirname(obj_path)
-            serve(index_path, directory, timeout=15.0)
+            serve_workdir(args.directory)
         
     elif args.command == "view":
-        logger.info("Exporting cached fields and serving the interactive viewer")
+        logger.info("Serving the interactive viewer")
 
-        from viewer import export_viewer_bundle
-        export_viewer_bundle(args.directory)
+        from api.app import serve_app
+        target = os.path.abspath(args.target)
 
-        index_path = os.path.abspath("./viewer.html")
-        directory = os.path.abspath(args.directory)
-        serve(index_path, directory, port=args.port, timeout=args.timeout)
+        if os.path.isdir(target):
+            root = os.path.dirname(target) or "."
+            preload = os.path.basename(target)
+        elif os.path.isfile(target):
+            # register the file as a part in the current directory's parts
+            # root so the UI opens on it; processing then runs from the UI
+            from api.parts import register_part_file
+            root = os.path.abspath(".")
+            part = register_part_file(root, target)
+            preload = part["id"]
+        else:
+            logger.error(f"no such file or directory: {args.target}")
+            sys.exit(1)
+
+        serve_app(root=root, preload=preload, port=args.port,
+                  open_browser=not args.no_browser, timeout=args.timeout)
 
     elif args.command == "precompute":
         logger.info("Precompute height maps and tool fields")
@@ -379,11 +385,7 @@ if __name__ == "__main__":
                      engine=args.engine, window=args.window)
 
         if args.serve:
-            directory = os.path.abspath(args.directory)
-            obj_path = os.path.join(directory, FINE_MESH_FILE)
-            logger.info(f"Mesh served at: {obj_path}")
-            index_path = os.path.abspath("./index.html")
-            serve(index_path, directory, timeout=15.0)
+            serve_workdir(args.directory)
 
     elif args.command == "endmill":
         logger.info("Perform an endmill tip analysis on the mesh")
@@ -430,7 +432,4 @@ if __name__ == "__main__":
         obj_path = os.path.join(directory, FINE_MESH_FILE)
         save_mesh(mesh, obj_path)
         if args.serve:
-            logger.info(f"Mesh served at: {obj_path}")
-            index_path = os.path.abspath("./index.html")
-            directory = os.path.dirname(obj_path)
-            serve(index_path, directory, timeout=15.0)
+            serve_workdir(args.directory)

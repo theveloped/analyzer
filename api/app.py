@@ -156,4 +156,29 @@ def create_app(root=".", preload=None):
     return app
 
 
+def serve_app(root=".", preload=None, port=8080, open_browser=True, timeout=None):
+    """Run the app with uvicorn; optionally open a browser and auto-stop."""
+    import threading
+    import webbrowser
+
+    import uvicorn
+    from loguru import logger
+
+    if not os.path.isdir(FRONTEND_DIST):
+        logger.warning(
+            "frontend/dist not found — build the UI first: cd frontend && npm install && npm run build")
+
+    application = create_app(root, preload=preload)
+    config = uvicorn.Config(application, host="127.0.0.1", port=port, log_level="info")
+    server = uvicorn.Server(config)
+
+    url = f"http://localhost:{port}/"
+    logger.info(f"Serving at {url}" + (f" for {timeout:.0f}s" if timeout else ""))
+    if open_browser:
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    if timeout:
+        threading.Timer(timeout, lambda: setattr(server, "should_exit", True)).start()
+    server.run()
+
+
 app = create_app(os.environ.get("ANALYZER_ROOT", "."))
