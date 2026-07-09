@@ -41,7 +41,7 @@ FREE_SPACE = -1e30  # height of pixels with no material below (tool can plunge)
 # ---------------------------------------------------------------------------
 
 @log_execution_time
-def render_heightmap(mesh, direction, pixel):
+def render_heightmap(mesh, direction, pixel, margin=0):
     """
     Render the height map of `mesh` seen along approach direction `direction`
     (pointing from the part towards the tool). Returns (heights, frame):
@@ -50,6 +50,12 @@ def render_heightmap(mesh, direction, pixel):
       direction axis (larger = closer to the tool), FREE_SPACE where empty
     - frame: dict with orthonormal axes (x, y, d), origin and pixel size, so
       vertices can be projected into map coordinates
+
+    The raster meshlib produces is flush with the mesh bbox, which puts the
+    part's outer silhouette walls exactly on the map border; `margin` adds
+    that many border pixels of FREE_SPACE (shifting the origin to match) so
+    part edges are strictly interior and downstream samplers that clamp to
+    the map clamp into genuine exterior air instead of the border column.
     """
     d = np.asarray(direction, dtype=float)
     d /= np.linalg.norm(d)
@@ -78,6 +84,10 @@ def render_heightmap(mesh, direction, pixel):
     # so height along the approach direction is their negation
     invalid = values == dmap.NOT_VALID_VALUE
     heights = np.where(invalid, np.float32(FREE_SPACE), -values).astype(np.float32)
+
+    if margin > 0:
+        heights = np.pad(heights, margin, constant_values=np.float32(FREE_SPACE))
+        org = org - margin * (x_range / res_x) - margin * (y_range / res_y)
 
     frame = {
         "origin": org,
@@ -128,6 +138,24 @@ def sample_map(map2d, ix, iy):
     ix = np.clip(ix, 0, map2d.shape[1] - 1)
     iy = np.clip(iy, 0, map2d.shape[0] - 1)
     return map2d[iy, ix]
+
+
+def _bracket_corners(fx, fy, shape):
+    """
+    The four pixels whose CENTERS bracket the fractional position, as
+    (ix4, iy4) index arrays of shape (4, V). Vertical CAD walls sit within
+    float epsilon of integer fx/fy on the bbox-anchored grid, right where
+    floor(fx) flips between two columns straddling a height cliff; the
+    bracket instead flips half a pixel away, at pixel centers, so every
+    coplanar wall vertex reads the identical pixel set. Taking the min of a
+    field over the bracket therefore gives subpixel-stable values (the same
+    role the fractional window plays in euclidean_gap).
+    """
+    x0 = np.clip(np.floor(fx - 0.5).astype(int), 0, shape[1] - 1)
+    y0 = np.clip(np.floor(fy - 0.5).astype(int), 0, shape[0] - 1)
+    x1 = np.minimum(x0 + 1, shape[1] - 1)
+    y1 = np.minimum(y0 + 1, shape[0] - 1)
+    return np.stack([x0, x1, x0, x1]), np.stack([y0, y0, y1, y1])
 
 
 def euclidean_gap(closed, fx, fy, height, pixel, window_px):
@@ -205,37 +233,33 @@ def tip_profile(diameter, corner_radius, pixel):
     return footprint, profile
 
 
-def disk_footprint(radius, pixel):
-    n = int(np.ceil(radius / pixel))
-    offsets = (np.arange(2 * n + 1) - n) * pixel
-    rr = np.hypot(offsets[None, :], offsets[:, None])
-    return rr <= radius
-
-
-def _flat_dilate(work, radius, pixel, max_footprint=32, cval=FREE_SPACE):
+def _flat_dilate(work, radius, pixel, max_footprint=None, cval=FREE_SPACE):
     """
-    Grayscale dilation with a FLAT disk, max-pooling the map first when the
-    footprint would be large (same conservative trick as clearance_heightmap:
-    obstructions round up and outward by at most one pooled pixel). `cval` is
-    the border value: FREE_SPACE for plain dilations, -FREE_SPACE when the
-    caller erodes via negation (outside the map is air either way).
+    Grayscale dilation with a FLAT disk, decomposed row-wise: the disk is a
+    stack of horizontal chords, so dilation = max over row offsets of a 1D
+    max filter with the chord's length. maximum_filter1d runs a moving max,
+    so the cost is O(H * W * n_rows) regardless of the chord lengths - and
+    the result is EXACT at full resolution. This replaces the max-pooled
+    approximation, whose pooled-cell rounding shifted feature edges by up to
+    (pool - 1) pixels with a phase that differed between the min and max map
+    edges, biasing verdicts near walls (`max_footprint` is kept for call
+    compatibility and ignored). `cval` is the border value: FREE_SPACE for
+    plain dilations, -FREE_SPACE when the caller erodes via negation
+    (outside the map is air either way).
     """
     if radius <= 0:
         return work
-    pool = int(np.ceil(radius / (max_footprint * pixel)))
-    src = work
-    if pool > 1:
-        pad_y = (-src.shape[0]) % pool
-        pad_x = (-src.shape[1]) % pool
-        src = np.pad(src, ((0, pad_y), (0, pad_x)), constant_values=cval)
-        src = src.reshape(src.shape[0] // pool, pool, src.shape[1] // pool, pool).max(axis=(1, 3))
-    eff_pixel = pixel * pool
-    eff_radius = radius + (0.71 * eff_pixel if pool > 1 else 0.0)
-    footprint = disk_footprint(eff_radius, eff_pixel)
-    out = ndimage.grey_dilation(src, footprint=footprint, mode="constant", cval=cval)
-    if pool > 1:
-        out = np.repeat(np.repeat(out, pool, axis=0), pool, axis=1)
-        out = out[: work.shape[0], : work.shape[1]]
+    n = int(radius / pixel)
+    r2 = (radius / pixel) ** 2
+    H = work.shape[0]
+    src = np.pad(work, ((n, n), (0, 0)), constant_values=cval)
+    out = None
+    for dy in range(-n, n + 1):
+        # the disk's chord at row offset dy: include dx iff hypot(dy, dx) <= r
+        half = int(np.sqrt(r2 - dy * dy))
+        filt = ndimage.maximum_filter1d(src[n + dy:n + dy + H], size=2 * half + 1,
+                                        axis=1, mode="constant", cval=cval)
+        out = filt if out is None else np.maximum(out, filt, out=out)
     return out
 
 
@@ -286,9 +310,9 @@ def tip_position_map(heights, diameter, corner_radius, pixel):
     forward offset (see close_heightmap).
 
     The tool bottom is disk(D/2 - rc) + sphere(rc) under Minkowski sums, and
-    dilation by a sum is sequential dilation, so the flat part runs pooled
-    and the spherical part chunked - cost grows ~linearly with the tool
-    radius instead of quadratically.
+    dilation by a sum is sequential dilation, so the flat part runs
+    row-decomposed and the spherical part chunked - cost grows ~linearly
+    with the tool radius instead of quadratically.
     """
     radius = diameter / 2.0
     corner_radius = min(max(corner_radius, 0.0), radius)
@@ -306,8 +330,9 @@ def close_heightmap(heights, diameter, corner_radius, pixel):
     the machined surface, i.e. the lowest surface the tool tip envelope can
     generate above the current one. closing >= heights everywhere; the
     difference is material the tool cannot remove. Decomposed like
-    tip_position_map (disk part pooled, sphere part chunked); the map is
-    padded with free space so borders behave like the real air outside.
+    tip_position_map (disk part row-decomposed, sphere part chunked); the
+    map is padded with free space so borders behave like the real air
+    outside.
     """
     radius = diameter / 2.0
     corner_radius = min(max(corner_radius, 0.0), radius)
@@ -360,7 +385,7 @@ def _contact_offsets(diameter, corner_radius, pixel, max_rings=24, max_angles=48
 
 @log_execution_time
 def tip_aware_min_stickout(tip_map, clear_map, diameter, corner_radius, pixel,
-                           ix, iy, height):
+                           fx, fy, height):
     """
     Per-vertex minimal stickout for ONE holder cylinder (measured from the
     tool tip), coupling the tip geometry with the holder:
@@ -381,13 +406,20 @@ def tip_aware_min_stickout(tip_map, clear_map, diameter, corner_radius, pixel,
     D/2 away from the contact point. Contact offsets are ring/angle sampled
     (see _contact_offsets) so the cost per field is O(samples x verts),
     independent of the tool diameter.
+
+    Takes FRACTIONAL pixel coordinates and searches from the 2x2 pixel
+    bracket around each vertex (min over the four corners): floor-indexed
+    starts alternate between the two columns straddling a vertical wall's
+    height cliff, speckling the field vertex-by-vertex. Axis candidates that
+    fall outside the map clamp to the border; with the rendered margin those
+    are exterior-air columns whose dilated values only ever err conservative
+    (over-required stickout for axes far outside the silhouette).
     """
     eps = 1.5 * pixel
 
-    ix = np.clip(ix, 0, tip_map.shape[1] - 1)
-    iy = np.clip(iy, 0, tip_map.shape[0] - 1)
+    ix, iy = _bracket_corners(fx, fy, tip_map.shape)  # (4, V)
 
-    best = np.full(height.shape, np.inf)
+    best = np.full(ix.shape, np.inf)
     for dy, dx, prof in _contact_offsets(diameter, corner_radius, pixel):
         ax = np.clip(ix - dx, 0, tip_map.shape[1] - 1)
         ay = np.clip(iy - dy, 0, tip_map.shape[0] - 1)
@@ -400,7 +432,7 @@ def tip_aware_min_stickout(tip_map, clear_map, diameter, corner_radius, pixel,
     # to the vertex-centred estimate so the field stays finite
     fallback = clear_map[iy, ix] - height
     best = np.where(np.isfinite(best), best, fallback)
-    return np.maximum(best, 0.0)
+    return np.maximum(best.min(axis=0), 0.0)
 
 
 @log_execution_time
@@ -410,7 +442,7 @@ def clearance_heightmap(heights, radius, pixel, max_footprint=32):
     grayscale dilation (padded with free space so the border behaves like the
     real air outside the rendered map). A cylinder of this radius whose
     bottom sits at height h above a vertex collides iff
-    clearance(vertex) - height(vertex) > h. Implemented with the pooled flat
+    clearance(vertex) - height(vertex) > h. Implemented with the exact flat
     dilation used everywhere else.
     """
     pad = _mink_pad(radius, pixel)
@@ -451,7 +483,7 @@ class DirectionCache:
     compose_unreachable works on either cache.
     """
 
-    VERSION = 3  # padded-border morphology + subpixel Euclidean gap sampling
+    VERSION = 4  # rendered border margin + subpixel stickout/clearance sampling
 
     def __init__(self, workdir, direction_index, verts=None, faces=None, pixel=0.1,
                  window=0.3, engine="zmap", scale=10.0):
@@ -489,7 +521,12 @@ class DirectionCache:
                 "pixel": np.array([pixel]),
             }
             if engine == "zmap":
-                heights, frame = render_heightmap(self._get_mesh(), self.direction, pixel)
+                # margin covers the whole euclidean_gap window (window_px in
+                # tip_gap) plus one pixel, so border-wall vertices see real
+                # exterior air instead of clamping into the last material column
+                margin = max(2, int(np.ceil(window / pixel))) + 1
+                heights, frame = render_heightmap(self._get_mesh(), self.direction, pixel,
+                                                  margin=margin)
                 self._fields.update({
                     "heights": heights,
                     "origin": frame["origin"],
@@ -589,10 +626,10 @@ class DirectionCache:
                 raise NotImplementedError("tip-aware stickout fields need the zmap engine")
             logger.debug(f"Computing stickout field {key} for direction {self.direction_index}")
             pixel = self.frame["pixel"]
-            ix, iy, vheight = self._vertex_samples()
+            self._vertex_samples()  # ensure projections exist
             sreq = tip_aware_min_stickout(
                 self._tip_map(diameter, corner_radius), self._clearance_map(radius),
-                diameter, corner_radius, pixel, ix, iy, vheight,
+                diameter, corner_radius, pixel, self._fx, self._fy, self._vheight,
             )
             self._fields[key] = sreq.astype(np.float32)
             self._save()
@@ -610,8 +647,9 @@ class DirectionCache:
             logger.debug(f"Computing clearance field {key} for direction {self.direction_index} ({self.engine})")
             if self.engine == "zmap":
                 dilated = self._clearance_map(radius)
-                ix, iy, vheight = self._vertex_samples()
-                clear = sample_map(dilated, ix, iy) - vheight
+                self._vertex_samples()  # ensure projections exist
+                ix4, iy4 = _bracket_corners(self._fx, self._fy, dilated.shape)
+                clear = dilated[iy4, ix4].min(axis=0) - self._vheight
             else:
                 # grow the undercut-fixed mesh in-plane by the cylinder
                 # radius (3D, exact), then read the grown volume's top
