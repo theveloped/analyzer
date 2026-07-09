@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 zcache/
 /testpart_42/
+results/
+normals.npy
+part.json
+frontend/node_modules/
+frontend/dist/
