@@ -210,8 +210,8 @@ surface passes below it counts only the sub-pixel lateral distance, so walls swe
 the tool side never flag — critical for 2D-milled parts (exact 90° walls) and molds
 (89–91° draft). Gaps up to the `--window` parameter (default 0.3) are exact to pixel
 resolution; larger gaps are reported as lower bounds, which is all thresholding
-needs. Holder clearance maps are max-pooled before dilation (conservative) to keep
-large-radius footprints cheap.
+needs. Flat-disk dilations (holder clearance, tool flats) are decomposed into
+per-row moving-max chords, so large radii stay cheap while remaining exact.
 
 **The voxel engine behind the same cache.** `DirectionCache(engine="voxel")` fills
 the very same per-vertex fields with the 3D pipeline instead — tip gaps from
@@ -262,10 +262,10 @@ per-radius clearance dilation. Contact offsets are ring/angle *sampled* (constan
 budget, ~1k samples regardless of tool size; skipping candidates is strictly
 conservative), so each field costs O(samples × verts) — ~0.7 s at 34k verts —
 independent of the tool diameter. Both dilations are decomposed by the same
-Minkowski identity as the 3D path (tool bottom = disk ⊕ sphere → pooled flat
-dilation + chunked spherical dilations, `ball(r1) ⊕ ball(r2) = ball(r1+r2)`), which
-turns the naive O((D/pixel)²) structuring elements into ~O(D/pixel): a D16 ball-nose
-ITO drops from 48 s to 6 s, a D10 flat from 11 s to 0.8 s.
+Minkowski identity as the 3D path (tool bottom = disk ⊕ sphere → row-decomposed
+flat dilation + chunked spherical dilations, `ball(r1) ⊕ ball(r2) = ball(r1+r2)`),
+which turns the naive O((D/pixel)²) structuring elements into ~O(D/pixel): a D16
+ball-nose ITO drops from 48 s to 6 s, a D10 flat from 11 s to 0.8 s.
 
 Catalog scaling (156 valid tips, a handful of holder radii, 45 lengths): gap fields
 ≈ 156 × 2-4 s, stickout fields ≈ 156 × radii × 0.7 s — both linear, no length term
