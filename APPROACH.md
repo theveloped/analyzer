@@ -21,7 +21,7 @@ directory so expensive steps are cached between runs:
 | `fine_verts.npy` / `fine_faces.npy` | Numpy cache of the same mesh (fast reload, stable face indexing) |
 | `directions.npy` | Sampled candidate tool-approach directions, shape `(D, 3)` |
 | `accessibility.npy` | Boolean matrix, shape `(D, F)` — face `f` visible from direction `d` |
-| `highlights.json` | Face indices to color red in the three.js viewer (`index.html` + `server.py`) |
+| `highlights.json` | Face indices flagged by the last CLI run (replayed by the viewer's highlights mode) |
 
 ### Stage 1 — `mesh`: canonicalize the input
 
@@ -44,18 +44,26 @@ array is laid out as **antipodal pairs** `[d0, -d0, d1, -d1, ...]`. Pairs matter
 because both mold halves (injection molding) and 2-setup 3-axis machining approach the
 part from opposite directions.
 
-`compute_accessibility` then runs `mm.findUndercuts(mesh, dir)` per direction: a face
-is *accessible* from direction `d` iff it is **not** an undercut when looking along
-`d`. Inverting the undercut bitset gives one boolean row per direction — the
-`(D, F)` accessibility matrix. This is the "everything at once" primitive: one meshlib
-call classifies all faces for a direction.
+`compute_accessibility` builds the `(D, F)` accessibility matrix with our own
+per-face visibility test (`zmap.face_visibility`): a face is *accessible* from
+direction `d` iff it faces the tool within a small angular relaxation
+(`n·d ≥ −sin(tol)`, default 0.1°, so a wall at exactly 90° is deterministically
+front-facing) **and** nothing shadows it per a height map rendered along `d`
+(the column top, sampled at the centroid pushed one pixel outward along the
+lateral component of the normal with the subpixel-stable bracket-corner min,
+must not rise above the face). One heightmap render plus vectorized NumPy per
+direction; the map resolution is auto-derived from the bounding box
+(`directions --pixel` overrides).
 
-Optional **relaxation** (`relax_accessibility`): faces that are exactly tangent to a
-direction (vertical walls) flip between accessible/inaccessible due to numerical
-noise. To tolerate this, `generate_cone_vectors` builds `n` directions on a small cone
-(e.g. 1°) around the nominal direction, recomputes undercuts for each, and ORs the
-results. A face counts as accessible if any direction within the tolerance cone can
-see it.
+This replaced `mm.findUndercuts`, whose hard front/back-facing verdict flips
+between accessible/inaccessible for faces tangent to the direction — the same
+wall speckle the raster fixes in zmap.py solved for the tool fields. The
+legacy path is kept as `compute_accessibility_meshlib` for A/B comparison,
+and the cone-based **relaxation** (`relax_accessibility`: OR of `n` extra
+undercut passes on a 1° cone, `--relax`) still works but is no longer needed —
+the angular tolerance is built into the visibility test at no extra passes.
+On the Aligator test part the isolated-face speckle count from ±Z drops from
+~13.8k faces (meshlib) to ~180 (genuine shadow-boundary faces).
 
 ### Stage 3 — `options`: pick setups / parting directions
 
@@ -298,12 +306,35 @@ sphere) gives local wall thickness per vertex; faces thinner than 0.7× or thick
 1.3× the mean are flagged. Useful for molding/DFM feedback with the same
 highlight-and-view workflow.
 
-### Visualization
+### Visualization & the web app
 
-Every stage ends the same way: dump flagged face indices to `highlights.json`, then
-`server.py` serves `index.html` — a three.js viewer that loads `fine_mesh.obj`
-(un-indexed, 3 vertices per face, so face index × 3 addresses its vertices) and paints
-highlighted faces red.
+Every CLI stage still ends the same way: dump flagged face indices to
+`highlights.json`. Visualization is a FastAPI server (`api/`) plus a
+Vite/React/three.js frontend (`frontend/`), launched by `main.py view
+<workdir-or-file>` or any command's `--serve` flag. The mesh travels as raw
+typed arrays (verts f4, faces u4, face normals f4) and is rendered
+un-indexed — 3 vertices per face, so face index × 3 addresses its vertices —
+exactly the contract the analyses' per-face masks assume.
+
+The seam for adding analyses and processes is a registry on both sides:
+
+- **Backend** (`processes/`): a `ProcessDef` per manufacturing process
+  (prep, cnc, injection_molding, sheet_metal) holding `AnalysisDef`s. Each
+  analysis declares typed params (rendered as an auto-generated form in the
+  UI) and a `run(workdir, params, progress)` that calls the shared
+  `pipeline.py` functions and writes into the per-part cache: CNC fields go
+  to `zcache/dir_*.npz` via `DirectionCache`, generic results to
+  `results/<process>/<analysis>/<paramhash>.json[.npz]`. The manifest
+  endpoint rebuilds from disk on every request, so CLI- and UI-computed
+  fields are interchangeable. Jobs run on a single worker thread (meshlib
+  must not run concurrently) and are polled for progress.
+- **Frontend** (`frontend/src/processes/`): a `ProcessPlugin` per process
+  contributes view modes (`paint(ctx)` fills the face color buffer from
+  fetched fields), optional custom controls and click-to-inspect lines.
+  Generic mask/heatmap/highlights painters live in `colorizers/core.ts`, so
+  a new process gets rendering for free; interactive thresholds (tolerance,
+  stickout, holder stack) stay client-side over the cached per-vertex
+  fields.
 
 ## The general recipe
 
@@ -329,10 +360,6 @@ Every check in the repo follows the same pattern:
   for large direction counts.
 - `get_inside_indices` loops face-by-face building one-bit bitsets — correct but very
   slow; `inside_test.py` is a sandbox exploring a bulk-mapping alternative.
-- The `serve` flow is Windows-specific (`webbrowser.get('windows-default')`) and the
-  viewer relies on CDN scripts.
-- Per-face vertex coloring in `index.html` assumes the OBJ loader keeps faces
-  un-indexed; fine for meshes written by `save_obj_mesh`, but fragile in general.
 - `toolart.py`, `drawer.py`, `tooltest.py` are standalone sketches for drawing tool
   geometry (SVG/ASCII) — presumably groundwork for parameterizing real tool/holder
   stacks, not yet wired into the analysis.

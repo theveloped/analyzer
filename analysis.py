@@ -453,16 +453,50 @@ def sample_unity_vector_pairs(n):
 
 
 @log_execution_time
-def compute_accessibility(mesh, directions, face_count):
-    # compute undercuts per direction and store them in one single numpy array
-    
+def compute_accessibility_meshlib(mesh, directions, face_count):
+    """Legacy accessibility via meshlib undercut detection.
+
+    Kept for A/B comparison: its hard front/back-facing verdict flips for
+    faces tangent to a direction (vertical walls), producing speckle that
+    only the expensive cone relaxation smooths out.
+    """
     dir_count = len(directions)
     accessibility = np.ones((dir_count, face_count), dtype=bool)
     for i in range(dir_count):
         x, y, z = directions[i]
         undercuts = get_undercuts(mesh, x, y, z)
         accessibility[i, :] = np.invert(undercuts)
-        
+
+    return accessibility
+
+
+@log_execution_time
+def compute_accessibility(mesh, directions, face_count, *, tolerance_deg=0.1,
+                          pixel=None):
+    """Per-direction face accessibility via our own visibility test.
+
+    A face is accessible iff it faces the direction within `tolerance_deg`
+    (near-vertical walls are deterministically front-facing — no speckle)
+    and no material shadows it per a rendered height map (zmap engine).
+    `pixel` is the height-map resolution; None derives it from the part's
+    bounding box diagonal.
+    """
+    from zmap import face_visibility
+
+    verts, faces = get_mesh_data(mesh)
+
+    if pixel is None:
+        diagonal = np.linalg.norm(verts.max(axis=0) - verts.min(axis=0))
+        pixel = float(np.clip(diagonal / 1000.0, 0.05, 1.0))
+        logger.debug(f"Auto visibility map pixel: {pixel:.3f}")
+
+    dir_count = len(directions)
+    accessibility = np.ones((dir_count, face_count), dtype=bool)
+    for i in range(dir_count):
+        accessibility[i, :] = face_visibility(
+            mesh, verts, faces, directions[i],
+            tolerance_deg=tolerance_deg, pixel=pixel)
+
     return accessibility
 
 

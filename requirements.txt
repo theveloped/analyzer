@@ -2,3 +2,6 @@ meshlib>=3
 numpy
 scipy
 loguru
+fastapi
+uvicorn[standard]
+python-multipart

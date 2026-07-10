@@ -6,17 +6,21 @@ import numpy as np
 from meshlib import mrmeshpy as mm
 from meshlib import mrmeshnumpy as mn
 
-from utils import has_valid_extension, ensure_directory, ensure_parent_directories
-from server import serve
-from analysis import load_mesh, save_mesh, get_mesh_data, sample_unity_vector_pairs, compute_accessibility, find_combinations_matching_best, relax_accessibility, fix_undercuts, offset_mesh, double_offset, get_distance, get_inside_mesh, get_inside_indices, single_offset, translate, map_result_faces, generate_circle_translations, endmill_closing, endmill_flag_threshold, subdivide_mesh
+from analysis import save_mesh, fix_undercuts, double_offset, get_inside_mesh, single_offset, translate, map_result_faces, endmill_closing, endmill_flag_threshold
+from pipeline import (
+    FINE_MESH_FILE, FINE_VERTS_FILE, FINE_FACES_FILE,
+    DIRECTIONS_FILE, ACCESSIBILITY_FILE, HIGHLIGHT_FILE,
+    mesh_part, compute_directions, parting_options, highlight_union,
+    precompute_fields, compose_tool, parse_tips, parse_holder,
+)
 
 
-FINE_MESH_FILE = "fine_mesh.obj"
-FINE_VERTS_FILE = "fine_verts.npy"
-FINE_FACES_FILE = "fine_faces.npy"
-DIRECTIONS_FILE = "directions.npy"
-ACCESSIBILITY_FILE = "accessibility.npy"
-HIGHLIGHT_FILE = "highlights.json"
+def serve_workdir(directory, timeout=600.0, port=8080, open_browser=True):
+    """Open the interactive viewer preloaded on one working directory."""
+    from api.app import serve_app
+    workdir = os.path.abspath(directory)
+    serve_app(root=os.path.dirname(workdir) or ".", preload=os.path.basename(workdir),
+              port=port, open_browser=open_browser, timeout=timeout)
 
 if __name__ == "__main__":
     import argparse
@@ -55,6 +59,8 @@ if __name__ == "__main__":
     parser_directions.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
     parser_directions.add_argument("--count", help="number of directions determin", type=int, default=64)
     parser_directions.add_argument("--axes", help="prepend the six principal +/-X/Y/Z directions", action="store_true")
+    parser_directions.add_argument("--tollerance", help="angular relaxation of the visibility test in degrees (near-vertical walls within it count as facing)", type=float, default=0.1)
+    parser_directions.add_argument("--pixel", help="visibility height map pixel size (default: auto from bounding box)", type=float, default=None)
     parser_directions.add_argument("--relax", help="relax the winning directions", action="store_true")
     parser_directions.add_argument("--relax_tollerance", help="angle tollerance of slides in degrees", type=float, default=1.0)
     parser_directions.add_argument("--relax_samples", help="the number of additional sampels used in relaxation", type=int, default=4)
@@ -123,9 +129,10 @@ if __name__ == "__main__":
 
     # Create the parser for the "view" command
     parser_view = subparsers.add_parser("view", help="interactive viewer over all cached analysis fields")
-    parser_view.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
-    parser_view.add_argument("--timeout", help="seconds to keep the server alive", type=float, default=600.0)
+    parser_view.add_argument("target", help="working directory or STEP/STL file to open")
+    parser_view.add_argument("--timeout", help="seconds to keep the server alive (default: until Ctrl-C)", type=float, default=None)
     parser_view.add_argument("--port", help="port to serve on", type=int, default=8080)
+    parser_view.add_argument("--no-browser", help="do not open a browser window", action="store_true")
 
     # Create the parser for the "endmill" command
     parser_endmill = subparsers.add_parser("endmill", help="generic endmill tip accessibility (ball, flat or radius end)")
@@ -149,48 +156,13 @@ if __name__ == "__main__":
 
     if args.command == "mesh":
         logger.debug(f"Meshing file: {args.input}")
-        
-        # Check if the file has a valid extension
-        has_valid_extension(args.input, [".stl", ".stp", ".step"])
-        
-        # load the mesh
-        mesh = load_mesh(args.input, heal=args.heal, offset=args.offset, tollerance=args.tollerance)
 
-        if args.subdivide:
-            mesh = subdivide_mesh(mesh, args.subdivide)
-        verts, faces = get_mesh_data(mesh)
-        
-        dir_path = args.output
-        
-        # Save mesh to file
-        if args.output:
-            dir_path = args.output
+        result = mesh_part(args.input, args.output, heal=args.heal,
+                           subdivide=args.subdivide, offset=args.offset,
+                           tollerance=args.tollerance)
 
-        else:
-            input_name = os.path.basename(args.input)
-            input_name = input_name.rsplit(".", 1)[0]
-            dir_path = os.path.join(os.path.abspath("."), input_name)
-        
-        # Define other files
-        ensure_directory(dir_path)
-        obj_path = os.path.join(dir_path, FINE_MESH_FILE)
-        verts_path = os.path.join(dir_path, FINE_VERTS_FILE)
-        faces_path = os.path.join(dir_path, FINE_FACES_FILE)
-         
-        logger.debug(f"Storing verts: {verts_path}")
-        np.save(verts_path, verts)
-        
-        logger.debug(f"Storing faces: {faces_path}")
-        np.save(faces_path, faces)
-        
-        logger.debug(f"Storing obj file: {obj_path}")
-        save_mesh(mesh, obj_path)
-        
         if args.serve:
-            logger.info(f"Mesh served at: {obj_path}")
-            index_path = os.path.abspath("./index.html")
-            directory = os.path.dirname(obj_path)
-            serve(index_path, dir_path, timeout=10.0)
+            serve_workdir(result["workdir"])
             
     elif args.command == "thickness":
         logger.debug("Computing thickness")
@@ -252,101 +224,26 @@ if __name__ == "__main__":
         obj_path = os.path.join(directory, FINE_MESH_FILE)
         save_mesh(mesh, obj_path)
         if args.serve:
-            logger.info(f"Mesh served at: {obj_path}")
-            index_path = os.path.abspath("./index.html")
-            directory = os.path.dirname(obj_path)
-            serve(index_path, directory, timeout=15.0)
-        
+            serve_workdir(args.directory)
+
     elif args.command == "directions":
-        logger.debug(f"Computing {args.count} directions")
-        directions = sample_unity_vector_pairs(args.count)
+        compute_directions(args.directory, count=args.count, axes=args.axes,
+                           tollerance=args.tollerance, pixel=args.pixel,
+                           relax=args.relax, relax_tollerance=args.relax_tollerance,
+                           relax_samples=args.relax_samples)
 
-        if args.axes:
-            # principal axes as antipodal pairs, matching the pair layout
-            axes = np.array([
-                [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0], [0.0, -1.0, 0.0],
-                [0.0, 0.0, 1.0], [0.0, 0.0, -1.0],
-            ])
-            directions = np.vstack([axes, directions])
-        
-        logger.debug("Cheking accessibility per direction")
-        verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
-        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
-        mesh = mn.meshFromFacesVerts(faces, verts)
-        
-        face_count = len(faces)
-        accessibility = compute_accessibility(mesh, directions, face_count)
-        
-        if args.relax:
-            for direction_index in range(directions.shape[0]):
-                relaxed_accessibility = relax_accessibility(mesh, accessibility[direction_index,:], directions[direction_index], tolerance_degrees=args.relax_tollerance, n=args.relax_samples)
-                accessibility[direction_index,:] = relaxed_accessibility
-        
-        directions_path = os.path.join(args.directory, DIRECTIONS_FILE)
-        accessibility_path = os.path.join(args.directory, ACCESSIBILITY_FILE)
-        
-        logger.debug(f"Storing directions at: {directions_path}")
-        np.save(directions_path, directions)
-        
-        logger.debug(f"Storing accessibility at: {accessibility_path}")
-        np.save(accessibility_path, accessibility)
-        
-        
     elif args.command == "options":
-        logger.debug(f"Computing preferred options with {args.slides} slides")
+        parting_options(args.directory, slides=args.slides, count=args.count,
+                        slide_tollerance=args.slide_tollerance, relax=args.relax,
+                        relax_tollerance=args.relax_tollerance,
+                        relax_samples=args.relax_samples)
 
-        verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
-        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
-        mesh = mn.meshFromFacesVerts(faces, verts)
-        
-        directions = np.load(os.path.join(args.directory, DIRECTIONS_FILE))
-        accessibility = np.load(os.path.join(args.directory, ACCESSIBILITY_FILE))
-        
-        matching_combinations = find_combinations_matching_best(directions, accessibility, max_slides=args.slides, max_results=args.count, tolerance_degrees=args.slide_tollerance)
-        
-        if args.relax:
-           
-            # Compute the unique open closed directions
-            unique_directions = set()
-            for option, performance in matching_combinations[:args.count]:
-                unique_directions.update(option)
-
-            for direction_index in unique_directions:
-                relaxed_accessibility = relax_accessibility(mesh, accessibility[direction_index,:], directions[direction_index], tolerance_degrees=args.relax_tollerance, n=args.relax_samples)
-                accessibility[direction_index,:] = relaxed_accessibility
-                
-            np.save(os.path.join(args.directory, ACCESSIBILITY_FILE), accessibility)
-            
     elif args.command == "serve":
         logger.info("Serving results in browser")
-        
-        directions = np.load(os.path.join(args.directory, DIRECTIONS_FILE))
-        accessibility = np.load(os.path.join(args.directory, ACCESSIBILITY_FILE))
 
-        
-        if args.include:
-            union = np.any(accessibility[args.include, :], axis=0)
-            
-        elif args.exclude:
-            union = np.any(accessibility[args.exclude, :], axis=0)  
-            union = np.invert(union)
-            # union = np.logical_not(union)
+        highlight_union(args.directory, include=args.include, exclude=args.exclude)
 
-        # Export inidces as an example file to disk
-        indices = np.where(union)[0]
-        indices = indices.tolist()
-        
-        logger.debug(f"Highlighting {len(indices)} faces")
-
-        numpyData = {"faces": indices}
-        highlight_path = os.path.join(args.directory, HIGHLIGHT_FILE)
-        with open(highlight_path, "w") as f:
-            json.dump(numpyData, f)
-            
-        index_path = os.path.abspath("./index.html")
-        directory = os.path.abspath(args.directory)
-        serve(index_path, directory, timeout=15.0)
+        serve_workdir(args.directory)
         
         
     elif args.command == "tool":
@@ -405,10 +302,7 @@ if __name__ == "__main__":
     
         save_mesh(mesh, obj_path)
         if args.serve:
-            logger.info(f"Mesh served at: {obj_path}")
-            index_path = os.path.abspath("./index.html")
-            directory = os.path.dirname(obj_path)
-            serve(index_path, directory, timeout=15.0)
+            serve_workdir(args.directory)
             
             
             
@@ -453,92 +347,48 @@ if __name__ == "__main__":
         obj_path = os.path.join(directory, FINE_MESH_FILE)
         save_mesh(mesh, obj_path)
         if args.serve:
-            logger.info(f"Mesh served at: {obj_path}")
-            index_path = os.path.abspath("./index.html")
-            directory = os.path.dirname(obj_path)
-            serve(index_path, directory, timeout=15.0)
+            serve_workdir(args.directory)
         
     elif args.command == "view":
-        logger.info("Exporting cached fields and serving the interactive viewer")
+        logger.info("Serving the interactive viewer")
 
-        from viewer import export_viewer_bundle
-        export_viewer_bundle(args.directory)
+        from api.app import serve_app
+        target = os.path.abspath(args.target)
 
-        index_path = os.path.abspath("./viewer.html")
-        directory = os.path.abspath(args.directory)
-        serve(index_path, directory, port=args.port, timeout=args.timeout)
+        if os.path.isdir(target):
+            root = os.path.dirname(target) or "."
+            preload = os.path.basename(target)
+        elif os.path.isfile(target):
+            # register the file as a part in the current directory's parts
+            # root so the UI opens on it; processing then runs from the UI
+            from api.parts import register_part_file
+            root = os.path.abspath(".")
+            part = register_part_file(root, target)
+            preload = part["id"]
+        else:
+            logger.error(f"no such file or directory: {args.target}")
+            sys.exit(1)
+
+        serve_app(root=root, preload=preload, port=args.port,
+                  open_browser=not args.no_browser, timeout=args.timeout)
 
     elif args.command == "precompute":
         logger.info("Precompute height maps and tool fields")
-        from zmap import DirectionCache
-
-        verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
-        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
-
-        tips = []
-        for spec in args.tips:
-            diameter, _, corner = spec.partition(":")
-            tips.append((float(diameter), float(corner or 0.0)))
-
-        for direction_index in args.directions:
-            logger.info(f"Direction {direction_index}")
-            cache = DirectionCache(args.directory, direction_index, verts=verts, faces=faces, pixel=args.pixel, window=args.window, engine=args.engine)
-            for diameter, corner_radius in tips:
-                cache.tip_gap(diameter, corner_radius)
-            for radius in args.clearances:
-                cache.clearance(radius)
-            if args.engine == "zmap":
-                # tip-aware holder stickout fields per (tip, cylinder radius)
-                for diameter, corner_radius in tips:
-                    for radius in args.clearances:
-                        cache.tip_min_stickout(diameter, corner_radius, radius)
+        precompute_fields(args.directory, directions=args.directions,
+                          pixel=args.pixel, tips=parse_tips(args.tips),
+                          clearances=args.clearances, engine=args.engine,
+                          window=args.window)
 
     elif args.command == "compose":
         logger.info("Compose tool accessibility from precomputed fields")
-        from zmap import DirectionCache, compose_unreachable
+        compose_tool(args.directory, args.direction, pixel=args.pixel,
+                     tollerance=args.tollerance, diameter=args.diameter,
+                     corner_radius=args.corner_radius, stickout=args.stickout,
+                     cylinders=parse_holder(args.holder), sweep=args.sweep,
+                     engine=args.engine, window=args.window)
 
-        verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
-        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
-        accessibility = np.load(os.path.join(args.directory, ACCESSIBILITY_FILE))
-
-        cylinders = None
-        if args.holder:
-            cylinders = []
-            for spec in args.holder.split(","):
-                radius, _, start = spec.partition(":")
-                cylinders.append((float(radius), float(start or 0.0)))
-
-        cache = DirectionCache(args.directory, args.direction, verts=verts, faces=faces, pixel=args.pixel, window=args.window, engine=args.engine)
-        unreachable_faces, gap, min_stick = compose_unreachable(
-            cache, faces, args.diameter, args.corner_radius, args.tollerance,
-            stickout=args.stickout, cylinders=cylinders,
-        )
-
-        # Keep only the faces that are accessible
-        unreachable_faces = unreachable_faces[accessibility[args.direction, unreachable_faces]]
-
-        accessible_count = int(accessibility[args.direction].sum())
-        logger.info(f"Tool D={args.diameter} rc={args.corner_radius} stickout={args.stickout} cannot reach {len(unreachable_faces)} of {accessible_count} accessible faces")
-
-        # A stickout sweep is free: threshold the cached per-vertex field
-        if args.sweep and min_stick is not None:
-            for stickout in args.sweep:
-                blocked = (gap > args.tollerance) | (min_stick > stickout + args.tollerance)
-                swept = np.where(blocked[faces].all(axis=1))[0]
-                swept = swept[accessibility[args.direction, swept]]
-                logger.info(f"  stickout {stickout:8.2f}: {len(swept)} unreachable faces")
-
-        numpyData = {"faces": unreachable_faces.tolist()}
-        highlight_path = os.path.join(args.directory, HIGHLIGHT_FILE)
-        with open(highlight_path, "w") as f:
-            json.dump(numpyData, f)
-
-        directory = os.path.abspath(args.directory)
-        obj_path = os.path.join(directory, FINE_MESH_FILE)
         if args.serve:
-            logger.info(f"Mesh served at: {obj_path}")
-            index_path = os.path.abspath("./index.html")
-            serve(index_path, directory, timeout=15.0)
+            serve_workdir(args.directory)
 
     elif args.command == "endmill":
         logger.info("Perform an endmill tip analysis on the mesh")
@@ -585,7 +435,4 @@ if __name__ == "__main__":
         obj_path = os.path.join(directory, FINE_MESH_FILE)
         save_mesh(mesh, obj_path)
         if args.serve:
-            logger.info(f"Mesh served at: {obj_path}")
-            index_path = os.path.abspath("./index.html")
-            directory = os.path.dirname(obj_path)
-            serve(index_path, directory, timeout=15.0)
+            serve_workdir(args.directory)

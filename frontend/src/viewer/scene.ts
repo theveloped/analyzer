@@ -1,0 +1,150 @@
+// Plain three.js scene: one un-indexed mesh with per-vertex colors written
+// imperatively (three vertices per face, so faceIndex * 3 addresses a face's
+// corners — the same contract the old viewer relied on).
+
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import type { RGB } from '../registry/types';
+
+export class Scene3D {
+  private scene = new THREE.Scene();
+  private camera: THREE.PerspectiveCamera;
+  private renderer: THREE.WebGLRenderer;
+  private controls: OrbitControls;
+  private mesh: THREE.Mesh | null = null;
+  private colorAttr: THREE.BufferAttribute | null = null;
+  private faceCount = 0;
+  private raycaster = new THREE.Raycaster();
+  private downAt: [number, number] | null = null;
+  private disposed = false;
+
+  onPick: ((faceIndex: number) => void) | null = null;
+
+  constructor(private container: HTMLElement) {
+    this.scene.background = new THREE.Color(0x21262c);
+    this.camera = new THREE.PerspectiveCamera(
+      50, container.clientWidth / container.clientHeight, 0.1, 5000);
+    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer.setSize(container.clientWidth, container.clientHeight);
+    container.appendChild(this.renderer.domElement);
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.0));
+    const dir1 = new THREE.DirectionalLight(0xffffff, 0.55);
+    dir1.position.set(-3, 10, -10);
+    this.scene.add(dir1);
+    const dir2 = new THREE.DirectionalLight(0xffffff, 0.35);
+    dir2.position.set(3, -10, 10);
+    this.scene.add(dir2);
+
+    window.addEventListener('resize', this.onResize);
+    this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.addEventListener('pointerup', this.onPointerUp);
+
+    const animate = () => {
+      if (this.disposed) return;
+      requestAnimationFrame(animate);
+      this.renderer.render(this.scene, this.camera);
+    };
+    animate();
+  }
+
+  private onResize = () => {
+    const { clientWidth, clientHeight } = this.container;
+    this.camera.aspect = clientWidth / clientHeight;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(clientWidth, clientHeight);
+  };
+
+  private onPointerDown = (e: PointerEvent) => {
+    this.downAt = [e.clientX, e.clientY];
+  };
+
+  private onPointerUp = (e: PointerEvent) => {
+    // a drag is orbiting, not picking
+    if (!this.mesh || !this.downAt
+      || Math.hypot(e.clientX - this.downAt[0], e.clientY - this.downAt[1]) > 4) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const hit = this.raycaster.intersectObject(this.mesh)[0];
+    if (hit && hit.faceIndex != null && this.onPick) this.onPick(hit.faceIndex);
+  };
+
+  /** Build the un-indexed geometry from raw vertex/index arrays. */
+  setMesh(verts: Float32Array, faces: Uint32Array) {
+    this.clearMesh();
+    this.faceCount = faces.length / 3;
+
+    const positions = new Float32Array(faces.length * 3);
+    for (let i = 0; i < faces.length; i++) {
+      const v = faces[i];
+      positions[3 * i] = verts[3 * v];
+      positions[3 * i + 1] = verts[3 * v + 1];
+      positions[3 * i + 2] = verts[3 * v + 2];
+    }
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color',
+      new THREE.BufferAttribute(new Float32Array(faces.length * 3).fill(0.9), 3));
+    geometry.computeVertexNormals();
+
+    const material = new THREE.MeshPhongMaterial({
+      vertexColors: true, specular: 0x111111, shininess: 18,
+    });
+    this.mesh = new THREE.Mesh(geometry, material);
+    this.colorAttr = geometry.attributes.color as THREE.BufferAttribute;
+    this.scene.add(this.mesh);
+  }
+
+  /** Look at the part from an approach direction, slightly tilted. */
+  frame(direction: number[] | null) {
+    if (!this.mesh) return;
+    const box = new THREE.Box3().setFromObject(this.mesh);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3()).length();
+    const d = direction ?? [0, 0, 1];
+    const view = new THREE.Vector3(d[0], d[1], d[2]).normalize();
+    const side = new THREE.Vector3(0, 1, 0);
+    if (Math.abs(view.dot(side)) > 0.9) side.set(1, 0, 0);
+    side.cross(view).normalize();
+    this.camera.position.copy(center)
+      .addScaledVector(view, size * 0.9)
+      .addScaledVector(side, size * 0.45);
+    this.camera.up.set(0, 0, 1);
+    this.controls.target.copy(center);
+    this.controls.update();
+  }
+
+  paintFaces(colorOf: (f: number) => RGB) {
+    if (!this.colorAttr) return;
+    for (let f = 0; f < this.faceCount; f++) {
+      const [r, g, b] = colorOf(f);
+      for (let k = 0; k < 3; k++) this.colorAttr.setXYZ(3 * f + k, r, g, b);
+    }
+    this.colorAttr.needsUpdate = true;
+  }
+
+  clearMesh() {
+    if (this.mesh) {
+      this.scene.remove(this.mesh);
+      this.mesh.geometry.dispose();
+      (this.mesh.material as THREE.Material).dispose();
+      this.mesh = null;
+      this.colorAttr = null;
+      this.faceCount = 0;
+    }
+  }
+
+  dispose() {
+    this.disposed = true;
+    this.clearMesh();
+    window.removeEventListener('resize', this.onResize);
+    this.renderer.dispose();
+    this.renderer.domElement.remove();
+  }
+}
