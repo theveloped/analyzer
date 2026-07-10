@@ -24,10 +24,12 @@ export function fetchBin<T extends Float32Array | Uint8Array | Uint32Array>(
   return cache.get(url) as Promise<T>;
 }
 
-export function fetchField(desc: FieldDescriptor): Promise<Float32Array | Uint8Array> {
-  return desc.dtype === 'u1'
-    ? fetchBin(desc.url, Uint8Array)
-    : fetchBin(desc.url, Float32Array);
+export function fetchField(
+  desc: FieldDescriptor,
+): Promise<Float32Array | Uint8Array | Uint32Array> {
+  if (desc.dtype === 'u1') return fetchBin(desc.url, Uint8Array);
+  if (desc.dtype === 'u4') return fetchBin(desc.url, Uint32Array);
+  return fetchBin(desc.url, Float32Array);
 }
 
 /** Drop cached entries, e.g. when switching parts or after recompute. */

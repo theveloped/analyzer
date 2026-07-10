@@ -10,12 +10,13 @@ export interface Part {
   created: string | null;
 }
 
-export type FieldRole = 'scalar' | 'mask' | 'category';
+export type FieldRole = 'scalar' | 'mask' | 'category'
+  | 'nodes' | 'radii' | 'edges' | 'vert_map';
 
 export interface FieldDescriptor {
   id: string;
-  association: 'vertex' | 'face';
-  dtype: 'f4' | 'u1';
+  association: 'vertex' | 'face' | 'graph';
+  dtype: 'f4' | 'u1' | 'u4';
   role: FieldRole;
   units?: string;
   length: number | null;
