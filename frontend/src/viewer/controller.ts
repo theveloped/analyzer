@@ -17,10 +17,11 @@ let faces: Uint32Array | null = null;
 let normals: Float32Array | null = null;
 let repaintQueued = false;
 let lastPaintKey = '';
+let graphTouched = false; // did the last paint show a graph overlay?
 
 export function attach(container: HTMLElement) {
   scene = new Scene3D(container);
-  scene.onPick = (face) => void inspect(face);
+  scene.onPick = (face, point) => void inspect(face, point);
 
   // repaint whenever a paint-relevant slice of the store changes
   const unsubscribe = useStore.subscribe(() => schedulePaint());
@@ -147,6 +148,12 @@ function buildCtx(): ViewCtx | null {
     highlights,
     getField: fetchField,
     paintFaces: (colorOf) => theScene.paintFaces(colorOf),
+    setGraph: (key, nodes, edges, radii) => {
+      graphTouched = true;
+      theScene.setGraph(key, nodes, edges, radii);
+    },
+    paintGraph: (colorOf) => theScene.paintGraph(colorOf),
+    setMeshOpacity: (alpha) => theScene.setMeshOpacity(alpha),
   };
 }
 
@@ -178,6 +185,8 @@ async function repaint() {
   const plugin = getPlugin(store.processId);
   const mode = plugin?.modes.find((m) => m.id === store.modeId) ?? plugin?.modes[0];
   if (!plugin || !mode) return;
+  graphTouched = false;
+  scene?.setMeshOpacity(1);
   try {
     const info = await mode.paint(ctx);
     useStore.getState().set({ legend: info.legend, stats: info.stats ?? '', error: null });
@@ -186,14 +195,18 @@ async function repaint() {
     useStore.getState().set({
       legend: [], stats: `⚠ ${err instanceof Error ? err.message : err}`,
     });
+  } finally {
+    // modes that showed a graph re-key it every paint; anyone else clears it
+    if (!graphTouched) scene?.clearGraph();
   }
 }
 
-async function inspect(face: number) {
+async function inspect(face: number, point: [number, number, number]) {
   const store = useStore.getState();
   const ctx = buildCtx();
   if (!ctx) return;
   const plugin = getPlugin(store.processId);
+  if (plugin?.onPick?.(face, point, ctx)) return; // consumed (e.g. gate placement)
   const lines = [
     `face ${face}  verts ${ctx.faces[3 * face]}, ${ctx.faces[3 * face + 1]}, ${ctx.faces[3 * face + 2]}`,
   ];

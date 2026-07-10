@@ -22,8 +22,14 @@ export interface ViewCtx {
   faceCount: number;
   params: Record<string, any>; // viewer params of the active process
   highlights: number[] | null;
-  getField(desc: FieldDescriptor): Promise<Float32Array | Uint8Array>;
+  getField(desc: FieldDescriptor): Promise<Float32Array | Uint8Array | Uint32Array>;
   paintFaces(colorOf: (f: number) => RGB): void;
+  /** Show a graph overlay (skeleton). Keyed: same key skips the rebuild. */
+  setGraph(key: string, nodes: Float32Array, edges: Uint32Array, radii: Float32Array): void;
+  /** Recolor the current graph overlay's nodes (edges interpolate). */
+  paintGraph(colorOf: (node: number) => RGB): void;
+  /** Mesh transparency, e.g. to see a graph overlay inside the part. */
+  setMeshOpacity(alpha: number): void;
 }
 
 export interface ViewMode {
@@ -43,4 +49,9 @@ export interface ProcessPlugin {
   Controls?: FC;
   /** Lines for the click-to-inspect panel. */
   inspect?(face: number, ctx: ViewCtx): Promise<string[]>;
+  /**
+   * First look at a mesh click (face + 3D hit point). Return true to
+   * consume it (e.g. gate placement) instead of the default inspect.
+   */
+  onPick?(face: number, point: [number, number, number], ctx: ViewCtx): boolean;
 }

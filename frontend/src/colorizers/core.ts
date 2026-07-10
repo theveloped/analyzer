@@ -80,7 +80,7 @@ export function faceAngles(ctx: ViewCtx, direction: number[]): Float32Array {
 
 /** Generic mask painter: on/off face field with a two-entry legend. */
 export function paintMask(
-  ctx: ViewCtx, mask: Uint8Array | Float32Array,
+  ctx: ViewCtx, mask: Uint8Array | Float32Array | Uint32Array,
   onColor: RGB, offColor: RGB, onLabel: string, offLabel: string,
 ): { legend: LegendEntry[]; stats: string } {
   let n = 0;

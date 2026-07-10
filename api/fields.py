@@ -81,4 +81,6 @@ def result_field_bytes(workdir, process_id, analysis_id, params_hash, key):
     array = stored[key]
     if array.dtype in (np.uint8, np.bool_):
         return np.ascontiguousarray(array, dtype="<u1").tobytes(), "<u1"
+    if array.dtype in (np.uint32, np.int32):
+        return np.ascontiguousarray(array, dtype="<u4").tobytes(), "<u4"
     return np.ascontiguousarray(array, dtype="<f4").tobytes(), "<f4"

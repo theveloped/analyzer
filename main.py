@@ -12,6 +12,7 @@ from pipeline import (
     DIRECTIONS_FILE, ACCESSIBILITY_FILE, HIGHLIGHT_FILE,
     mesh_part, compute_directions, parting_options, highlight_union,
     precompute_fields, compose_tool, parse_tips, parse_holder,
+    thickness_highlights, write_highlights,
 )
 
 
@@ -165,64 +166,25 @@ if __name__ == "__main__":
             serve_workdir(result["workdir"])
             
     elif args.command == "thickness":
-        logger.debug("Computing thickness")
-        
-        verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
-        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
-        mesh = mn.meshFromFacesVerts(faces, verts)
-        
-        settings = mm.InSphereSearchSettings()
-        settings.insideAndOutside = False
-        settings.maxRadius = 5.0
-        settings.maxIters = 1000
-        settings.minShrinkage = 1e-6
-        distances = mm.computeInSphereThicknessAtVertices(mesh, settings)  
-        
-        mean_distance = np.mean(distances.vec)
-        logger.warning(f"mean thickness inscribed sphere: {mean_distance}")
-        
-        # Save mesh to file
-        thin_vertices = set()
-        for i in range(distances.vec.size()):
-            distance = distances.vec[i]
-            
-            if distance < 0.7 * mean_distance:
-                thin_vertices.add(i)
-                
-        thin_faces = []    
-        for i in range(len(faces)):
-            face = faces[i]
-            
-            if face[0] in thin_vertices and face[1] in thin_vertices and face[2] in thin_vertices:
-                thin_faces.append(i)
-                
+        logger.debug("Computing thickness and wall skeleton")
 
-        # Save mesh to file
-        thick_vertices = set()
-        for i in range(distances.vec.size()):
-            distance = distances.vec[i]
-            
-            if distance > 1.3 * mean_distance:
-                thick_vertices.add(i)
-                
-        thick_faces = []    
-        for i in range(len(faces)):
-            face = faces[i]
-            
-            if face[0] in thick_vertices and face[1] in thick_vertices and face[2] in thick_vertices:
-                thick_faces.append(i)
-            
-                
-                
-        numpyData = {"faces": thick_faces}
-        highlight_path = os.path.join(args.directory, HIGHLIGHT_FILE)
-        with open(highlight_path, "w") as f:
-            json.dump(numpyData, f)
-        
-        # Storage paths
-        directory = os.path.abspath(args.directory)
-        obj_path = os.path.join(directory, FINE_MESH_FILE)
-        save_mesh(mesh, obj_path)
+        from processes.base import apply_defaults, result_paths
+        from processes.injection_molding import PROCESS
+
+        analysis = PROCESS.analysis("wall_skeleton")
+        params = apply_defaults(analysis, {})
+        result = analysis.run(args.directory, params, None)
+        logger.warning(f"mean thickness inscribed sphere: "
+                       f"{result.stats['mean_thickness']}")
+
+        # legacy highlight output: faces thicker than 1.3x the mean
+        _, npz_path = result_paths(args.directory, "injection_molding",
+                                   "wall_skeleton", params)
+        thickness = np.load(npz_path)["thickness"]
+        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
+        write_highlights(args.directory,
+                         thickness_highlights(faces, thickness))
+
         if args.serve:
             serve_workdir(args.directory)
 
