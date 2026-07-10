@@ -24,7 +24,6 @@ from analysis import (
     sample_unity_vector_pairs,
     compute_accessibility,
     relax_accessibility,
-    find_combinations_matching_best,
 )
 from utils import has_valid_extension, ensure_directory
 
@@ -243,44 +242,70 @@ def compute_thickness(workdir, *, max_radius=None, inverted=False,
     return values, float(max_radius)
 
 
-def parting_options(workdir, *, slides=0, count=10, slide_tollerance=2e-1,
-                    relax=False, relax_tollerance=1.0, relax_samples=4,
-                    progress=None):
-    """Rank setup/parting direction combinations by face coverage."""
-    logger.debug(f"Computing preferred options with {slides} slides")
+def mold_orientation(workdir, *, max_slides=2, slide_tollerance=2.0, count=10,
+                     min_slide_faces=50, field_options=3, progress=None):
+    """Search mold orientations and derive per-face assignment fields.
+
+    Returns {"stats": <JSON-safe>, "arrays": {...}, "field_meta": {...}}
+    with band/resolved/brep category fields and parting-line segments for
+    the top `field_options` options. The brep fields need brep_faces.npy
+    (STEP-meshed parts); they are skipped otherwise.
+    """
+    import molding
 
     verts, faces = load_mesh_arrays(workdir)
-    mesh = mn.meshFromFacesVerts(faces, verts)
-
     directions = np.load(os.path.join(workdir, DIRECTIONS_FILE))
     accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))
 
-    _report(progress, 0.1, "searching direction combinations")
-    matching_combinations = find_combinations_matching_best(
-        directions, accessibility, max_slides=slides, max_results=count,
-        tolerance_degrees=slide_tollerance)
+    brep_path = os.path.join(workdir, BREP_FACES_FILE)
+    brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
 
-    if relax:
-        # Compute the unique open closed directions
-        unique_directions = set()
-        for option, performance in matching_combinations[:count]:
-            unique_directions.update(option)
+    _report(progress, 0.1, "searching mold orientations")
+    options = molding.mold_orientation_search(
+        directions, accessibility, max_slides=max_slides,
+        slide_tolerance_deg=slide_tollerance, min_slide_faces=min_slide_faces)
 
-        for i, direction_index in enumerate(unique_directions):
-            _report(progress, 0.5 + 0.5 * i / max(len(unique_directions), 1),
-                    f"relaxing direction {direction_index}")
-            relaxed = relax_accessibility(
-                mesh, accessibility[direction_index, :], directions[direction_index],
-                tolerance_degrees=relax_tollerance, n=relax_samples)
-            accessibility[direction_index, :] = relaxed
+    _report(progress, 0.5, "deriving assignment fields")
+    pairs, edge_verts = molding.face_adjacency(faces)
 
-        np.save(os.path.join(workdir, ACCESSIBILITY_FILE), accessibility)
+    arrays, field_meta = {}, {}
+    for k, option in enumerate(options[:field_options]):
+        slide_dirs = [s["direction"] for s in option["slides"]]
+        band = molding.assignment_band(option["pair"], slide_dirs, accessibility)
+        resolved = molding.resolve_either(band, pairs)
+        labels, colors = molding.category_labels_colors(len(slide_dirs))
 
-    options = [
-        {"directions": [int(i) for i in option], "coverage": float(performance)}
-        for option, performance in matching_combinations[:count]
-    ]
-    return {"options": options}
+        common = {"kind": "mold_assignment", "association": "face",
+                  "role": "category", "option": k,
+                  "labels": labels, "colors": colors}
+        arrays[f"band_{k}"] = band
+        field_meta[f"band_{k}"] = {**common, "variant": "band"}
+        arrays[f"resolved_{k}"] = resolved
+        field_meta[f"resolved_{k}"] = {**common, "variant": "resolved"}
+
+        if brep_ids is not None:
+            brep_field, _ = molding.aggregate_brep(band, resolved, brep_ids)
+            brep_labels, brep_colors = molding.category_labels_colors(
+                len(slide_dirs), straddle=True)
+            arrays[f"brep_{k}"] = brep_field
+            field_meta[f"brep_{k}"] = {**common, "variant": "brep",
+                                       "labels": brep_labels,
+                                       "colors": brep_colors}
+
+        lines = molding.parting_line_segments(resolved, pairs, edge_verts, verts)
+        arrays[f"parting_lines_{k}"] = lines
+        field_meta[f"parting_lines_{k}"] = {
+            "kind": "parting_lines", "association": "none", "role": "lines",
+            "option": k, "count": int(len(lines)),
+        }
+
+    stats = {
+        "face_count": int(accessibility.shape[1]),
+        "direction_count": int(directions.shape[0]),
+        "brep": brep_ids is not None,
+        "options": options[:count],
+    }
+    return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
 
 
 def highlight_union(workdir, include=(), exclude=()):

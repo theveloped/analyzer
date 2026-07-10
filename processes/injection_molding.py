@@ -1,20 +1,20 @@
 """Injection molding process.
 
-parting_directions wraps the setup/parting direction search and stores
-per-option face coverage masks; thickness and gaps are per-vertex rolling
-inscribed-sphere fields (gaps = the same measure on the orientation-flipped
-mesh, i.e. the exterior clearance between opposing walls).
+mold_orientation ranks mold orientations (antipodal plate pair + greedy
+perpendicular slides) and stores per-face side assignments (band /
+resolved / whole-BREP-face) plus parting-line segments; thickness and gaps
+are per-vertex rolling inscribed-sphere fields (gaps = the same measure on
+the orientation-flipped mesh, i.e. the exterior clearance between opposing
+walls).
 """
-
-import os
 
 import numpy as np
 
 import pipeline
 from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
-                            load_cached_result, params_hash, store_result)
+                            load_cached_result, store_result)
 
-COVERAGE_OPTIONS = 3  # face masks stored for the top-ranked options
+ASSIGNMENT_OPTIONS = 3  # options that get per-face assignment fields
 
 
 def _field_stats(values, max_radius):
@@ -61,39 +61,23 @@ def run_gaps(workdir, params, progress):
                              True, params, progress)
 
 
-def run_parting_directions(workdir, params, progress):
+def run_mold_orientation(workdir, params, progress):
     cached = load_cached_result(workdir, "injection_molding",
-                                "parting_directions", params)
+                                "mold_orientation", params)
     if cached is not None:
         return AnalysisResult(stats=cached["stats"],
                               fields=list(cached["arrays"]))
 
-    result = pipeline.parting_options(
-        workdir, slides=params["slides"], count=params["count"],
-        slide_tollerance=params["slide_tollerance"], relax=params["relax"],
-        relax_tollerance=params["relax_tollerance"],
-        relax_samples=params["relax_samples"], progress=progress)
+    result = pipeline.mold_orientation(
+        workdir, max_slides=params["max_slides"],
+        slide_tollerance=params["slide_tollerance"], count=params["count"],
+        min_slide_faces=params["min_slide_faces"],
+        field_options=ASSIGNMENT_OPTIONS, progress=progress)
 
-    # face coverage mask per top option: which faces the option's direction
-    # union can reach (the old `serve --include` union, now a cached field)
-    accessibility = np.load(os.path.join(workdir, pipeline.ACCESSIBILITY_FILE))
-    arrays, field_meta = {}, {}
-    for rank, option in enumerate(result["options"][:COVERAGE_OPTIONS]):
-        mask = np.any(accessibility[option["directions"], :], axis=0)
-        name = f"option_{rank}"
-        arrays[name] = mask.astype("u1")
-        field_meta[name] = {
-            "kind": "parting_coverage",
-            "association": "face",
-            "role": "mask",
-            "option": rank,
-            "directions": option["directions"],
-            "coverage": option["coverage"],
-        }
-
-    store_result(workdir, "injection_molding", "parting_directions", params,
-                 result, arrays=arrays, field_meta=field_meta)
-    return AnalysisResult(stats=result, fields=list(arrays))
+    store_result(workdir, "injection_molding", "mold_orientation", params,
+                 result["stats"], arrays=result["arrays"],
+                 field_meta=result["field_meta"])
+    return AnalysisResult(stats=result["stats"], fields=list(result["arrays"]))
 
 
 PROCESS = ProcessDef(
@@ -102,22 +86,20 @@ PROCESS = ProcessDef(
     description="Parting direction and slide selection over the shared accessibility matrix.",
     analyses=[
         AnalysisDef(
-            id="parting_directions",
-            label="Parting directions",
-            description="Rank two-sided (plus optional slides) direction combinations by face coverage.",
+            id="mold_orientation",
+            label="Mold orientation",
+            description="Main pull axis + greedy perpendicular slides; per-face side assignment, internal undercuts and the parting line.",
             requires=["prep/directions"],
             params=[
-                Param("slides", "int", default=0, min=0, label="Slides"),
-                Param("count", "int", default=10, min=1, label="Results to keep"),
-                Param("slide_tollerance", "number", default=2e-1, unit="deg",
-                      label="Slide angle tolerance"),
-                Param("relax", "bool", default=False,
-                      label="Relax winning directions"),
-                Param("relax_tollerance", "number", default=1.0, unit="deg",
-                      label="Relax tolerance"),
-                Param("relax_samples", "int", default=4, label="Relax samples"),
+                Param("max_slides", "int", default=2, min=0, label="Max slides"),
+                Param("slide_tollerance", "number", default=2.0, unit="deg",
+                      min=0, label="Slide perpendicularity tolerance"),
+                Param("count", "int", default=10, min=1,
+                      label="Ranked options in stats"),
+                Param("min_slide_faces", "int", default=50, min=1,
+                      label="Min faces a slide must gain"),
             ],
-            run=run_parting_directions,
+            run=run_mold_orientation,
         ),
         AnalysisDef(
             id="thickness",
