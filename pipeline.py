@@ -33,6 +33,8 @@ FINE_VERTS_FILE = "fine_verts.npy"
 FINE_FACES_FILE = "fine_faces.npy"
 DIRECTIONS_FILE = "directions.npy"
 ACCESSIBILITY_FILE = "accessibility.npy"
+BREP_FACES_FILE = "brep_faces.npy"
+BREP_META_FILE = "brep_meta.json"
 HIGHLIGHT_FILE = "highlights.json"
 
 MESH_EXTENSIONS = [".stl", ".stp", ".step"]
@@ -78,21 +80,44 @@ def load_mesh_arrays(workdir):
 
 
 def mesh_part(input_path, workdir=None, *, heal=False, subdivide=None, offset=None,
-              tollerance=1e-1, progress=None):
+              tollerance=1e-1, deflection=0.5, progress=None):
     """Canonicalize an input STL/STEP into a part working directory.
 
     Writes fine_mesh.obj + fine_verts.npy + fine_faces.npy (the stable face
-    indexing every later stage refers to). Returns the workdir and counts.
+    indexing every later stage refers to). STEP input tessellates through
+    the BREP (brep.mesh_step) so every fine face carries its source BREP
+    face id (brep_faces.npy) — heal/offset destroy the surfaces and fall
+    back to the anonymous meshlib path, as does STL input.
+    Returns the workdir and counts.
     """
     has_valid_extension(input_path, MESH_EXTENSIONS)
 
-    _report(progress, 0.0, "loading mesh")
-    mesh = load_mesh(input_path, heal=heal, offset=offset, tollerance=tollerance)
+    is_step = os.path.splitext(input_path)[1].lower() in (".stp", ".step")
+    brep_ids = None
+    surface_types = None
 
-    if subdivide:
-        _report(progress, 0.5, "subdividing mesh")
-        mesh = subdivide_mesh(mesh, subdivide)
-    verts, faces = get_mesh_data(mesh)
+    if is_step and not heal and offset is None:
+        import brep
+
+        _report(progress, 0.0, "tessellating BREP")
+        verts, faces, brep_ids, surface_types = brep.mesh_step(
+            input_path, deflection=deflection)
+
+        if subdivide:
+            _report(progress, 0.4, "subdividing mesh (tag preserving)")
+            verts, faces, brep_ids = brep.subdivide_tagged(
+                verts, faces, brep_ids, subdivide)
+
+        verts = verts.astype(np.float32)
+        mesh = mn.meshFromFacesVerts(faces, verts)
+    else:
+        _report(progress, 0.0, "loading mesh")
+        mesh = load_mesh(input_path, heal=heal, offset=offset, tollerance=tollerance)
+
+        if subdivide:
+            _report(progress, 0.5, "subdividing mesh")
+            mesh = subdivide_mesh(mesh, subdivide)
+        verts, faces = get_mesh_data(mesh)
 
     if not workdir:
         input_name = os.path.basename(input_path)
@@ -114,10 +139,15 @@ def mesh_part(input_path, workdir=None, *, heal=False, subdivide=None, offset=No
     logger.debug(f"Storing obj file: {obj_path}")
     save_mesh(mesh, obj_path)
 
-    return {
-        "workdir": workdir,
-        "counts": {"verts": int(len(verts)), "faces": int(len(faces))},
-    }
+    counts = {"verts": int(len(verts)), "faces": int(len(faces))}
+    if brep_ids is not None:
+        np.save(os.path.join(workdir, BREP_FACES_FILE), brep_ids)
+        with open(os.path.join(workdir, BREP_META_FILE), "w") as f:
+            json.dump({"face_count": len(surface_types),
+                       "surface_types": surface_types}, f)
+        counts["brep_faces"] = len(surface_types)
+
+    return {"workdir": workdir, "counts": counts}
 
 
 def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,

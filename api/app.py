@@ -96,6 +96,9 @@ def create_app(root=".", preload=None):
             if file_stem == "accessibility":
                 data, _ = fields_api.accessibility_bytes(workdir, int(key))
                 tag_path = os.path.join(workdir, pipeline.ACCESSIBILITY_FILE)
+            elif file_stem == "brep_faces":
+                data, _ = fields_api.brep_faces_bytes(workdir)
+                tag_path = os.path.join(workdir, pipeline.BREP_FACES_FILE)
             else:
                 data, _ = fields_api.zcache_field_bytes(workdir, file_stem, key)
                 tag_path = os.path.join(workdir, "zcache", f"{file_stem}.npz")

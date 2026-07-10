@@ -44,6 +44,7 @@ if __name__ == "__main__":
     parser_mesh.add_argument("input", help="path of the input .stl/.step file", type=PathType(type='file', dash_ok=True, exists=True))
     parser_mesh.add_argument("-o", "--output", help="path of the output dir", type=PathType(type='dir', dash_ok=True))
     parser_mesh.add_argument("--tollerance", help="voxel tollerance", type=float, default=1e-1)
+    parser_mesh.add_argument("--deflection", help="BREP tessellation deflection for STEP input (mm)", type=float, default=0.5)
     parser_mesh.add_argument("--heal", help="heal the mesh before storing (voxel remesh - for dirty STLs, NOT for clean STEP)", action="store_true")
     parser_mesh.add_argument("--subdivide", help="max edge length: refine without changing the shape (use for clean STEP input)", type=float, default=None)
     parser_mesh.add_argument("--offset", help="offset the mesh before storing", type=float, default=None)
@@ -163,7 +164,7 @@ if __name__ == "__main__":
 
         result = mesh_part(args.input, args.output, heal=args.heal,
                            subdivide=args.subdivide, offset=args.offset,
-                           tollerance=args.tollerance)
+                           tollerance=args.tollerance, deflection=args.deflection)
 
         if args.serve:
             serve_workdir(result["workdir"])

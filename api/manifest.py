@@ -88,6 +88,22 @@ def _accessibility_fields(workdir, base_url, face_count):
     } for index in range(direction_count)]
 
 
+def _brep_faces_fields(workdir, base_url, face_count):
+    path = os.path.join(workdir, pipeline.BREP_FACES_FILE)
+    if not os.path.exists(path):
+        return []
+    count = int(np.load(path, mmap_mode="r").max()) + 1
+    return [{
+        "id": "brep_faces",
+        "association": "face",
+        "dtype": "u4",
+        "role": "category",
+        "length": face_count,
+        "url": f"{base_url}/fields/brep_faces/0",
+        "params": {"kind": "brep_faces", "count": count},
+    }]
+
+
 def _result_entries(workdir, base_url, face_count, vert_count):
     fields, results = [], []
     pattern = os.path.join(workdir, RESULTS_DIR, "*", "*", "*.json")
@@ -159,6 +175,7 @@ def build_manifest(root, part):
     manifest["fields"] = (
         _zcache_fields(workdir, base_url, vert_count)
         + _accessibility_fields(workdir, base_url, face_count)
+        + _brep_faces_fields(workdir, base_url, face_count)
     )
     result_fields, results = _result_entries(workdir, base_url, face_count, vert_count)
     manifest["fields"] += result_fields

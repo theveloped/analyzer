@@ -59,6 +59,14 @@ def zcache_field_bytes(workdir, file_stem, key):
     return np.ascontiguousarray(stored[key], dtype="<f4").tobytes(), "<f4"
 
 
+def brep_faces_bytes(workdir):
+    """Per-face BREP face ids as uint32."""
+    path = os.path.join(workdir, pipeline.BREP_FACES_FILE)
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    return np.ascontiguousarray(np.load(path), dtype="<u4").tobytes(), "<u4"
+
+
 def accessibility_bytes(workdir, direction_index):
     """One accessibility row as a per-face uint8 mask."""
     path = os.path.join(workdir, pipeline.ACCESSIBILITY_FILE)
