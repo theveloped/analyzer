@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 zcache/
 /testpart_42/
+/aligator/
 results/
 normals.npy
 part.json

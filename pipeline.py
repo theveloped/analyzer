@@ -119,9 +119,16 @@ def mesh_part(input_path, workdir=None, *, heal=False, subdivide=None, offset=No
     }
 
 
-def compute_directions(workdir, *, count=64, axes=False, relax=False,
-                       relax_tollerance=1.0, relax_samples=4, progress=None):
-    """Sample approach directions and compute the accessibility matrix."""
+def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
+                       pixel=None, relax=False, relax_tollerance=1.0,
+                       relax_samples=4, progress=None):
+    """Sample approach directions and compute the accessibility matrix.
+
+    ``tollerance`` is the angular relaxation (degrees) of the visibility
+    test: faces within it of perpendicular still count as front-facing, so
+    near-vertical walls classify deterministically. ``pixel`` sets the
+    visibility height-map resolution (None = auto from the bounding box).
+    """
     logger.debug(f"Computing {count} directions")
     directions = sample_unity_vector_pairs(count)
 
@@ -140,7 +147,8 @@ def compute_directions(workdir, *, count=64, axes=False, relax=False,
 
     face_count = len(faces)
     _report(progress, 0.1, f"accessibility for {directions.shape[0]} directions")
-    accessibility = compute_accessibility(mesh, directions, face_count)
+    accessibility = compute_accessibility(mesh, directions, face_count,
+                                          tolerance_deg=tollerance, pixel=pixel)
 
     if relax:
         for direction_index in range(directions.shape[0]):

@@ -59,6 +59,8 @@ if __name__ == "__main__":
     parser_directions.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
     parser_directions.add_argument("--count", help="number of directions determin", type=int, default=64)
     parser_directions.add_argument("--axes", help="prepend the six principal +/-X/Y/Z directions", action="store_true")
+    parser_directions.add_argument("--tollerance", help="angular relaxation of the visibility test in degrees (near-vertical walls within it count as facing)", type=float, default=0.1)
+    parser_directions.add_argument("--pixel", help="visibility height map pixel size (default: auto from bounding box)", type=float, default=None)
     parser_directions.add_argument("--relax", help="relax the winning directions", action="store_true")
     parser_directions.add_argument("--relax_tollerance", help="angle tollerance of slides in degrees", type=float, default=1.0)
     parser_directions.add_argument("--relax_samples", help="the number of additional sampels used in relaxation", type=int, default=4)
@@ -226,6 +228,7 @@ if __name__ == "__main__":
 
     elif args.command == "directions":
         compute_directions(args.directory, count=args.count, axes=args.axes,
+                           tollerance=args.tollerance, pixel=args.pixel,
                            relax=args.relax, relax_tollerance=args.relax_tollerance,
                            relax_samples=args.relax_samples)
 

@@ -158,6 +158,50 @@ def _bracket_corners(fx, fy, shape):
     return np.stack([x0, x1, x0, x1]), np.stack([y0, y0, y1, y1])
 
 
+@log_execution_time
+def face_visibility(mesh, verts, faces, direction, *, tolerance_deg=0.1, pixel=0.1,
+                    margin=2):
+    """Per-face visibility along an approach direction. Returns (F,) bool.
+
+    Replaces meshlib's undercut verdict, whose hard front/back-facing test
+    flips arbitrarily for faces tangent to the direction (vertical walls) —
+    the speckle the raster fixes in this module solved for the tool fields.
+    A face is visible iff:
+
+    - it faces the tool within an angular relaxation: n·d >= -sin(tolerance),
+      so a wall at exactly 90 deg is deterministically front-facing, and
+    - nothing shadows it per the rendered height map: the column top sampled
+      at the centroid (pushed one pixel outward along the lateral component
+      of the normal, so walls escape their own silhouette column) does not
+      rise above the face itself. The bracket-corner min makes the sample
+      subpixel-stable on walls sitting exactly on pixel boundaries.
+
+    Conservative limits: cavities narrower than ~1 pixel may not resolve,
+    and overhangs closer than 1.5*pixel above a face go undetected.
+    """
+    heights, frame = render_heightmap(mesh, direction, pixel, margin=margin)
+    d = frame["direction"]
+
+    tri = verts[faces]
+    centroids = tri.mean(axis=1)
+    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-30)
+
+    ndotd = normals @ d
+    facing = ndotd >= -np.sin(np.radians(tolerance_deg))
+
+    # walls (|lateral| ~ 1) sample just outside their own material column,
+    # floors (|lateral| ~ 0) sample in place
+    lateral = normals - ndotd[:, None] * d
+    fx, fy, height = project_vertices_float(centroids + pixel * lateral, frame)
+
+    ix4, iy4 = _bracket_corners(fx, fy, heights.shape)
+    top = heights[iy4, ix4].min(axis=0)
+    occluded = top > height + 1.5 * pixel
+
+    return facing & ~occluded
+
+
 def euclidean_gap(closed, fx, fy, height, pixel, window_px):
     """
     Euclidean distance from each vertex to the machined solid described by the

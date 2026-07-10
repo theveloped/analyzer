@@ -44,18 +44,26 @@ array is laid out as **antipodal pairs** `[d0, -d0, d1, -d1, ...]`. Pairs matter
 because both mold halves (injection molding) and 2-setup 3-axis machining approach the
 part from opposite directions.
 
-`compute_accessibility` then runs `mm.findUndercuts(mesh, dir)` per direction: a face
-is *accessible* from direction `d` iff it is **not** an undercut when looking along
-`d`. Inverting the undercut bitset gives one boolean row per direction — the
-`(D, F)` accessibility matrix. This is the "everything at once" primitive: one meshlib
-call classifies all faces for a direction.
+`compute_accessibility` builds the `(D, F)` accessibility matrix with our own
+per-face visibility test (`zmap.face_visibility`): a face is *accessible* from
+direction `d` iff it faces the tool within a small angular relaxation
+(`n·d ≥ −sin(tol)`, default 0.1°, so a wall at exactly 90° is deterministically
+front-facing) **and** nothing shadows it per a height map rendered along `d`
+(the column top, sampled at the centroid pushed one pixel outward along the
+lateral component of the normal with the subpixel-stable bracket-corner min,
+must not rise above the face). One heightmap render plus vectorized NumPy per
+direction; the map resolution is auto-derived from the bounding box
+(`directions --pixel` overrides).
 
-Optional **relaxation** (`relax_accessibility`): faces that are exactly tangent to a
-direction (vertical walls) flip between accessible/inaccessible due to numerical
-noise. To tolerate this, `generate_cone_vectors` builds `n` directions on a small cone
-(e.g. 1°) around the nominal direction, recomputes undercuts for each, and ORs the
-results. A face counts as accessible if any direction within the tolerance cone can
-see it.
+This replaced `mm.findUndercuts`, whose hard front/back-facing verdict flips
+between accessible/inaccessible for faces tangent to the direction — the same
+wall speckle the raster fixes in zmap.py solved for the tool fields. The
+legacy path is kept as `compute_accessibility_meshlib` for A/B comparison,
+and the cone-based **relaxation** (`relax_accessibility`: OR of `n` extra
+undercut passes on a 1° cone, `--relax`) still works but is no longer needed —
+the angular tolerance is built into the visibility test at no extra passes.
+On the Aligator test part the isolated-face speckle count from ±Z drops from
+~13.8k faces (meshlib) to ~180 (genuine shadow-boundary faces).
 
 ### Stage 3 — `options`: pick setups / parting directions
 

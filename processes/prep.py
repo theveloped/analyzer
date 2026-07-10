@@ -38,6 +38,7 @@ def run_mesh(workdir, params, progress):
 def run_directions(workdir, params, progress):
     result = pipeline.compute_directions(
         workdir, count=params["count"], axes=params["axes"],
+        tollerance=params["tollerance"], pixel=params["pixel"],
         relax=params["relax"], relax_tollerance=params["relax_tollerance"],
         relax_samples=params["relax_samples"], progress=progress)
     return AnalysisResult(stats=result)
@@ -74,6 +75,10 @@ PROCESS = ProcessDef(
                 Param("count", "int", default=64, min=1, label="Direction count"),
                 Param("axes", "bool", default=True,
                       label="Prepend principal ±X/±Y/±Z"),
+                Param("tollerance", "number", default=0.1, unit="deg", min=0,
+                      label="Wall relaxation tolerance"),
+                Param("pixel", "number", default=None, unit="mm", min=0,
+                      label="Visibility map pixel (empty = auto)"),
                 Param("relax", "bool", default=False, label="Relax near-vertical walls"),
                 Param("relax_tollerance", "number", default=1.0, unit="deg",
                       label="Relax tolerance"),
