@@ -83,6 +83,23 @@ def run_mold_orientation(workdir, params, progress):
     return AnalysisResult(stats=result["stats"], fields=list(result["arrays"]))
 
 
+def run_wall_skeleton(workdir, params, progress):
+    cached = load_cached_result(workdir, "injection_molding",
+                                "wall_skeleton", params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    stats, arrays, field_meta = pipeline.wall_skeleton(
+        workdir, max_radius=params["max_radius"],
+        min_radius=params["min_radius"],
+        cluster_factor=params["cluster_factor"], progress=progress)
+
+    store_result(workdir, "injection_molding", "wall_skeleton", params,
+                 stats, arrays=arrays, field_meta=field_meta)
+    return AnalysisResult(stats=stats, fields=list(arrays))
+
+
 PROCESS = ProcessDef(
     id="injection_molding",
     label="Injection molding",
@@ -125,6 +142,21 @@ PROCESS = ProcessDef(
                       label="Max sphere radius (blank = auto from bbox)"),
             ],
             run=run_gaps,
+        ),
+        AnalysisDef(
+            id="wall_skeleton",
+            label="Wall thickness skeleton",
+            description="Inscribed-sphere wall thickness plus a medial skeleton graph for fill-flow estimation.",
+            requires=[],
+            params=[
+                Param("max_radius", "number", default=5.0, unit="mm",
+                      label="Max sphere radius"),
+                Param("min_radius", "number", default=0.1, unit="mm",
+                      label="Min node radius"),
+                Param("cluster_factor", "number", default=1.0, min=0.1,
+                      label="Cluster radius factor"),
+            ],
+            run=run_wall_skeleton,
         ),
     ],
 )

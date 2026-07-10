@@ -142,16 +142,21 @@ def _result_entries(workdir, base_url, face_count, vert_count):
         for name, meta in payload.get("arrays", {}).items():
             association = meta.get("association", "vertex")
             role = meta.get("role", "scalar")
+            # graph-shaped arrays declare their own dtype and flat length;
+            # mesh-shaped fields keep the inferred defaults
+            dtype = meta.get("dtype") or (
+                "u1" if role in ("mask", "category") else "f4")
+            length = meta.get("length")
+            if length is None and association != "none":
+                length = face_count if association == "face" else vert_count
             field_id = f"results.{process_id}.{analysis_id}.{result_hash}.{name}"
             field_ids.append(field_id)
             fields.append({
                 "id": field_id,
                 "association": association,
-                "dtype": meta.get("dtype")
-                         or ("u1" if role in ("mask", "category") else "f4"),
+                "dtype": dtype,
                 "role": role,
-                "length": (face_count if association == "face"
-                           else vert_count if association == "vertex" else None),
+                "length": length,
                 "url": f"{base_url}/results/{process_id}/{analysis_id}/{result_hash}/{name}",
                 "params": meta,
             })

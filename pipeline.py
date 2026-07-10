@@ -330,6 +330,223 @@ def mold_orientation(workdir, *, max_slides=2, slide_tollerance=2.0, count=10,
     return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
 
 
+def thickness_highlights(faces, thickness, hi=1.3):
+    """Face indices whose three vertices all exceed hi * mean thickness."""
+    mask = thickness > hi * float(np.mean(thickness))
+    return np.where(mask[faces].all(axis=1))[0].tolist()
+
+
+NODE_SENTINEL = np.uint32(0xFFFFFFFF)  # vert->node mapping: vertex has no node
+
+
+def _in_sphere_settings(max_radius):
+    from meshlib import mrmeshpy as mm
+
+    settings = mm.InSphereSearchSettings()
+    settings.insideAndOutside = False
+    settings.maxRadius = float(max_radius)
+    settings.maxIters = 1000
+    settings.minShrinkage = 1e-6
+    return settings
+
+
+def _skeleton_centers(mesh, verts, faces, radii, settings, progress):
+    """Inscribed-sphere centers per vertex.
+
+    meshlib constrains each sphere's center to the inward normal at the
+    vertex, so centers reconstruct vectorized as p - n*r. That is exact on
+    smooth regions but the normal convention can differ from meshlib's at
+    sharp features, so suspects (center measurably closer to the surface
+    than its radius, or vertices spanning a sharp crease) are recomputed
+    exactly with findInSphere.
+    """
+    from meshlib import mrmeshpy as mm
+    from scipy.spatial import cKDTree
+
+    normals = mn.toNumpyArray(mm.computePerVertNormals(mesh))
+    centers = verts.astype(np.float64) - normals * radii[:, None]
+
+    tri = verts[faces].astype(np.float64)
+    face_normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    face_normals /= np.maximum(
+        np.linalg.norm(face_normals, axis=1, keepdims=True), 1e-30)
+    edge_lengths = np.linalg.norm(tri - np.roll(tri, -1, axis=1), axis=2)
+    mean_edge = float(edge_lengths.mean())
+
+    # sharp-crease flag: worst alignment between a vertex normal and the
+    # normals of its incident faces
+    alignment = np.ones(len(verts))
+    spread = (face_normals[:, None, :] * normals[faces]).sum(axis=2)
+    for corner in range(3):
+        np.minimum.at(alignment, faces[:, corner], spread[:, corner])
+    sharp = alignment < np.cos(np.radians(30.0))
+
+    # penetration flag: a valid center keeps its radius from the surface
+    # (vertex samples of it; mean_edge covers sampling slack)
+    surface_distance, _ = cKDTree(verts).query(centers, workers=-1)
+    tolerance = np.maximum(0.05 * radii, 0.5 * mean_edge)
+    penetrating = surface_distance < radii - tolerance
+
+    suspects = np.where((sharp | penetrating) & np.isfinite(radii))[0]
+    if len(suspects) > 0.2 * len(verts):
+        logger.warning(
+            f"{len(suspects)}/{len(verts)} suspect sphere centers; "
+            "normal convention mismatch? correcting all of them")
+    for step, vert in enumerate(suspects):
+        if step % 4096 == 0:
+            _report(progress, 0.3 + 0.3 * step / len(suspects),
+                    f"correcting sphere centers ({step}/{len(suspects)})")
+        sphere = mm.findInSphere(mesh, mm.VertId(int(vert)), settings)
+        centers[vert] = (sphere.center.x, sphere.center.y, sphere.center.z)
+        radii[vert] = sphere.radius
+    return centers, radii, len(suspects)
+
+
+def _cluster_nodes(nodes, radii, cluster_factor):
+    """Merge nodes whose centers overlap within their local radius scale.
+
+    Returns per-node cluster labels and the representative (max radius)
+    member index per cluster; averaging positions instead would drift off
+    the medial axis in thin features.
+    """
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.spatial import cKDTree
+
+    count = len(nodes)
+    if count == 0:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
+    tree = cKDTree(nodes)
+    neighborhoods = tree.query_ball_point(nodes, r=cluster_factor * radii,
+                                          workers=-1)
+    pair_a = np.fromiter(
+        (i for i, hits in enumerate(neighborhoods) for _ in hits),
+        dtype=np.int64, count=sum(len(hits) for hits in neighborhoods))
+    pair_b = np.fromiter(
+        (j for hits in neighborhoods for j in hits),
+        dtype=np.int64, count=len(pair_a))
+    # keep pairs within cluster_factor of the smaller sphere of the two
+    span = np.linalg.norm(nodes[pair_a] - nodes[pair_b], axis=1)
+    close = span <= cluster_factor * np.minimum(radii[pair_a], radii[pair_b])
+    pair_a, pair_b = pair_a[close], pair_b[close]
+
+    adjacency = coo_matrix((np.ones(len(pair_a), dtype=np.int8),
+                            (pair_a, pair_b)), shape=(count, count))
+    cluster_count, labels = connected_components(adjacency, directed=False)
+
+    representative = np.zeros(cluster_count, dtype=np.int64)
+    best_radius = np.full(cluster_count, -1.0)
+    np.maximum.at(best_radius, labels, radii)
+    is_best = radii >= best_radius[labels]
+    representative[labels[is_best]] = np.where(is_best)[0]
+    return labels.astype(np.int64), representative
+
+
+def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
+                  cluster_factor=1.0, progress=None):
+    """Wall thickness + medial skeleton graphs from inscribed spheres.
+
+    Every vertex gets its maximal inscribed ("rolling") sphere; the sphere
+    centers become skeleton nodes carrying the local wall radius, connected
+    by the mesh edge adjacency (raw graph) and additionally merged into a
+    reduced clustered graph. Returns (stats, arrays, field_meta) — storing
+    the result is the caller's job.
+    """
+    from meshlib import mrmeshpy as mm
+
+    verts, faces = load_mesh_arrays(workdir)
+    faces = faces.astype(np.int64, copy=False)
+    mesh = mn.meshFromFacesVerts(faces, verts)
+    vert_count = len(verts)
+
+    _report(progress, 0.05, "inscribed sphere thickness")
+    settings = _in_sphere_settings(max_radius)
+    thickness = np.array(
+        mm.computeInSphereThicknessAtVertices(mesh, settings).vec)
+    radii = thickness / 2.0
+
+    _report(progress, 0.3, "sphere centers")
+    centers, radii, corrected = _skeleton_centers(
+        mesh, verts, faces, radii, settings, progress)
+    thickness = radii * 2.0
+
+    # nodes: one per vertex with a meaningful sphere; tiny corner spheres
+    # sit off the medial axis and only add noise
+    keep = np.isfinite(radii) & (radii >= min_radius)
+    node_count = int(keep.sum())
+    vert_node = np.full(vert_count, NODE_SENTINEL, dtype=np.uint32)
+    vert_node[keep] = np.arange(node_count, dtype=np.uint32)
+    raw_nodes = centers[keep]
+    raw_radii = radii[keep]
+
+    # raw edges: unique mesh edges between kept vertices
+    edges = np.concatenate(
+        [faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]])
+    edges = np.unique(np.sort(edges, axis=1), axis=0)
+    edges = vert_node[edges]
+    raw_edges = edges[(edges != NODE_SENTINEL).all(axis=1)].astype(np.uint32)
+
+    _report(progress, 0.7, "clustering skeleton nodes")
+    labels, representative = _cluster_nodes(raw_nodes, raw_radii,
+                                            cluster_factor)
+    cluster_nodes = raw_nodes[representative]
+    cluster_radii = raw_radii[representative]
+    cluster_edges = labels[raw_edges.astype(np.int64)]
+    cluster_edges = np.unique(np.sort(cluster_edges, axis=1), axis=0)
+    cluster_edges = cluster_edges[
+        cluster_edges[:, 0] != cluster_edges[:, 1]].astype(np.uint32)
+    cluster_vert_node = np.full(vert_count, NODE_SENTINEL, dtype=np.uint32)
+    cluster_vert_node[keep] = labels[vert_node[keep].astype(np.int64)]
+
+    def graph_meta(role, graph, array, dtype):
+        return {"kind": "skeleton", "association": "graph", "role": role,
+                "graph": graph, "dtype": dtype, "length": int(array.size),
+                "count": int(array.shape[0])}
+
+    arrays = {
+        "thickness": thickness.astype("f4"),
+        "raw_nodes": raw_nodes.astype("f4"),
+        "raw_radii": raw_radii.astype("f4"),
+        "raw_edges": raw_edges,
+        "raw_vert_node": vert_node,
+        "cluster_nodes": cluster_nodes.astype("f4"),
+        "cluster_radii": cluster_radii.astype("f4"),
+        "cluster_edges": cluster_edges,
+        "cluster_vert_node": cluster_vert_node,
+    }
+    field_meta = {
+        "thickness": {"kind": "wall_thickness", "association": "vertex",
+                      "role": "scalar", "units": "mm"},
+    }
+    for graph in ("raw", "cluster"):
+        graph_name = "clustered" if graph == "cluster" else "raw"
+        field_meta[f"{graph}_nodes"] = graph_meta(
+            "nodes", graph_name, arrays[f"{graph}_nodes"], "f4")
+        field_meta[f"{graph}_radii"] = graph_meta(
+            "radii", graph_name, arrays[f"{graph}_radii"], "f4")
+        field_meta[f"{graph}_edges"] = graph_meta(
+            "edges", graph_name, arrays[f"{graph}_edges"], "u4")
+        field_meta[f"{graph}_vert_node"] = graph_meta(
+            "vert_map", graph_name, arrays[f"{graph}_vert_node"], "u4")
+
+    finite = thickness[np.isfinite(thickness)]
+    stats = {
+        "verts": vert_count,
+        "raw_nodes": node_count,
+        "raw_edges": int(len(raw_edges)),
+        "cluster_nodes": int(len(cluster_nodes)),
+        "cluster_edges": int(len(cluster_edges)),
+        "mean_thickness": float(finite.mean()) if len(finite) else None,
+        "min_thickness": float(finite.min()) if len(finite) else None,
+        "corrected": int(corrected),
+        "dropped": int(vert_count - node_count),
+    }
+    logger.info(
+        f"wall skeleton: {node_count} raw / {len(cluster_nodes)} clustered "
+        f"nodes, mean thickness {stats['mean_thickness']}")
+    return stats, arrays, field_meta
+
+
 def highlight_union(workdir, include=(), exclude=()):
     """Union of accessibility rows (or its inverse) as highlighted faces."""
     accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))

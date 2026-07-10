@@ -15,11 +15,16 @@ export class Scene3D {
   private overlay = new THREE.Group();
   private colorAttr: THREE.BufferAttribute | null = null;
   private faceCount = 0;
+  private graphPoints: THREE.Points | null = null;
+  private graphLines: THREE.LineSegments | null = null;
+  private graphColorAttr: THREE.BufferAttribute | null = null;
+  private graphNodeCount = 0;
+  private graphKey = '';
   private raycaster = new THREE.Raycaster();
   private downAt: [number, number] | null = null;
   private disposed = false;
 
-  onPick: ((faceIndex: number) => void) | null = null;
+  onPick: ((faceIndex: number, point: [number, number, number]) => void) | null = null;
 
   constructor(private container: HTMLElement) {
     this.scene.background = new THREE.Color(0x21262c);
@@ -73,7 +78,9 @@ export class Scene3D {
     );
     this.raycaster.setFromCamera(ndc, this.camera);
     const hit = this.raycaster.intersectObject(this.mesh)[0];
-    if (hit && hit.faceIndex != null && this.onPick) this.onPick(hit.faceIndex);
+    if (hit && hit.faceIndex != null && this.onPick) {
+      this.onPick(hit.faceIndex, [hit.point.x, hit.point.y, hit.point.z]);
+    }
   };
 
   /** Build the un-indexed geometry from raw vertex/index arrays. */
@@ -175,8 +182,103 @@ export class Scene3D {
     }
   }
 
+  /**
+   * Show a graph overlay: nodes as radius-sized points, edges as line
+   * segments sharing the node position/color buffers (two draw calls, and
+   * edge colors interpolate the endpoint node colors for free). Rendered
+   * without depth so the skeleton stays visible inside the part. A repeat
+   * call with the same key keeps the buffers and only awaits paintGraph.
+   */
+  setGraph(key: string, nodes: Float32Array, edges: Uint32Array, radii: Float32Array) {
+    if (key === this.graphKey) return;
+    this.clearGraph();
+    this.graphKey = key;
+    this.graphNodeCount = nodes.length / 3;
+
+    const positionAttr = new THREE.BufferAttribute(nodes, 3);
+    const colorAttr = new THREE.BufferAttribute(
+      new Float32Array(nodes.length).fill(0.9), 3);
+    const sizeAttr = new THREE.BufferAttribute(radii, 1);
+
+    const pointGeometry = new THREE.BufferGeometry();
+    pointGeometry.setAttribute('position', positionAttr);
+    pointGeometry.setAttribute('color', colorAttr);
+    pointGeometry.setAttribute('size', sizeAttr);
+    const pointMaterial = new THREE.ShaderMaterial({
+      depthTest: false,
+      depthWrite: false,
+      transparent: true,
+      vertexShader: `
+        attribute float size;
+        varying vec3 vColor;
+        void main() {
+          vColor = color;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = clamp(300.0 * size / -mv.z, 2.0, 24.0);
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        varying vec3 vColor;
+        void main() {
+          if (length(gl_PointCoord - 0.5) > 0.5) discard;
+          gl_FragColor = vec4(vColor, 1.0);
+        }`,
+      vertexColors: true,
+    });
+    this.graphPoints = new THREE.Points(pointGeometry, pointMaterial);
+    this.graphPoints.renderOrder = 2;
+
+    const lineGeometry = new THREE.BufferGeometry();
+    lineGeometry.setAttribute('position', positionAttr);
+    lineGeometry.setAttribute('color', colorAttr);
+    lineGeometry.setIndex(new THREE.BufferAttribute(edges, 1));
+    const lineMaterial = new THREE.LineBasicMaterial({
+      vertexColors: true, transparent: true, opacity: 0.8,
+      depthTest: false, depthWrite: false,
+    });
+    this.graphLines = new THREE.LineSegments(lineGeometry, lineMaterial);
+    this.graphLines.renderOrder = 1;
+
+    this.graphColorAttr = colorAttr;
+    this.scene.add(this.graphLines);
+    this.scene.add(this.graphPoints);
+  }
+
+  paintGraph(colorOf: (node: number) => RGB) {
+    if (!this.graphColorAttr) return;
+    for (let n = 0; n < this.graphNodeCount; n++) {
+      const [r, g, b] = colorOf(n);
+      this.graphColorAttr.setXYZ(n, r, g, b);
+    }
+    this.graphColorAttr.needsUpdate = true;
+  }
+
+  clearGraph() {
+    for (const object of [this.graphPoints, this.graphLines]) {
+      if (!object) continue;
+      this.scene.remove(object);
+      object.geometry.dispose();
+      (object.material as THREE.Material).dispose();
+    }
+    this.graphPoints = null;
+    this.graphLines = null;
+    this.graphColorAttr = null;
+    this.graphNodeCount = 0;
+    this.graphKey = '';
+  }
+
+  setMeshOpacity(alpha: number) {
+    if (!this.mesh) return;
+    const material = this.mesh.material as THREE.MeshPhongMaterial;
+    material.transparent = alpha < 1;
+    material.opacity = alpha;
+    material.depthWrite = alpha >= 1;
+    material.needsUpdate = true;
+  }
+
   clearMesh() {
     this.clearOverlays();
+    this.clearGraph();
     if (this.mesh) {
       this.scene.remove(this.mesh);
       this.mesh.geometry.dispose();
