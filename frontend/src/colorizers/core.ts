@@ -208,11 +208,7 @@ export function paintCategory(
   };
 }
 
-/** Golden-ratio hue for stable, well-separated per-id colors. */
-export function segmentIdColor(id: number): RGB {
-  const h = (id * 0.618034) % 1;
-  const s = 0.5;
-  const l = 0.62;
+function hsl(h: number, s: number, l: number): RGB {
   const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
   const p = 2 * l - q;
   const channel = (t: number) => {
@@ -223,6 +219,17 @@ export function segmentIdColor(id: number): RGB {
     return p;
   };
   return [channel(h + 1 / 3), channel(h), channel(h - 1 / 3)];
+}
+
+/** Golden-ratio hue for stable, well-separated per-id colors. */
+export function segmentIdColor(id: number): RGB {
+  return hsl((id * 0.618034) % 1, 0.5, 0.62);
+}
+
+/** Red-family per-region color for numbered internal undercut regions. */
+export function regionColor(region: number): RGB {
+  const t = (region * 0.618034) % 1;
+  return hsl(0.98 + 0.06 * t, 0.62, 0.4 + 0.28 * t);
 }
 
 /** Source BREP faces (from the STEP-aware mesher), one color per face id. */

@@ -148,11 +148,15 @@ python test_mold.py                                    # analytic fixtures
 `options` ranks antipodal plate pairs with greedy perpendicular slides
 (per-slide marginal face counts), a FEASIBLE/infeasible verdict and the
 internal-undercut count. In the UI (injection molding tab → "Mold
-orientation assignment"): pick a ranked option, toggle the display between
-band (either-faces explicit), resolved (auto-assigned) and whole BREP
-faces (straddle = the parting line must cross that face), with the parting
-line and mold/slide direction arrows overlaid. The "BREP faces" view mode
-(any tab) colors the mesh by source BREP face.
+orientation assignment"): pick a ranked option; whole BREP faces are
+colored by their assigned feature — faces valid for several features
+render striped (selected color strong, other valid colors faded), conflict
+faces (no single feature covers every triangle) get their own class, and
+unreachable faces form numbered internal undercut regions. **Click a
+striped face to cycle it through its valid sides/slides** — the parting
+line (drawn along BREP edges between differently-assigned faces) jumps
+accordingly, and the choice is saved to the workdir. The "BREP faces" view
+mode (any tab) colors the mesh by source BREP face.
 
 ## Wall thickness and gaps (rolling sphere)
 

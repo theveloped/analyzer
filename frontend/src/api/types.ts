@@ -10,7 +10,7 @@ export interface Part {
   created: string | null;
 }
 
-export type FieldRole = 'scalar' | 'mask' | 'category' | 'lines';
+export type FieldRole = 'scalar' | 'mask' | 'category' | 'lines' | 'data';
 
 export interface FieldDescriptor {
   id: string;
@@ -30,6 +30,7 @@ export interface ResultEntry {
   params: Record<string, any>;
   stats: Record<string, any>;
   fields: string[];
+  overrides_url?: string;
 }
 
 export interface Manifest {

@@ -44,3 +44,21 @@ export async function submitJob(
 }
 
 export const fetchJob = (id: number) => getJSON<Job>(`/api/jobs/${id}`);
+
+export async function fetchOverrides(
+  url: string,
+): Promise<Record<string, Record<string, number>>> {
+  const res = await fetch(url);
+  return res.ok ? res.json() : {};
+}
+
+export async function putOverrides(
+  url: string, data: Record<string, Record<string, number>>,
+): Promise<void> {
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`saving overrides failed: ${res.status}`);
+}

@@ -34,6 +34,8 @@ DIRECTIONS_FILE = "directions.npy"
 ACCESSIBILITY_FILE = "accessibility.npy"
 BREP_FACES_FILE = "brep_faces.npy"
 BREP_META_FILE = "brep_meta.json"
+BREP_EDGES_FILE = "brep_edges.npy"
+BREP_EDGE_PAIRS_FILE = "brep_edge_pairs.npy"
 HIGHLIGHT_FILE = "highlights.json"
 
 MESH_EXTENSIONS = [".stl", ".stp", ".step"]
@@ -145,6 +147,20 @@ def mesh_part(input_path, workdir=None, *, heal=False, subdivide=None, offset=No
             json.dump({"face_count": len(surface_types),
                        "surface_types": surface_types}, f)
         counts["brep_faces"] = len(surface_types)
+
+        # BREP edge geometry: mesh edges between different BREP faces,
+        # grouped by their unordered face-id pair — the discretized BREP
+        # edges the parting line snaps to
+        import molding
+        pairs, edge_verts = molding.face_adjacency(faces)
+        boundary = brep_ids[pairs[:, 0]] != brep_ids[pairs[:, 1]]
+        segments = verts[edge_verts[boundary]].astype("<f4")
+        id_pairs = np.sort(np.stack([brep_ids[pairs[boundary, 0]],
+                                     brep_ids[pairs[boundary, 1]]], axis=1),
+                           axis=1).astype("<u4")
+        np.save(os.path.join(workdir, BREP_EDGES_FILE), segments)
+        np.save(os.path.join(workdir, BREP_EDGE_PAIRS_FILE), id_pairs)
+        counts["brep_edge_segments"] = int(len(segments))
 
     return {"workdir": workdir, "counts": counts}
 
@@ -265,41 +281,47 @@ def mold_orientation(workdir, *, max_slides=2, slide_tollerance=2.0, count=10,
         directions, accessibility, max_slides=max_slides,
         slide_tolerance_deg=slide_tollerance, min_slide_faces=min_slide_faces)
 
-    _report(progress, 0.5, "deriving assignment fields")
-    pairs, edge_verts = molding.face_adjacency(faces)
+    _report(progress, 0.5, "deriving membership fields")
+    pairs, _ = molding.face_adjacency(faces)
 
     arrays, field_meta = {}, {}
     for k, option in enumerate(options[:field_options]):
         slide_dirs = [s["direction"] for s in option["slides"]]
-        band = molding.assignment_band(option["pair"], slide_dirs, accessibility)
-        resolved = molding.resolve_either(band, pairs)
-        labels, colors = molding.category_labels_colors(len(slide_dirs))
+        n_features = 2 + len(slide_dirs)
+        membership = molding.membership_field(option["pair"], slide_dirs,
+                                              accessibility)
+        region, region_counts = molding.internal_regions(membership, pairs,
+                                                         len(faces))
+        labels, colors = molding.feature_labels_colors(len(slide_dirs))
 
-        common = {"kind": "mold_assignment", "association": "face",
-                  "role": "category", "option": k,
-                  "labels": labels, "colors": colors}
-        arrays[f"band_{k}"] = band
-        field_meta[f"band_{k}"] = {**common, "variant": "band"}
-        arrays[f"resolved_{k}"] = resolved
-        field_meta[f"resolved_{k}"] = {**common, "variant": "resolved"}
+        common = {"kind": "mold_membership", "option": k,
+                  "features": n_features, "labels": labels, "colors": colors,
+                  "conflict_color": molding.CATEGORY_COLORS["conflict"],
+                  "internal_color": molding.CATEGORY_COLORS["internal"]}
+        arrays[f"membership_{k}"] = membership
+        field_meta[f"membership_{k}"] = {
+            **common, "variant": "membership", "association": "face",
+            "role": "category", "dtype": "u4"}
+        arrays[f"internal_region_{k}"] = region
+        field_meta[f"internal_region_{k}"] = {
+            **common, "variant": "internal_region", "association": "face",
+            "role": "category", "dtype": "u4", "regions": len(region_counts),
+            "region_counts": region_counts}
 
         if brep_ids is not None:
-            brep_field, _ = molding.aggregate_brep(band, resolved, brep_ids)
-            brep_labels, brep_colors = molding.category_labels_colors(
-                len(slide_dirs), straddle=True)
-            arrays[f"brep_{k}"] = brep_field
-            field_meta[f"brep_{k}"] = {**common, "variant": "brep",
-                                       "labels": brep_labels,
-                                       "colors": brep_colors}
-
-        lines = molding.parting_line_segments(resolved, pairs, edge_verts, verts)
-        arrays[f"parting_lines_{k}"] = lines
-        field_meta[f"parting_lines_{k}"] = {
-            "kind": "parting_lines", "association": "none", "role": "lines",
-            "option": k, "count": int(len(lines)),
-        }
+            valid = molding.brep_validity(membership, brep_ids, n_features)
+            arrays[f"brep_valid_{k}"] = valid
+            field_meta[f"brep_valid_{k}"] = {
+                **common, "variant": "brep_valid", "association": "none",
+                "role": "data", "dtype": "u4", "count": int(len(valid))}
+            defaults = molding.brep_defaults(membership, valid, brep_ids)
+            arrays[f"brep_default_{k}"] = defaults
+            field_meta[f"brep_default_{k}"] = {
+                **common, "variant": "brep_default", "association": "none",
+                "role": "data", "dtype": "u1", "count": int(len(defaults))}
 
     stats = {
+        "schema": 2,
         "face_count": int(accessibility.shape[1]),
         "direction_count": int(directions.shape[0]),
         "brep": brep_ids is not None,

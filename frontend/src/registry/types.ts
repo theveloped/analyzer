@@ -17,6 +17,7 @@ export interface PaintInfo {
 export interface ViewCtx {
   manifest: Manifest;
   directions: number[][];
+  verts: Float32Array; // indexed vertex coordinates
   faces: Uint32Array;
   normals: Float32Array; // per-face unit normals
   faceCount: number;
@@ -34,6 +35,8 @@ export interface ViewMode {
   id: string;
   label: string;
   paint(ctx: ViewCtx): Promise<PaintInfo>;
+  /** Optional click handler; return true when consumed (triggers repaint). */
+  onPick?(face: number, ctx: ViewCtx): Promise<boolean>;
 }
 
 /** A process contributes view modes, viewer controls and click-inspection. */

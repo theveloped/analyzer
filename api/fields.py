@@ -67,6 +67,22 @@ def brep_faces_bytes(workdir):
     return np.ascontiguousarray(np.load(path), dtype="<u4").tobytes(), "<u4"
 
 
+def brep_edges_bytes(workdir):
+    """BREP edge segment coordinates as float32 (E*2*3)."""
+    path = os.path.join(workdir, pipeline.BREP_EDGES_FILE)
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    return np.ascontiguousarray(np.load(path), dtype="<f4").tobytes(), "<f4"
+
+
+def brep_edge_pairs_bytes(workdir):
+    """Unordered BREP face id pair per edge segment as uint32 (E*2)."""
+    path = os.path.join(workdir, pipeline.BREP_EDGE_PAIRS_FILE)
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    return np.ascontiguousarray(np.load(path), dtype="<u4").tobytes(), "<u4"
+
+
 def accessibility_bytes(workdir, direction_index):
     """One accessibility row as a per-face uint8 mask."""
     path = os.path.join(workdir, pipeline.ACCESSIBILITY_FILE)

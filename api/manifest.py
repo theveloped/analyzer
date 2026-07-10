@@ -93,7 +93,7 @@ def _brep_faces_fields(workdir, base_url, face_count):
     if not os.path.exists(path):
         return []
     count = int(np.load(path, mmap_mode="r").max()) + 1
-    return [{
+    fields = [{
         "id": "brep_faces",
         "association": "face",
         "dtype": "u4",
@@ -103,11 +103,35 @@ def _brep_faces_fields(workdir, base_url, face_count):
         "params": {"kind": "brep_faces", "count": count},
     }]
 
+    edges_path = os.path.join(workdir, pipeline.BREP_EDGES_FILE)
+    if os.path.exists(edges_path):
+        segments = int(np.load(edges_path, mmap_mode="r").shape[0])
+        fields += [{
+            "id": "brep_edges",
+            "association": "none",
+            "dtype": "f4",
+            "role": "lines",
+            "length": None,
+            "url": f"{base_url}/fields/brep_edges/0",
+            "params": {"kind": "brep_edges", "segments": segments},
+        }, {
+            "id": "brep_edge_pairs",
+            "association": "none",
+            "dtype": "u4",
+            "role": "data",
+            "length": None,
+            "url": f"{base_url}/fields/brep_edge_pairs/0",
+            "params": {"kind": "brep_edge_pairs", "segments": segments},
+        }]
+    return fields
+
 
 def _result_entries(workdir, base_url, face_count, vert_count):
     fields, results = [], []
     pattern = os.path.join(workdir, RESULTS_DIR, "*", "*", "*.json")
     for json_path in sorted(glob.glob(pattern)):
+        if json_path.endswith("_overrides.json"):
+            continue  # assignment overrides live next to their result
         with open(json_path) as f:
             payload = json.load(f)
         process_id = payload["process"]
@@ -139,6 +163,7 @@ def _result_entries(workdir, base_url, face_count, vert_count):
             "params": payload.get("params", {}),
             "stats": payload.get("stats", {}),
             "fields": field_ids,
+            "overrides_url": f"{base_url}/results/{process_id}/{analysis_id}/{result_hash}/overrides",
         })
     return fields, results
 

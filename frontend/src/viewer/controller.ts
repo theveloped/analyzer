@@ -3,7 +3,8 @@
 // the mesh (the port of viewer.html's update()/boot()).
 
 import {
-  fetchCatalog, fetchConfig, fetchHighlights, fetchManifest, fetchParts,
+  fetchCatalog, fetchConfig, fetchHighlights, fetchManifest, fetchOverrides,
+  fetchParts,
 } from '../api/client';
 import type { Manifest } from '../api/types';
 import { clearFieldCache, fetchBin, fetchField } from '../fields/fields';
@@ -13,10 +14,22 @@ import { useStore } from '../state/store';
 import { Scene3D } from './scene';
 
 let scene: Scene3D | null = null;
+let verts: Float32Array | null = null;
 let faces: Uint32Array | null = null;
 let normals: Float32Array | null = null;
 let repaintQueued = false;
 let lastPaintKey = '';
+
+async function loadOverrides(manifest: Manifest) {
+  const entries = await Promise.all(
+    manifest.results
+      .filter((r) => r.overrides_url)
+      .map(async (r) => [
+        `${r.process}.${r.analysis}.${r.hash}`,
+        await fetchOverrides(r.overrides_url!),
+      ] as const));
+  useStore.getState().set({ overrides: Object.fromEntries(entries) });
+}
 
 export function attach(container: HTMLElement) {
   scene = new Scene3D(container);
@@ -55,6 +68,7 @@ export async function refreshParts() {
 export async function selectPart(partId: string) {
   const store = useStore.getState();
   clearFieldCache();
+  verts = null;
   faces = null;
   normals = null;
   lastPaintKey = '';
@@ -67,6 +81,7 @@ export async function selectPart(partId: string) {
   try {
     const manifest = await fetchManifest(partId);
     initViewerParams(manifest);
+    await loadOverrides(manifest);
     useStore.getState().set({
       manifest,
       manifestVersion: useStore.getState().manifestVersion + 1,
@@ -78,15 +93,16 @@ export async function selectPart(partId: string) {
       return;
     }
 
-    const [verts, faceIdx, faceNormals, highlights] = await Promise.all([
+    const [vertArr, faceIdx, faceNormals, highlights] = await Promise.all([
       fetchBin(manifest.mesh.verts_url, Float32Array),
       fetchBin(manifest.mesh.faces_url, Uint32Array),
       fetchBin(manifest.mesh.normals_url, Float32Array),
       manifest.highlights_url ? fetchHighlights(manifest.highlights_url) : null,
     ]);
+    verts = vertArr;
     faces = faceIdx;
     normals = faceNormals;
-    scene?.setMesh(verts, faceIdx);
+    scene?.setMesh(vertArr, faceIdx);
     scene?.frame(firstDirection(manifest));
     useStore.getState().set({ meshReady: true, highlights, stats: '' });
   } catch (err) {
@@ -107,6 +123,7 @@ export async function refreshManifest() {
     return;
   }
   clearFieldCache(); // fields may have been recomputed under the same URL
+  await loadOverrides(fresh);
   const highlights = fresh.highlights_url
     ? await fetchHighlights(fresh.highlights_url) : null;
   useStore.getState().set({
@@ -133,13 +150,15 @@ function initViewerParams(manifest: Manifest) {
 
 function buildCtx(): ViewCtx | null {
   const { manifest, processId, viewerParams, highlights } = useStore.getState();
-  if (!manifest || !faces || !normals || !scene) return null;
+  if (!manifest || !verts || !faces || !normals || !scene) return null;
   const theScene = scene;
+  const theVerts = verts;
   const theFaces = faces;
   const theNormals = normals;
   return {
     manifest,
     directions: manifest.directions,
+    verts: theVerts,
     faces: theFaces,
     normals: theNormals,
     faceCount: theFaces.length / 3,
@@ -156,7 +175,7 @@ function paintKey(): string {
   const s = useStore.getState();
   return JSON.stringify([
     s.partId, s.processId, s.modeId, s.viewerParams[s.processId],
-    s.manifestVersion, s.meshReady, s.highlights?.length ?? -1,
+    s.manifestVersion, s.meshReady, s.highlights?.length ?? -1, s.overrides,
   ]);
 }
 
@@ -198,6 +217,17 @@ async function inspect(face: number) {
   const ctx = buildCtx();
   if (!ctx) return;
   const plugin = getPlugin(store.processId);
+
+  // the active mode may consume the click (e.g. assignment toggling)
+  const mode = plugin?.modes.find((m) => m.id === store.modeId);
+  if (mode?.onPick) {
+    try {
+      if (await mode.onPick(face, ctx)) schedulePaint(true);
+    } catch (err) {
+      useStore.getState().set({ error: String(err) });
+    }
+  }
+
   const lines = [
     `face ${face}  verts ${ctx.faces[3 * face]}, ${ctx.faces[3 * face + 1]}, ${ctx.faces[3 * face + 2]}`,
   ];

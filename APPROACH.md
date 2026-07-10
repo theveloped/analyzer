@@ -77,18 +77,28 @@ undercuts** (inside slides / hand-loads, identified separately). An option is
 **feasible** iff that set is empty; ranking is feasible-first, fewer slides,
 higher coverage.
 
-Per top option, per-face assignment fields are derived (pure numpy over the
+Per top option, assignment is **membership based** (pure numpy over the
 accessibility rows):
 
-- **band** — side A / side B / *either* (visible from both halves: the
-  parting-line choice points) / internal / slide-j;
-- **resolved** — the either band auto-assigned by region growing from forced
-  neighbors (a concrete default parting);
-- **brep** — whole-BREP-face aggregation (via `brep_faces.npy`): faces forced
-  both ways become *straddle* (the parting line must cross them — either by
-  choosing a side or by splitting the face), the rest take the majority vote;
-- **parting lines** — the mesh edges where the resolved assignment flips
-  A↔B, rendered as a line overlay in the viewer along with direction arrows.
+- **membership** — per mesh face, a bitmask of every feature (side A, side
+  B, slide j) whose direction reaches it; a face can be valid for none, one
+  or several. Faces reached by nothing form **numbered internal undercut
+  regions** (connected components — the units a future internal-slide /
+  hand-load solver will target).
+- **BREP validity** — a feature is valid for a whole BREP face iff it
+  reaches every one of its triangles (strict, via `brep_faces.npy`); faces
+  with partial coverage but no full cover are **conflicts** (need a split —
+  the future non-BREP-edge parting).
+- **defaults + overrides** — each BREP face gets a deterministic default
+  feature (sides beat slides; A/B ties break by exclusive-coverage
+  majority); in the viewer, multi-valid faces render **striped** with all
+  their valid colors (selected strong, others faded) and clicking cycles the
+  face through its valid features. Choices persist as overrides next to the
+  result (`<hash>_overrides.json`, GET/PUT via the API).
+- **parting line** — the BREP edges (exported at mesh time as
+  `brep_edges.npy` + `brep_edge_pairs.npy`) whose two faces carry different
+  current assignments, recomputed client-side on every toggle, rendered with
+  the mold/slide direction arrows.
 
 Because accessibility is precomputed, the whole search and all field
 derivations are numpy row operations — no geometry is touched.

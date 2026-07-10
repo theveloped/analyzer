@@ -1,11 +1,12 @@
 """Injection molding process.
 
 mold_orientation ranks mold orientations (antipodal plate pair + greedy
-perpendicular slides) and stores per-face side assignments (band /
-resolved / whole-BREP-face) plus parting-line segments; thickness and gaps
-are per-vertex rolling inscribed-sphere fields (gaps = the same measure on
-the orientation-flipped mesh, i.e. the exterior clearance between opposing
-walls).
+perpendicular slides) and stores per-face feature membership bitmasks,
+whole-BREP-face validity/defaults and numbered internal undercut regions —
+the assignment/parting-line choice is made per BREP face in the viewer.
+thickness and gaps are per-vertex rolling inscribed-sphere fields (gaps =
+the same measure on the orientation-flipped mesh, i.e. the exterior
+clearance between opposing walls).
 """
 
 import numpy as np
@@ -15,6 +16,7 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             load_cached_result, store_result)
 
 ASSIGNMENT_OPTIONS = 3  # options that get per-face assignment fields
+MOLD_SCHEMA = 2  # result schema version, salted into the cache key
 
 
 def _field_stats(values, max_radius):
@@ -62,8 +64,9 @@ def run_gaps(workdir, params, progress):
 
 
 def run_mold_orientation(workdir, params, progress):
+    cache_params = {**params, "schema": MOLD_SCHEMA}
     cached = load_cached_result(workdir, "injection_molding",
-                                "mold_orientation", params)
+                                "mold_orientation", cache_params)
     if cached is not None:
         return AnalysisResult(stats=cached["stats"],
                               fields=list(cached["arrays"]))
@@ -74,7 +77,7 @@ def run_mold_orientation(workdir, params, progress):
         min_slide_faces=params["min_slide_faces"],
         field_options=ASSIGNMENT_OPTIONS, progress=progress)
 
-    store_result(workdir, "injection_molding", "mold_orientation", params,
+    store_result(workdir, "injection_molding", "mold_orientation", cache_params,
                  result["stats"], arrays=result["arrays"],
                  field_meta=result["field_meta"])
     return AnalysisResult(stats=result["stats"], fields=list(result["arrays"]))
