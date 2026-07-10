@@ -13,6 +13,7 @@ import os
 
 import numpy as np
 from loguru import logger
+from meshlib import mrmeshpy as mm
 from meshlib import mrmeshnumpy as mn
 
 from analysis import (
@@ -23,7 +24,6 @@ from analysis import (
     sample_unity_vector_pairs,
     compute_accessibility,
     relax_accessibility,
-    find_combinations_matching_best,
 )
 from utils import has_valid_extension, ensure_directory
 
@@ -32,6 +32,10 @@ FINE_VERTS_FILE = "fine_verts.npy"
 FINE_FACES_FILE = "fine_faces.npy"
 DIRECTIONS_FILE = "directions.npy"
 ACCESSIBILITY_FILE = "accessibility.npy"
+BREP_FACES_FILE = "brep_faces.npy"
+BREP_META_FILE = "brep_meta.json"
+BREP_EDGES_FILE = "brep_edges.npy"
+BREP_EDGE_PAIRS_FILE = "brep_edge_pairs.npy"
 HIGHLIGHT_FILE = "highlights.json"
 
 MESH_EXTENSIONS = [".stl", ".stp", ".step"]
@@ -77,21 +81,44 @@ def load_mesh_arrays(workdir):
 
 
 def mesh_part(input_path, workdir=None, *, heal=False, subdivide=None, offset=None,
-              tollerance=1e-1, progress=None):
+              tollerance=1e-1, deflection=0.5, progress=None):
     """Canonicalize an input STL/STEP into a part working directory.
 
     Writes fine_mesh.obj + fine_verts.npy + fine_faces.npy (the stable face
-    indexing every later stage refers to). Returns the workdir and counts.
+    indexing every later stage refers to). STEP input tessellates through
+    the BREP (brep.mesh_step) so every fine face carries its source BREP
+    face id (brep_faces.npy) — heal/offset destroy the surfaces and fall
+    back to the anonymous meshlib path, as does STL input.
+    Returns the workdir and counts.
     """
     has_valid_extension(input_path, MESH_EXTENSIONS)
 
-    _report(progress, 0.0, "loading mesh")
-    mesh = load_mesh(input_path, heal=heal, offset=offset, tollerance=tollerance)
+    is_step = os.path.splitext(input_path)[1].lower() in (".stp", ".step")
+    brep_ids = None
+    surface_types = None
 
-    if subdivide:
-        _report(progress, 0.5, "subdividing mesh")
-        mesh = subdivide_mesh(mesh, subdivide)
-    verts, faces = get_mesh_data(mesh)
+    if is_step and not heal and offset is None:
+        import brep
+
+        _report(progress, 0.0, "tessellating BREP")
+        verts, faces, brep_ids, surface_types = brep.mesh_step(
+            input_path, deflection=deflection)
+
+        if subdivide:
+            _report(progress, 0.4, "subdividing mesh (tag preserving)")
+            verts, faces, brep_ids = brep.subdivide_tagged(
+                verts, faces, brep_ids, subdivide)
+
+        verts = verts.astype(np.float32)
+        mesh = mn.meshFromFacesVerts(faces, verts)
+    else:
+        _report(progress, 0.0, "loading mesh")
+        mesh = load_mesh(input_path, heal=heal, offset=offset, tollerance=tollerance)
+
+        if subdivide:
+            _report(progress, 0.5, "subdividing mesh")
+            mesh = subdivide_mesh(mesh, subdivide)
+        verts, faces = get_mesh_data(mesh)
 
     if not workdir:
         input_name = os.path.basename(input_path)
@@ -113,10 +140,29 @@ def mesh_part(input_path, workdir=None, *, heal=False, subdivide=None, offset=No
     logger.debug(f"Storing obj file: {obj_path}")
     save_mesh(mesh, obj_path)
 
-    return {
-        "workdir": workdir,
-        "counts": {"verts": int(len(verts)), "faces": int(len(faces))},
-    }
+    counts = {"verts": int(len(verts)), "faces": int(len(faces))}
+    if brep_ids is not None:
+        np.save(os.path.join(workdir, BREP_FACES_FILE), brep_ids)
+        with open(os.path.join(workdir, BREP_META_FILE), "w") as f:
+            json.dump({"face_count": len(surface_types),
+                       "surface_types": surface_types}, f)
+        counts["brep_faces"] = len(surface_types)
+
+        # BREP edge geometry: mesh edges between different BREP faces,
+        # grouped by their unordered face-id pair — the discretized BREP
+        # edges the parting line snaps to
+        import molding
+        pairs, edge_verts = molding.face_adjacency(faces)
+        boundary = brep_ids[pairs[:, 0]] != brep_ids[pairs[:, 1]]
+        segments = verts[edge_verts[boundary]].astype("<f4")
+        id_pairs = np.sort(np.stack([brep_ids[pairs[boundary, 0]],
+                                     brep_ids[pairs[boundary, 1]]], axis=1),
+                           axis=1).astype("<u4")
+        np.save(os.path.join(workdir, BREP_EDGES_FILE), segments)
+        np.save(os.path.join(workdir, BREP_EDGE_PAIRS_FILE), id_pairs)
+        counts["brep_edge_segments"] = int(len(segments))
+
+    return {"workdir": workdir, "counts": counts}
 
 
 def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
@@ -174,44 +220,114 @@ def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
     }
 
 
-def parting_options(workdir, *, slides=0, count=10, slide_tollerance=2e-1,
-                    relax=False, relax_tollerance=1.0, relax_samples=4,
-                    progress=None):
-    """Rank setup/parting direction combinations by face coverage."""
-    logger.debug(f"Computing preferred options with {slides} slides")
+def compute_thickness(workdir, *, max_radius=None, inverted=False,
+                      max_iters=1000, progress=None):
+    """Per-vertex maximal inscribed ("rolling") sphere diameter.
 
+    inverted=False measures wall thickness inside the part. inverted=True
+    runs the same search on an orientation-flipped copy of the mesh, so the
+    exterior becomes the inside and the value is the local gap between
+    opposing walls — on the same vertex indexing, no boolean inversion or
+    cross-mesh mapping needed. Values cap at 2*max_radius (saturated = no
+    opposing wall worth considering); max_radius=None derives meshlib's
+    recommended 0.5 * min(bbox dims).
+
+    Returns (values float32[verts], max_radius).
+    """
     verts, faces = load_mesh_arrays(workdir)
     mesh = mn.meshFromFacesVerts(faces, verts)
 
+    if max_radius is None:
+        size = mesh.computeBoundingBox().size()
+        max_radius = 0.5 * min(size.x, size.y, size.z)
+        logger.debug(f"Auto inscribed sphere max radius: {max_radius:.3f}")
+
+    if inverted:
+        mesh.topology.flipOrientation()
+
+    settings = mm.InSphereSearchSettings()
+    settings.insideAndOutside = False
+    settings.maxRadius = float(max_radius)
+    settings.maxIters = int(max_iters)
+    settings.minShrinkage = 1e-6
+
+    _report(progress, 0.2, "rolling inscribed spheres")
+    result = mm.computeInSphereThicknessAtVertices(mesh, settings)
+    values = np.array(result.vec, dtype=np.float32)
+    _report(progress, 1.0, "thickness field done")
+    return values, float(max_radius)
+
+
+def mold_orientation(workdir, *, max_slides=2, slide_tollerance=2.0, count=10,
+                     min_slide_faces=50, field_options=3, progress=None):
+    """Search mold orientations and derive per-face assignment fields.
+
+    Returns {"stats": <JSON-safe>, "arrays": {...}, "field_meta": {...}}
+    with band/resolved/brep category fields and parting-line segments for
+    the top `field_options` options. The brep fields need brep_faces.npy
+    (STEP-meshed parts); they are skipped otherwise.
+    """
+    import molding
+
+    verts, faces = load_mesh_arrays(workdir)
     directions = np.load(os.path.join(workdir, DIRECTIONS_FILE))
     accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))
 
-    _report(progress, 0.1, "searching direction combinations")
-    matching_combinations = find_combinations_matching_best(
-        directions, accessibility, max_slides=slides, max_results=count,
-        tolerance_degrees=slide_tollerance)
+    brep_path = os.path.join(workdir, BREP_FACES_FILE)
+    brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
 
-    if relax:
-        # Compute the unique open closed directions
-        unique_directions = set()
-        for option, performance in matching_combinations[:count]:
-            unique_directions.update(option)
+    _report(progress, 0.1, "searching mold orientations")
+    options = molding.mold_orientation_search(
+        directions, accessibility, max_slides=max_slides,
+        slide_tolerance_deg=slide_tollerance, min_slide_faces=min_slide_faces)
 
-        for i, direction_index in enumerate(unique_directions):
-            _report(progress, 0.5 + 0.5 * i / max(len(unique_directions), 1),
-                    f"relaxing direction {direction_index}")
-            relaxed = relax_accessibility(
-                mesh, accessibility[direction_index, :], directions[direction_index],
-                tolerance_degrees=relax_tollerance, n=relax_samples)
-            accessibility[direction_index, :] = relaxed
+    _report(progress, 0.5, "deriving membership fields")
+    pairs, _ = molding.face_adjacency(faces)
 
-        np.save(os.path.join(workdir, ACCESSIBILITY_FILE), accessibility)
+    arrays, field_meta = {}, {}
+    for k, option in enumerate(options[:field_options]):
+        slide_dirs = [s["direction"] for s in option["slides"]]
+        n_features = 2 + len(slide_dirs)
+        membership = molding.membership_field(option["pair"], slide_dirs,
+                                              accessibility)
+        region, region_counts = molding.internal_regions(membership, pairs,
+                                                         len(faces))
+        labels, colors = molding.feature_labels_colors(len(slide_dirs))
 
-    options = [
-        {"directions": [int(i) for i in option], "coverage": float(performance)}
-        for option, performance in matching_combinations[:count]
-    ]
-    return {"options": options}
+        common = {"kind": "mold_membership", "option": k,
+                  "features": n_features, "labels": labels, "colors": colors,
+                  "conflict_color": molding.CATEGORY_COLORS["conflict"],
+                  "internal_color": molding.CATEGORY_COLORS["internal"]}
+        arrays[f"membership_{k}"] = membership
+        field_meta[f"membership_{k}"] = {
+            **common, "variant": "membership", "association": "face",
+            "role": "category", "dtype": "u4"}
+        arrays[f"internal_region_{k}"] = region
+        field_meta[f"internal_region_{k}"] = {
+            **common, "variant": "internal_region", "association": "face",
+            "role": "category", "dtype": "u4", "regions": len(region_counts),
+            "region_counts": region_counts}
+
+        if brep_ids is not None:
+            valid = molding.brep_validity(membership, brep_ids, n_features)
+            arrays[f"brep_valid_{k}"] = valid
+            field_meta[f"brep_valid_{k}"] = {
+                **common, "variant": "brep_valid", "association": "none",
+                "role": "data", "dtype": "u4", "count": int(len(valid))}
+            defaults = molding.brep_defaults(membership, valid, brep_ids)
+            arrays[f"brep_default_{k}"] = defaults
+            field_meta[f"brep_default_{k}"] = {
+                **common, "variant": "brep_default", "association": "none",
+                "role": "data", "dtype": "u1", "count": int(len(defaults))}
+
+    stats = {
+        "schema": 2,
+        "face_count": int(accessibility.shape[1]),
+        "direction_count": int(directions.shape[0]),
+        "brep": brep_ids is not None,
+        "options": options[:count],
+    }
+    return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
 
 
 def thickness_highlights(faces, thickness, hi=1.3):

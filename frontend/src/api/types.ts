@@ -10,12 +10,12 @@ export interface Part {
   created: string | null;
 }
 
-export type FieldRole = 'scalar' | 'mask' | 'category'
+export type FieldRole = 'scalar' | 'mask' | 'category' | 'lines' | 'data'
   | 'nodes' | 'radii' | 'edges' | 'vert_map';
 
 export interface FieldDescriptor {
   id: string;
-  association: 'vertex' | 'face' | 'graph';
+  association: 'vertex' | 'face' | 'none' | 'graph';
   dtype: 'f4' | 'u1' | 'u4';
   role: FieldRole;
   units?: string;
@@ -31,6 +31,7 @@ export interface ResultEntry {
   params: Record<string, any>;
   stats: Record<string, any>;
   fields: string[];
+  overrides_url?: string;
 }
 
 export interface Manifest {

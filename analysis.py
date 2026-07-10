@@ -6,7 +6,6 @@ import time
 
 from loguru import logger
 import os
-from itertools import combinations
 from utils import log_execution_time
 
 
@@ -498,73 +497,6 @@ def compute_accessibility(mesh, directions, face_count, *, tolerance_deg=0.1,
             tolerance_deg=tolerance_deg, pixel=pixel)
 
     return accessibility
-
-
-def find_valid_directions(principal, directions, tolerance_cosine=np.cos(np.radians(89))):
-    """
-    Validate directions based on the cosine similarity with the principal direction. Values
-    that are within the tolerance are considered valid. Used to determine if a direction is
-    perpendicular to the principal direction within a certain tolerance.
-    
-    :param principal: The principal direction to compare against.
-    :param directions: An array of directions to validate.
-    :param tolerance_cosine: The cosine similarity tolerance to use.
-    :return: An array of indices of valid directions.
-    """
-    dot_products = np.dot(directions, principal.T)
-    valid = np.abs(dot_products) <= tolerance_cosine
-    return np.where(valid)[0]
-  
-
-@log_execution_time
-def find_combinations_matching_best(directions, accessibility, max_slides=1, max_results=10, tolerance_degrees=1.0):
-    """
-    Find all combinations of rows in the undercuts array that match the best value.
-    
-    Parameters:
-    - undercuts: A 2D numpy array where each row represents undercuts for a direction.
-    - best_value: The best achievable result (sum of True values in the best case scenario).
-    
-    Returns:
-    - A list of tuples, where each tuple contains indices of rows in `undercuts` that,
-      when combined, match the best_value.
-    """
-    combinations_sum = []
-    n = directions.shape[0]
-    face_count = accessibility.shape[1]
-    
-    tolerance_cosine = np.cos( np.radians(90 - tolerance_degrees) )
-    for i in range(0, n, 2):
-        pair_union = np.any(accessibility[i:i+2], axis=0) # Union of paired directions
-        total_performance = np.sum(pair_union) / face_count
-        combinations_sum.append(([i, i+1], total_performance))
-        slide_options = find_valid_directions(directions[i], directions, tolerance_cosine=tolerance_cosine)
-
-        max_combinations = min(len(slide_options), max_slides)
-        for r in range(1, max_combinations + 1):
-            for combination in combinations(range(len(slide_options)), r):         
-                slides_indexes = slide_options[list(combination)]
-                # slides_directions = directions[slides_indexes]
-                slides_union = np.any(accessibility[slides_indexes, :], axis=0)
-                total_union = np.any([pair_union, slides_union], axis=0)
-                total_performance = np.sum(total_union) / face_count
-
-                # print(slides_directions)
-                total_directions = [i, i+1] + slides_indexes.tolist()
-                combinations_sum.append((total_directions, total_performance))
-    
-    # # Sort combinations based on the sum of True values in descending order
-    sorted_combinations = sorted(combinations_sum, key=lambda x: x[1], reverse=True)
-
-    # # Return the top N combinations
-    max_results = min(max_results, len(sorted_combinations))
-    
-    sorted_combinations = sorted(combinations_sum, key=lambda x: x[1], reverse=True)
-    max_results = min(max_results, len(sorted_combinations))
-    for option in sorted_combinations[:max_results]:
-        logger.debug(f"Option is {option[0]} with a performance {option[1]:.2f}")
-        
-    return sorted_combinations
 
 
 def find_perpendicular_vector(v):

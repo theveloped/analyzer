@@ -59,6 +59,30 @@ def zcache_field_bytes(workdir, file_stem, key):
     return np.ascontiguousarray(stored[key], dtype="<f4").tobytes(), "<f4"
 
 
+def brep_faces_bytes(workdir):
+    """Per-face BREP face ids as uint32."""
+    path = os.path.join(workdir, pipeline.BREP_FACES_FILE)
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    return np.ascontiguousarray(np.load(path), dtype="<u4").tobytes(), "<u4"
+
+
+def brep_edges_bytes(workdir):
+    """BREP edge segment coordinates as float32 (E*2*3)."""
+    path = os.path.join(workdir, pipeline.BREP_EDGES_FILE)
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    return np.ascontiguousarray(np.load(path), dtype="<f4").tobytes(), "<f4"
+
+
+def brep_edge_pairs_bytes(workdir):
+    """Unordered BREP face id pair per edge segment as uint32 (E*2)."""
+    path = os.path.join(workdir, pipeline.BREP_EDGE_PAIRS_FILE)
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    return np.ascontiguousarray(np.load(path), dtype="<u4").tobytes(), "<u4"
+
+
 def accessibility_bytes(workdir, direction_index):
     """One accessibility row as a per-face uint8 mask."""
     path = os.path.join(workdir, pipeline.ACCESSIBILITY_FILE)
@@ -81,6 +105,6 @@ def result_field_bytes(workdir, process_id, analysis_id, params_hash, key):
     array = stored[key]
     if array.dtype in (np.uint8, np.bool_):
         return np.ascontiguousarray(array, dtype="<u1").tobytes(), "<u1"
-    if array.dtype in (np.uint32, np.int32):
+    if array.dtype in (np.uint32, np.int32, np.uint64, np.int64):
         return np.ascontiguousarray(array, dtype="<u4").tobytes(), "<u4"
     return np.ascontiguousarray(array, dtype="<f4").tobytes(), "<f4"

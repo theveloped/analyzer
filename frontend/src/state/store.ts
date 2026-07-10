@@ -22,8 +22,14 @@ export interface AppState {
   error: string | null;
   jobs: Job[];
 
+  /** Assignment overrides keyed `${process}.${analysis}.${hash}` →
+      option (string) → brep face id (string) → feature index. */
+  overrides: Record<string, Record<string, Record<string, number>>>;
+
   set: (partial: Partial<AppState>) => void;
   setViewerParam: (processId: string, name: string, value: any) => void;
+  setOverride: (key: string, option: number, brepId: number,
+                feature: number | null) => void;
 }
 
 export const useStore = create<AppState>()((set) => ({
@@ -44,6 +50,7 @@ export const useStore = create<AppState>()((set) => ({
   pick: 'click a face to inspect',
   error: null,
   jobs: [],
+  overrides: {},
 
   set: (partial) => set(partial),
   setViewerParam: (processId, name, value) =>
@@ -53,4 +60,13 @@ export const useStore = create<AppState>()((set) => ({
         [processId]: { ...state.viewerParams[processId], [name]: value },
       },
     })),
+  setOverride: (key, option, brepId, feature) =>
+    set((state) => {
+      const forResult = { ...(state.overrides[key] ?? {}) };
+      const forOption = { ...(forResult[String(option)] ?? {}) };
+      if (feature === null) delete forOption[String(brepId)];
+      else forOption[String(brepId)] = feature;
+      forResult[String(option)] = forOption;
+      return { overrides: { ...state.overrides, [key]: forResult } };
+    }),
 }));

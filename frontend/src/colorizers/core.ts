@@ -113,6 +113,143 @@ export function maskMode(
   };
 }
 
+export interface HeatmapOpts {
+  /** Per-VERTEX transform applied before the per-face mean; NaN masks out. */
+  transform?: (v: number) => number;
+  thresholdParam?: string; // ctx.params key, default 'threshold'
+  scaleParam?: string; // ctx.params key, default 'scale'
+  /** 'above': high values are bad (gaps to material). 'below': low values
+      are bad (thin walls, tight clearance). Default 'above'. */
+  flagDirection?: 'above' | 'below';
+  units?: string;
+  autoFloor?: number; // lower bound for the percentile auto-max
+  okLabel?: string;
+  maskedLabel?: string;
+}
+
+/**
+ * Generic per-vertex scalar heatmap over one field, with a client-side
+ * threshold. (The CNC gap/stickout modes predate this factory and keep
+ * their angle-dependent thresholds and rule-based counting — folding them
+ * onto this is a possible follow-up.)
+ */
+export function heatmapMode(
+  id: string, label: string,
+  pickField: (ctx: ViewCtx) => FieldDescriptor | null,
+  opts: HeatmapOpts = {},
+): ViewMode {
+  const parse = (value: any) => {
+    const parsed = parseFloat(value);
+    return isFinite(parsed) ? parsed : NaN;
+  };
+  return {
+    id,
+    label,
+    async paint(ctx) {
+      const desc = pickField(ctx);
+      if (!desc) {
+        throw new Error(`no cached field for "${label}" — run the analysis in the Compute panel`);
+      }
+      const raw = await ctx.getField(desc) as Float32Array;
+      const field = opts.transform ? Float32Array.from(raw, opts.transform) : raw;
+      const vals = faceValues(ctx, field, null);
+      const thr = parse(ctx.params[opts.thresholdParam ?? 'threshold']) || 0;
+      const auto = Math.max(percentile(vals, 0.98), opts.autoFloor ?? thr * 3, 1e-6);
+      const max = parse(ctx.params[opts.scaleParam ?? 'scale']) || auto;
+      const below = opts.flagDirection === 'below';
+      const span = Math.max(max - thr, 1e-9);
+      const units = opts.units ?? 'mm';
+      let flagged = 0;
+      let painted = 0;
+      ctx.paintFaces((f) => {
+        const v = vals[f];
+        if (isNaN(v)) return COL.inaccess;
+        painted++;
+        if (below ? v <= thr : v > thr) flagged++;
+        const badness = below ? (max - v) / span : (v - thr) / span;
+        return badness <= 0 ? COL.below : rampColor(Math.min(1, badness));
+      });
+      const legend: LegendEntry[] = [
+        {
+          color: COL.below,
+          label: opts.okLabel
+            ?? (below ? `≥ ${max.toFixed(2)} ${units} — ok` : `≤ ${thr.toFixed(2)} ${units} — ok`),
+        },
+        {
+          color: rampColor(1),
+          label: below ? `≤ ${thr.toFixed(2)} ${units} — flagged` : `≥ ${max.toFixed(2)} ${units}`,
+        },
+        { color: COL.inaccess, label: opts.maskedLabel ?? 'no data' },
+      ];
+      return {
+        legend,
+        stats: `${flagged} of ${painted} faces ${below ? 'below' : 'above'} ${thr} ${units}`
+          + ` · auto max ${auto.toFixed(2)} ${units}`,
+      };
+    },
+  };
+}
+
+/** Paint a per-face u1 category field with labels/colors indexed by code. */
+export function paintCategory(
+  ctx: ViewCtx, values: Uint8Array, labels: string[], colors: RGB[],
+): { legend: LegendEntry[]; stats: string } {
+  const counts = new Array(labels.length).fill(0);
+  ctx.paintFaces((f) => {
+    const code = values[f];
+    if (code < counts.length) counts[code]++;
+    return colors[code] ?? COL.inaccess;
+  });
+  return {
+    legend: labels
+      .map((label, i) => ({ color: colors[i] ?? COL.inaccess, label: `${label} (${counts[i]})` }))
+      .filter((_, i) => counts[i] > 0),
+    stats: '',
+  };
+}
+
+function hsl(h: number, s: number, l: number): RGB {
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const channel = (t: number) => {
+    t = ((t % 1) + 1) % 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  return [channel(h + 1 / 3), channel(h), channel(h - 1 / 3)];
+}
+
+/** Golden-ratio hue for stable, well-separated per-id colors. */
+export function segmentIdColor(id: number): RGB {
+  return hsl((id * 0.618034) % 1, 0.5, 0.62);
+}
+
+/** Red-family per-region color for numbered internal undercut regions. */
+export function regionColor(region: number): RGB {
+  const t = (region * 0.618034) % 1;
+  return hsl(0.98 + 0.06 * t, 0.62, 0.4 + 0.28 * t);
+}
+
+/** Source BREP faces (from the STEP-aware mesher), one color per face id. */
+export const brepFacesMode: ViewMode = {
+  id: 'brep_faces',
+  label: 'BREP faces',
+  async paint(ctx) {
+    const desc = ctx.manifest.fields.find((f) => f.id === 'brep_faces');
+    if (!desc) {
+      throw new Error('no BREP face ids — re-mesh the part from its STEP file');
+    }
+    const ids = await ctx.getField(desc) as Uint32Array;
+    ctx.paintFaces((f) => segmentIdColor(ids[f]));
+    return {
+      legend: [],
+      stats: `${desc.params.count} BREP faces over ${ctx.faceCount} triangles`,
+    };
+  },
+};
+
 /** "Last CLI highlights.json" — process-agnostic replay of the legacy result. */
 export const highlightsMode: ViewMode = {
   id: 'highlights',

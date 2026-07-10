@@ -12,6 +12,7 @@ export class Scene3D {
   private renderer: THREE.WebGLRenderer;
   private controls: OrbitControls;
   private mesh: THREE.Mesh | null = null;
+  private overlay = new THREE.Group();
   private colorAttr: THREE.BufferAttribute | null = null;
   private faceCount = 0;
   private graphPoints: THREE.Points | null = null;
@@ -34,6 +35,7 @@ export class Scene3D {
     container.appendChild(this.renderer.domElement);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
 
+    this.scene.add(this.overlay);
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.0));
     const dir1 = new THREE.DirectionalLight(0xffffff, 0.55);
     dir1.position.set(-3, 10, -10);
@@ -136,6 +138,50 @@ export class Scene3D {
     this.colorAttr.needsUpdate = true;
   }
 
+  /** Overlay line segments given as flattened endpoint pairs (N*2*3). */
+  setLines(positions: Float32Array, color: RGB = [1.0, 0.85, 0.2]) {
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const material = new THREE.LineBasicMaterial({
+      color: new THREE.Color(...color), depthTest: false,
+    });
+    const lines = new THREE.LineSegments(geometry, material);
+    lines.renderOrder = 1; // draw over the mesh
+    this.overlay.add(lines);
+  }
+
+  /** Overlay one arrow per direction, pointing at the part from outside. */
+  setArrows(arrows: { direction: number[]; color: RGB }[]) {
+    if (!this.mesh) return;
+    const box = new THREE.Box3().setFromObject(this.mesh);
+    const center = box.getCenter(new THREE.Vector3());
+    const size = box.getSize(new THREE.Vector3()).length();
+    for (const { direction, color } of arrows) {
+      const d = new THREE.Vector3(
+        direction[0], direction[1], direction[2]).normalize();
+      const length = 0.22 * size;
+      const origin = center.clone().addScaledVector(d, 0.55 * size + length);
+      this.overlay.add(new THREE.ArrowHelper(
+        d.clone().negate(), origin, length,
+        new THREE.Color(...color).getHex(), 0.3 * length, 0.12 * length));
+    }
+  }
+
+  clearOverlays() {
+    for (const child of [...this.overlay.children]) {
+      this.overlay.remove(child);
+      if (child instanceof THREE.LineSegments) {
+        child.geometry.dispose();
+        (child.material as THREE.Material).dispose();
+      } else if (child instanceof THREE.ArrowHelper) {
+        child.line.geometry.dispose();
+        (child.line.material as THREE.Material).dispose();
+        child.cone.geometry.dispose();
+        (child.cone.material as THREE.Material).dispose();
+      }
+    }
+  }
+
   /**
    * Show a graph overlay: nodes as radius-sized points, edges as line
    * segments sharing the node position/color buffers (two draw calls, and
@@ -231,6 +277,7 @@ export class Scene3D {
   }
 
   clearMesh() {
+    this.clearOverlays();
     this.clearGraph();
     if (this.mesh) {
       this.scene.remove(this.mesh);

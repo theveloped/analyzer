@@ -31,7 +31,7 @@ def run_mesh(workdir, params, progress):
     result = pipeline.mesh_part(
         source, workdir, heal=params["heal"], subdivide=params["subdivide"],
         offset=params["offset"], tollerance=params["tollerance"],
-        progress=progress)
+        deflection=params["deflection"], progress=progress)
     return AnalysisResult(stats=result["counts"])
 
 
@@ -63,6 +63,8 @@ PROCESS = ProcessDef(
                       label="Offset before storing"),
                 Param("tollerance", "number", default=1e-1, min=0,
                       label="Voxel tolerance"),
+                Param("deflection", "number", default=0.5, unit="mm", min=0,
+                      label="BREP tessellation deflection (STEP)"),
             ],
             run=run_mesh,
         ),

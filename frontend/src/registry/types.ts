@@ -17,6 +17,7 @@ export interface PaintInfo {
 export interface ViewCtx {
   manifest: Manifest;
   directions: number[][];
+  verts: Float32Array; // indexed vertex coordinates
   faces: Uint32Array;
   normals: Float32Array; // per-face unit normals
   faceCount: number;
@@ -24,6 +25,10 @@ export interface ViewCtx {
   highlights: number[] | null;
   getField(desc: FieldDescriptor): Promise<Float32Array | Uint8Array | Uint32Array>;
   paintFaces(colorOf: (f: number) => RGB): void;
+  /** Overlay line segments (flattened endpoint pairs, N*2*3 floats). */
+  setLines(positions: Float32Array, color?: RGB): void;
+  /** Overlay direction arrows pointing at the part. */
+  setArrows(arrows: { direction: number[]; color: RGB }[]): void;
   /** Show a graph overlay (skeleton). Keyed: same key skips the rebuild. */
   setGraph(key: string, nodes: Float32Array, edges: Uint32Array, radii: Float32Array): void;
   /** Recolor the current graph overlay's nodes (edges interpolate). */
@@ -36,6 +41,8 @@ export interface ViewMode {
   id: string;
   label: string;
   paint(ctx: ViewCtx): Promise<PaintInfo>;
+  /** Optional click handler; return true when consumed (triggers repaint). */
+  onPick?(face: number, ctx: ViewCtx): Promise<boolean>;
 }
 
 /** A process contributes view modes, viewer controls and click-inspection. */

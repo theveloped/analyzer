@@ -132,6 +132,50 @@ masks.
 against a running server (`node smoke.mjs` inside `frontend/`, with
 `CHROMIUM_PATH` pointing at a Chromium binary).
 
+## Mold orientation, face assignment & parting lines
+
+STEP parts mesh through the BREP (exact triangle→face mapping, shared
+vertices along BREP edges); `--deflection` controls the base tessellation
+and `--subdivide` the analysis resolution as before:
+
+```bash
+python main.py mesh tests/testpart_42.stp -o testpart_42 --subdivide 1.0
+python main.py directions testpart_42 --count 8 --axes
+python main.py options testpart_42 --max_slides 2      # ranked feasibility table
+python test_mold.py                                    # analytic fixtures
+```
+
+`options` ranks antipodal plate pairs with greedy perpendicular slides
+(per-slide marginal face counts), a FEASIBLE/infeasible verdict and the
+internal-undercut count. In the UI (injection molding tab → "Mold
+orientation assignment"): pick a ranked option; whole BREP faces are
+colored by their assigned feature — faces valid for several features
+render striped (selected color strong, other valid colors faded), conflict
+faces (no single feature covers every triangle) get their own class, and
+unreachable faces form numbered internal undercut regions. **Click a
+striped face to cycle it through its valid sides/slides** — the parting
+line (drawn along BREP edges between differently-assigned faces) jumps
+accordingly, and the choice is saved to the workdir. The "BREP faces" view
+mode (any tab) colors the mesh by source BREP face.
+
+## Wall thickness and gaps (rolling sphere)
+
+Two per-vertex fields from the maximal inscribed ("rolling") sphere: wall
+thickness inside the part, and the gap between opposing outside walls
+(the same search on the orientation-flipped mesh). Both cap at
+`2 * max_radius` (auto: half the smallest bounding box dimension), so a
+saturated gap means "no opposing wall worth considering".
+
+```bash
+python main.py thickness aligator --min 1.0 --both --min_gap 0.5 --serve
+python test_thickness.py     # analytic plate/gap probes
+```
+
+In the UI: injection molding tab → Compute "Wall thickness" / "Wall gaps /
+clearance" → the thickness and gaps heatmap view modes, with min-threshold
+and heatmap-max inputs recomputed live; clicking a face prints both maps'
+values at its three vertices.
+
 Catalog math: of the 16 x 13 nose-radius/diameter grid, ~156 combinations are
 valid (rc <= D/2). Per direction that is ~156 tip closings at ~8 s each
 (pixel 0.1 on a 100 mm part) ~ 20 min once, plus ~1 s per clearance radius —

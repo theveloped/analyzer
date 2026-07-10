@@ -96,6 +96,15 @@ def create_app(root=".", preload=None):
             if file_stem == "accessibility":
                 data, _ = fields_api.accessibility_bytes(workdir, int(key))
                 tag_path = os.path.join(workdir, pipeline.ACCESSIBILITY_FILE)
+            elif file_stem == "brep_faces":
+                data, _ = fields_api.brep_faces_bytes(workdir)
+                tag_path = os.path.join(workdir, pipeline.BREP_FACES_FILE)
+            elif file_stem == "brep_edges":
+                data, _ = fields_api.brep_edges_bytes(workdir)
+                tag_path = os.path.join(workdir, pipeline.BREP_EDGES_FILE)
+            elif file_stem == "brep_edge_pairs":
+                data, _ = fields_api.brep_edge_pairs_bytes(workdir)
+                tag_path = os.path.join(workdir, pipeline.BREP_EDGE_PAIRS_FILE)
             else:
                 data, _ = fields_api.zcache_field_bytes(workdir, file_stem, key)
                 tag_path = os.path.join(workdir, "zcache", f"{file_stem}.npz")
@@ -103,6 +112,45 @@ def create_app(root=".", preload=None):
             raise HTTPException(status_code=404,
                                 detail=f"no field {file_stem}/{key}")
         return binary(request, data, tag_path)
+
+    def _overrides_path(part_id, process_id, analysis_id, result_hash):
+        """Validated path of a result's assignment-overrides JSON."""
+        import re
+        part = part_or_404(part_id)
+        if not (re.fullmatch(r"[0-9a-f]{12}", result_hash)
+                and re.fullmatch(r"[a-z0-9_]+", process_id)
+                and re.fullmatch(r"[a-z0-9_]+", analysis_id)):
+            raise HTTPException(status_code=404, detail="unknown result")
+        base = os.path.join(root, part["id"], "results", process_id, analysis_id)
+        if not os.path.exists(os.path.join(base, f"{result_hash}.json")):
+            raise HTTPException(status_code=404, detail="unknown result")
+        return os.path.join(base, f"{result_hash}_overrides.json")
+
+    @app.get("/api/parts/{part_id}/results/{process_id}/{analysis_id}/{result_hash}/overrides")
+    def get_overrides(part_id: str, process_id: str, analysis_id: str,
+                      result_hash: str):
+        path = _overrides_path(part_id, process_id, analysis_id, result_hash)
+        if not os.path.exists(path):
+            return {}
+        import json as json_module
+        with open(path) as f:
+            return json_module.load(f)
+
+    @app.put("/api/parts/{part_id}/results/{process_id}/{analysis_id}/{result_hash}/overrides")
+    def put_overrides(part_id: str, process_id: str, analysis_id: str,
+                      result_hash: str, body: dict):
+        path = _overrides_path(part_id, process_id, analysis_id, result_hash)
+        for option, faces in body.items():
+            if not (str(option).isdigit() and isinstance(faces, dict)):
+                raise HTTPException(status_code=400, detail="invalid overrides")
+            for face_id, feature in faces.items():
+                if not (str(face_id).isdigit() and isinstance(feature, int)
+                        and 0 <= feature <= 253):
+                    raise HTTPException(status_code=400, detail="invalid overrides")
+        import json as json_module
+        with open(path, "w") as f:
+            json_module.dump(body, f)
+        return {"ok": True}
 
     @app.get("/api/parts/{part_id}/results/{process_id}/{analysis_id}/{result_hash}/{key}")
     def get_result_field(request: Request, part_id: str, process_id: str,

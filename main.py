@@ -10,9 +10,8 @@ from analysis import save_mesh, fix_undercuts, double_offset, get_inside_mesh, s
 from pipeline import (
     FINE_MESH_FILE, FINE_VERTS_FILE, FINE_FACES_FILE,
     DIRECTIONS_FILE, ACCESSIBILITY_FILE, HIGHLIGHT_FILE,
-    mesh_part, compute_directions, parting_options, highlight_union,
-    precompute_fields, compose_tool, parse_tips, parse_holder,
-    thickness_highlights, write_highlights,
+    mesh_part, compute_directions, highlight_union,
+    precompute_fields, compose_tool, parse_tips, parse_holder, write_highlights,
 )
 
 
@@ -45,14 +44,19 @@ if __name__ == "__main__":
     parser_mesh.add_argument("input", help="path of the input .stl/.step file", type=PathType(type='file', dash_ok=True, exists=True))
     parser_mesh.add_argument("-o", "--output", help="path of the output dir", type=PathType(type='dir', dash_ok=True))
     parser_mesh.add_argument("--tollerance", help="voxel tollerance", type=float, default=1e-1)
+    parser_mesh.add_argument("--deflection", help="BREP tessellation deflection for STEP input (mm)", type=float, default=0.5)
     parser_mesh.add_argument("--heal", help="heal the mesh before storing (voxel remesh - for dirty STLs, NOT for clean STEP)", action="store_true")
     parser_mesh.add_argument("--subdivide", help="max edge length: refine without changing the shape (use for clean STEP input)", type=float, default=None)
     parser_mesh.add_argument("--offset", help="offset the mesh before storing", type=float, default=None)
     parser_mesh.add_argument("--serve", help="serve results in browser", action="store_true")
     
     # Create the parser for the "directions" command
-    parser_thickness = subparsers.add_parser("thickness", help="directions a file and derive the mesh")
+    parser_thickness = subparsers.add_parser("thickness", help="rolling sphere wall thickness (and optionally gaps) fields")
     parser_thickness.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_thickness.add_argument("--min", help="flag faces with all vertices thinner than this (mm)", type=float, default=1.0)
+    parser_thickness.add_argument("--max_radius", help="inscribed sphere radius cap (default: auto from bounding box)", type=float, default=None)
+    parser_thickness.add_argument("--both", help="also compute the gaps/clearance field on the inverted shape", action="store_true")
+    parser_thickness.add_argument("--min_gap", help="with --both: also flag faces with wall-to-wall clearance below this (mm)", type=float, default=0.5)
     parser_thickness.add_argument("--serve", help="serve results in browser", action="store_true")
     
     # Create the parser for the "directions" command
@@ -67,14 +71,12 @@ if __name__ == "__main__":
     parser_directions.add_argument("--relax_samples", help="the number of additional sampels used in relaxation", type=int, default=4)
     
     # Create the parser for the "options" command
-    parser_options = subparsers.add_parser("options", help="find injection molding options")
+    parser_options = subparsers.add_parser("options", help="rank mold orientations (plate pair + slides)")
     parser_options.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
-    parser_options.add_argument("--slides", help="number of slides to consider", type=int, default=0)
-    parser_options.add_argument("--slide_tollerance", help="angle tollerance of slides in degrees", type=float, default=2e-1)
-    parser_options.add_argument("--count", help="number of results to continue with", type=int, default=10)
-    parser_options.add_argument("--relax", help="relax the winning directions", action="store_true")
-    parser_options.add_argument("--relax_tollerance", help="angle tollerance of slides in degrees", type=float, default=1.0)
-    parser_options.add_argument("--relax_samples", help="the number of additional sampels used in relaxation", type=int, default=4)
+    parser_options.add_argument("--max_slides", help="maximum number of slides per orientation", type=int, default=2)
+    parser_options.add_argument("--slide_tollerance", help="slide perpendicularity tolerance in degrees", type=float, default=2.0)
+    parser_options.add_argument("--count", help="ranked options to report", type=int, default=10)
+    parser_options.add_argument("--min_slide_faces", help="minimum faces a slide must gain", type=int, default=50)
     parser_options.add_argument("--serve", help="serve results in browser", action="store_true")
     
     # Create the parser for the "options" command
@@ -160,30 +162,44 @@ if __name__ == "__main__":
 
         result = mesh_part(args.input, args.output, heal=args.heal,
                            subdivide=args.subdivide, offset=args.offset,
-                           tollerance=args.tollerance)
+                           tollerance=args.tollerance, deflection=args.deflection)
 
         if args.serve:
             serve_workdir(result["workdir"])
             
     elif args.command == "thickness":
-        logger.debug("Computing thickness and wall skeleton")
+        logger.info("Computing rolling sphere thickness field")
 
-        from processes.base import apply_defaults, result_paths
-        from processes.injection_molding import PROCESS
+        import processes
+        from processes.base import apply_defaults, load_result_arrays
 
-        analysis = PROCESS.analysis("wall_skeleton")
-        params = apply_defaults(analysis, {})
-        result = analysis.run(args.directory, params, None)
-        logger.warning(f"mean thickness inscribed sphere: "
-                       f"{result.stats['mean_thickness']}")
+        params = {}
+        if args.max_radius is not None:
+            params["max_radius"] = args.max_radius
 
-        # legacy highlight output: faces thicker than 1.3x the mean
-        _, npz_path = result_paths(args.directory, "injection_molding",
-                                   "wall_skeleton", params)
-        thickness = np.load(npz_path)["thickness"]
+        analysis = processes.get_analysis("injection_molding", "thickness")
+        merged = apply_defaults(analysis, params)
+        result = analysis.run(args.directory, merged, None)
+        logger.info(f"thickness stats: {result.stats}")
+
         faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
-        write_highlights(args.directory,
-                         thickness_highlights(faces, thickness))
+        thickness = load_result_arrays(args.directory, "injection_molding",
+                                       "thickness", merged)["thickness"]
+        flagged = np.all(thickness[faces] < args.min, axis=1)
+
+        if args.both:
+            analysis = processes.get_analysis("injection_molding", "gaps")
+            merged = apply_defaults(analysis, params)
+            result = analysis.run(args.directory, merged, None)
+            logger.info(f"gaps stats: {result.stats}")
+
+            gap = load_result_arrays(args.directory, "injection_molding",
+                                     "gaps", merged)["gap"]
+            flagged |= np.all(gap[faces] < args.min_gap, axis=1)
+
+        indices = np.flatnonzero(flagged).tolist()
+        logger.info(f"Flagging {len(indices)} faces below the thresholds")
+        write_highlights(args.directory, indices)
 
         if args.serve:
             serve_workdir(args.directory)
@@ -195,10 +211,31 @@ if __name__ == "__main__":
                            relax_samples=args.relax_samples)
 
     elif args.command == "options":
-        parting_options(args.directory, slides=args.slides, count=args.count,
-                        slide_tollerance=args.slide_tollerance, relax=args.relax,
-                        relax_tollerance=args.relax_tollerance,
-                        relax_samples=args.relax_samples)
+        logger.info("Searching mold orientations")
+
+        import processes
+        from processes.base import apply_defaults
+
+        analysis = processes.get_analysis("injection_molding", "mold_orientation")
+        merged = apply_defaults(analysis, {
+            "max_slides": args.max_slides,
+            "slide_tollerance": args.slide_tollerance,
+            "count": args.count,
+            "min_slide_faces": args.min_slide_faces,
+        })
+        result = analysis.run(args.directory, merged, None)
+
+        for rank, option in enumerate(result.stats["options"]):
+            slides = ", ".join(f"d{s['direction']} (+{s['marginal']})"
+                               for s in option["slides"]) or "none"
+            logger.info(
+                f"#{rank}  pair {tuple(option['pair'])}  "
+                f"{'FEASIBLE' if option['feasible'] else 'infeasible'}  "
+                f"coverage {option['coverage'] * 100:.1f}%  slides: {slides}  "
+                f"internal {option['counts']['internal']}")
+
+        if args.serve:
+            serve_workdir(args.directory)
 
     elif args.command == "serve":
         logger.info("Serving results in browser")
