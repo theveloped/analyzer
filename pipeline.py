@@ -13,6 +13,7 @@ import os
 
 import numpy as np
 from loguru import logger
+from meshlib import mrmeshpy as mm
 from meshlib import mrmeshnumpy as mn
 
 from analysis import (
@@ -172,6 +173,44 @@ def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
         "directions": int(directions.shape[0]),
         "faces": int(face_count),
     }
+
+
+def compute_thickness(workdir, *, max_radius=None, inverted=False,
+                      max_iters=1000, progress=None):
+    """Per-vertex maximal inscribed ("rolling") sphere diameter.
+
+    inverted=False measures wall thickness inside the part. inverted=True
+    runs the same search on an orientation-flipped copy of the mesh, so the
+    exterior becomes the inside and the value is the local gap between
+    opposing walls — on the same vertex indexing, no boolean inversion or
+    cross-mesh mapping needed. Values cap at 2*max_radius (saturated = no
+    opposing wall worth considering); max_radius=None derives meshlib's
+    recommended 0.5 * min(bbox dims).
+
+    Returns (values float32[verts], max_radius).
+    """
+    verts, faces = load_mesh_arrays(workdir)
+    mesh = mn.meshFromFacesVerts(faces, verts)
+
+    if max_radius is None:
+        size = mesh.computeBoundingBox().size()
+        max_radius = 0.5 * min(size.x, size.y, size.z)
+        logger.debug(f"Auto inscribed sphere max radius: {max_radius:.3f}")
+
+    if inverted:
+        mesh.topology.flipOrientation()
+
+    settings = mm.InSphereSearchSettings()
+    settings.insideAndOutside = False
+    settings.maxRadius = float(max_radius)
+    settings.maxIters = int(max_iters)
+    settings.minShrinkage = 1e-6
+
+    _report(progress, 0.2, "rolling inscribed spheres")
+    result = mm.computeInSphereThicknessAtVertices(mesh, settings)
+    values = np.array(result.vec, dtype=np.float32)
+    _report(progress, 1.0, "thickness field done")
+    return values, float(max_radius)
 
 
 def parting_options(workdir, *, slides=0, count=10, slide_tollerance=2e-1,

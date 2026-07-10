@@ -11,7 +11,7 @@ from pipeline import (
     FINE_MESH_FILE, FINE_VERTS_FILE, FINE_FACES_FILE,
     DIRECTIONS_FILE, ACCESSIBILITY_FILE, HIGHLIGHT_FILE,
     mesh_part, compute_directions, parting_options, highlight_union,
-    precompute_fields, compose_tool, parse_tips, parse_holder,
+    precompute_fields, compose_tool, parse_tips, parse_holder, write_highlights,
 )
 
 
@@ -50,8 +50,12 @@ if __name__ == "__main__":
     parser_mesh.add_argument("--serve", help="serve results in browser", action="store_true")
     
     # Create the parser for the "directions" command
-    parser_thickness = subparsers.add_parser("thickness", help="directions a file and derive the mesh")
+    parser_thickness = subparsers.add_parser("thickness", help="rolling sphere wall thickness (and optionally gaps) fields")
     parser_thickness.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_thickness.add_argument("--min", help="flag faces with all vertices thinner than this (mm)", type=float, default=1.0)
+    parser_thickness.add_argument("--max_radius", help="inscribed sphere radius cap (default: auto from bounding box)", type=float, default=None)
+    parser_thickness.add_argument("--both", help="also compute the gaps/clearance field on the inverted shape", action="store_true")
+    parser_thickness.add_argument("--min_gap", help="with --both: also flag faces with wall-to-wall clearance below this (mm)", type=float, default=0.5)
     parser_thickness.add_argument("--serve", help="serve results in browser", action="store_true")
     
     # Create the parser for the "directions" command
@@ -165,64 +169,39 @@ if __name__ == "__main__":
             serve_workdir(result["workdir"])
             
     elif args.command == "thickness":
-        logger.debug("Computing thickness")
-        
-        verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
-        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
-        mesh = mn.meshFromFacesVerts(faces, verts)
-        
-        settings = mm.InSphereSearchSettings()
-        settings.insideAndOutside = False
-        settings.maxRadius = 5.0
-        settings.maxIters = 1000
-        settings.minShrinkage = 1e-6
-        distances = mm.computeInSphereThicknessAtVertices(mesh, settings)  
-        
-        mean_distance = np.mean(distances.vec)
-        logger.warning(f"mean thickness inscribed sphere: {mean_distance}")
-        
-        # Save mesh to file
-        thin_vertices = set()
-        for i in range(distances.vec.size()):
-            distance = distances.vec[i]
-            
-            if distance < 0.7 * mean_distance:
-                thin_vertices.add(i)
-                
-        thin_faces = []    
-        for i in range(len(faces)):
-            face = faces[i]
-            
-            if face[0] in thin_vertices and face[1] in thin_vertices and face[2] in thin_vertices:
-                thin_faces.append(i)
-                
+        logger.info("Computing rolling sphere thickness field")
 
-        # Save mesh to file
-        thick_vertices = set()
-        for i in range(distances.vec.size()):
-            distance = distances.vec[i]
-            
-            if distance > 1.3 * mean_distance:
-                thick_vertices.add(i)
-                
-        thick_faces = []    
-        for i in range(len(faces)):
-            face = faces[i]
-            
-            if face[0] in thick_vertices and face[1] in thick_vertices and face[2] in thick_vertices:
-                thick_faces.append(i)
-            
-                
-                
-        numpyData = {"faces": thick_faces}
-        highlight_path = os.path.join(args.directory, HIGHLIGHT_FILE)
-        with open(highlight_path, "w") as f:
-            json.dump(numpyData, f)
-        
-        # Storage paths
-        directory = os.path.abspath(args.directory)
-        obj_path = os.path.join(directory, FINE_MESH_FILE)
-        save_mesh(mesh, obj_path)
+        import processes
+        from processes.base import apply_defaults, load_result_arrays
+
+        params = {}
+        if args.max_radius is not None:
+            params["max_radius"] = args.max_radius
+
+        analysis = processes.get_analysis("injection_molding", "thickness")
+        merged = apply_defaults(analysis, params)
+        result = analysis.run(args.directory, merged, None)
+        logger.info(f"thickness stats: {result.stats}")
+
+        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
+        thickness = load_result_arrays(args.directory, "injection_molding",
+                                       "thickness", merged)["thickness"]
+        flagged = np.all(thickness[faces] < args.min, axis=1)
+
+        if args.both:
+            analysis = processes.get_analysis("injection_molding", "gaps")
+            merged = apply_defaults(analysis, params)
+            result = analysis.run(args.directory, merged, None)
+            logger.info(f"gaps stats: {result.stats}")
+
+            gap = load_result_arrays(args.directory, "injection_molding",
+                                     "gaps", merged)["gap"]
+            flagged |= np.all(gap[faces] < args.min_gap, axis=1)
+
+        indices = np.flatnonzero(flagged).tolist()
+        logger.info(f"Flagging {len(indices)} faces below the thresholds")
+        write_highlights(args.directory, indices)
+
         if args.serve:
             serve_workdir(args.directory)
 

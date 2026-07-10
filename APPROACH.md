@@ -301,10 +301,19 @@ computation device — the cached artifacts are per-vertex scalars on the real m
 
 ### Auxiliary — `thickness`
 
-Independent of tooling: `computeInSphereThicknessAtVertices` (maximal inscribed
-sphere) gives local wall thickness per vertex; faces thinner than 0.7× or thicker than
-1.3× the mean are flagged. Useful for molding/DFM feedback with the same
-highlight-and-view workflow.
+Independent of tooling: `pipeline.compute_thickness` rolls meshlib's maximal
+inscribed sphere (`computeInSphereThicknessAtVertices`) over the part to give
+local wall thickness per vertex, and — run again on an orientation-flipped
+copy of the mesh, so the exterior becomes the "inside" — the local **gap**
+between opposing outside walls on the same vertex indexing (the inverted-shape
+construction without any envelope boolean or cross-mesh mapping). Both are
+first-class `injection_molding` analyses (`thickness`, `gaps`) cached as
+per-vertex scalar fields under `results/`, rendered as heatmaps with absolute
+mm thresholds in the viewer (which replaced the old mean-relative 0.7×/1.3×
+flagging); values cap at `2*max_radius` (auto: half the smallest bbox
+dimension), so a saturated gap reads as "no opposing wall worth considering".
+The `thickness` CLI command flags faces below `--min` (and below `--min_gap`
+with `--both`) into `highlights.json`.
 
 ### Visualization & the web app
 

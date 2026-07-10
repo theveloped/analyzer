@@ -132,6 +132,24 @@ masks.
 against a running server (`node smoke.mjs` inside `frontend/`, with
 `CHROMIUM_PATH` pointing at a Chromium binary).
 
+## Wall thickness and gaps (rolling sphere)
+
+Two per-vertex fields from the maximal inscribed ("rolling") sphere: wall
+thickness inside the part, and the gap between opposing outside walls
+(the same search on the orientation-flipped mesh). Both cap at
+`2 * max_radius` (auto: half the smallest bounding box dimension), so a
+saturated gap means "no opposing wall worth considering".
+
+```bash
+python main.py thickness aligator --min 1.0 --both --min_gap 0.5 --serve
+python test_thickness.py     # analytic plate/gap probes
+```
+
+In the UI: injection molding tab → Compute "Wall thickness" / "Wall gaps /
+clearance" → the thickness and gaps heatmap view modes, with min-threshold
+and heatmap-max inputs recomputed live; clicking a face prints both maps'
+values at its three vertices.
+
 Catalog math: of the 16 x 13 nose-radius/diameter grid, ~156 combinations are
 valid (rc <= D/2). Per direction that is ~156 tip closings at ~8 s each
 (pixel 0.1 on a 100 mm part) ~ 20 min once, plus ~1 s per clearance radius —

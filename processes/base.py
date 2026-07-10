@@ -125,6 +125,14 @@ def load_cached_result(workdir, process_id, analysis_id, params):
         return json.load(f)
 
 
+def load_result_arrays(workdir, process_id, analysis_id, params):
+    """Open the npz of a stored result (None if absent)."""
+    _, npz_path = result_paths(workdir, process_id, analysis_id, params)
+    if not os.path.exists(npz_path):
+        return None
+    return np.load(npz_path, allow_pickle=False)
+
+
 def store_result(workdir, process_id, analysis_id, params, stats, arrays=None,
                  field_meta=None):
     """Persist a generic analysis result (JSON stats + optional npz arrays).

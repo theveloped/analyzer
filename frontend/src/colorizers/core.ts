@@ -113,6 +113,83 @@ export function maskMode(
   };
 }
 
+export interface HeatmapOpts {
+  /** Per-VERTEX transform applied before the per-face mean; NaN masks out. */
+  transform?: (v: number) => number;
+  thresholdParam?: string; // ctx.params key, default 'threshold'
+  scaleParam?: string; // ctx.params key, default 'scale'
+  /** 'above': high values are bad (gaps to material). 'below': low values
+      are bad (thin walls, tight clearance). Default 'above'. */
+  flagDirection?: 'above' | 'below';
+  units?: string;
+  autoFloor?: number; // lower bound for the percentile auto-max
+  okLabel?: string;
+  maskedLabel?: string;
+}
+
+/**
+ * Generic per-vertex scalar heatmap over one field, with a client-side
+ * threshold. (The CNC gap/stickout modes predate this factory and keep
+ * their angle-dependent thresholds and rule-based counting — folding them
+ * onto this is a possible follow-up.)
+ */
+export function heatmapMode(
+  id: string, label: string,
+  pickField: (ctx: ViewCtx) => FieldDescriptor | null,
+  opts: HeatmapOpts = {},
+): ViewMode {
+  const parse = (value: any) => {
+    const parsed = parseFloat(value);
+    return isFinite(parsed) ? parsed : NaN;
+  };
+  return {
+    id,
+    label,
+    async paint(ctx) {
+      const desc = pickField(ctx);
+      if (!desc) {
+        throw new Error(`no cached field for "${label}" — run the analysis in the Compute panel`);
+      }
+      const raw = await ctx.getField(desc) as Float32Array;
+      const field = opts.transform ? Float32Array.from(raw, opts.transform) : raw;
+      const vals = faceValues(ctx, field, null);
+      const thr = parse(ctx.params[opts.thresholdParam ?? 'threshold']) || 0;
+      const auto = Math.max(percentile(vals, 0.98), opts.autoFloor ?? thr * 3, 1e-6);
+      const max = parse(ctx.params[opts.scaleParam ?? 'scale']) || auto;
+      const below = opts.flagDirection === 'below';
+      const span = Math.max(max - thr, 1e-9);
+      const units = opts.units ?? 'mm';
+      let flagged = 0;
+      let painted = 0;
+      ctx.paintFaces((f) => {
+        const v = vals[f];
+        if (isNaN(v)) return COL.inaccess;
+        painted++;
+        if (below ? v <= thr : v > thr) flagged++;
+        const badness = below ? (max - v) / span : (v - thr) / span;
+        return badness <= 0 ? COL.below : rampColor(Math.min(1, badness));
+      });
+      const legend: LegendEntry[] = [
+        {
+          color: COL.below,
+          label: opts.okLabel
+            ?? (below ? `≥ ${max.toFixed(2)} ${units} — ok` : `≤ ${thr.toFixed(2)} ${units} — ok`),
+        },
+        {
+          color: rampColor(1),
+          label: below ? `≤ ${thr.toFixed(2)} ${units} — flagged` : `≥ ${max.toFixed(2)} ${units}`,
+        },
+        { color: COL.inaccess, label: opts.maskedLabel ?? 'no data' },
+      ];
+      return {
+        legend,
+        stats: `${flagged} of ${painted} faces ${below ? 'below' : 'above'} ${thr} ${units}`
+          + ` · auto max ${auto.toFixed(2)} ${units}`,
+      };
+    },
+  };
+}
+
 /** "Last CLI highlights.json" — process-agnostic replay of the legacy result. */
 export const highlightsMode: ViewMode = {
   id: 'highlights',
