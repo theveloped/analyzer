@@ -1,4 +1,4 @@
-import { highlightsMode } from '../../colorizers/core';
+import { brepFacesMode, highlightsMode } from '../../colorizers/core';
 import type { ProcessPlugin, ViewCtx } from '../../registry/types';
 import { faceAccess, vertexGap, vertexMinStickout } from './compose';
 import { CncControls } from './Controls';
@@ -33,7 +33,8 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
 export const cncPlugin: ProcessPlugin = {
   processId: 'cnc',
   label: 'CNC machining',
-  modes: [unifiedMode, accessMode, classMode, gapMode, stickoutMode, diffMode, highlightsMode],
+  modes: [unifiedMode, accessMode, classMode, gapMode, stickoutMode, diffMode,
+          brepFacesMode, highlightsMode],
   defaults: () => ({
     source: 0,
     tip: 0,

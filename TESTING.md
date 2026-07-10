@@ -132,6 +132,28 @@ masks.
 against a running server (`node smoke.mjs` inside `frontend/`, with
 `CHROMIUM_PATH` pointing at a Chromium binary).
 
+## Mold orientation, face assignment & parting lines
+
+STEP parts mesh through the BREP (exact triangle→face mapping, shared
+vertices along BREP edges); `--deflection` controls the base tessellation
+and `--subdivide` the analysis resolution as before:
+
+```bash
+python main.py mesh tests/testpart_42.stp -o testpart_42 --subdivide 1.0
+python main.py directions testpart_42 --count 8 --axes
+python main.py options testpart_42 --max_slides 2      # ranked feasibility table
+python test_mold.py                                    # analytic fixtures
+```
+
+`options` ranks antipodal plate pairs with greedy perpendicular slides
+(per-slide marginal face counts), a FEASIBLE/infeasible verdict and the
+internal-undercut count. In the UI (injection molding tab → "Mold
+orientation assignment"): pick a ranked option, toggle the display between
+band (either-faces explicit), resolved (auto-assigned) and whole BREP
+faces (straddle = the parting line must cross that face), with the parting
+line and mold/slide direction arrows overlaid. The "BREP faces" view mode
+(any tab) colors the mesh by source BREP face.
+
 ## Wall thickness and gaps (rolling sphere)
 
 Two per-vertex fields from the maximal inscribed ("rolling") sphere: wall

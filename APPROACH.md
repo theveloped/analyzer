@@ -65,19 +65,49 @@ the angular tolerance is built into the visibility test at no extra passes.
 On the Aligator test part the isolated-face speckle count from ±Z drops from
 ~13.8k faces (meshlib) to ~180 (genuine shadow-boundary faces).
 
-### Stage 3 — `options`: pick setups / parting directions
+### Stage 3 — `options`: mold orientation, face assignment & parting lines
 
-`find_combinations_matching_best` searches for the best set of approach directions:
+`molding.mold_orientation_search` ranks mold orientations. For each antipodal
+pair (the two mold plates): slides are chosen by **greedy set cover** over the
+directions perpendicular to the pull axis (within `--slide_tollerance`) —
+each pick maximizes newly-covered residual faces and records its **marginal
+contribution**, so redundant slides never appear and every slide's purpose is
+explicit. Faces neither the pair nor any slide reaches are **internal
+undercuts** (inside slides / hand-loads, identified separately). An option is
+**feasible** iff that set is empty; ranking is feasible-first, fewer slides,
+higher coverage.
 
-- For each antipodal pair, union the two accessibility rows → coverage of a
-  two-sided setup (or a mold's two halves).
-- Optionally add up to `max_slides` extra directions that are **perpendicular** to the
-  pair axis (validated by cosine tolerance in `find_valid_directions`) — these model
-  mold slides or extra machining setups — and union those rows in too.
-- Score every combination by `covered_faces / total_faces` and rank.
+Per top option, per-face assignment fields are derived (pure numpy over the
+accessibility rows):
 
-Because accessibility is precomputed, this combinatorial search is pure numpy `any()`
-over rows — no geometry is touched.
+- **band** — side A / side B / *either* (visible from both halves: the
+  parting-line choice points) / internal / slide-j;
+- **resolved** — the either band auto-assigned by region growing from forced
+  neighbors (a concrete default parting);
+- **brep** — whole-BREP-face aggregation (via `brep_faces.npy`): faces forced
+  both ways become *straddle* (the parting line must cross them — either by
+  choosing a side or by splitting the face), the rest take the majority vote;
+- **parting lines** — the mesh edges where the resolved assignment flips
+  A↔B, rendered as a line overlay in the viewer along with direction arrows.
+
+Because accessibility is precomputed, the whole search and all field
+derivations are numpy row operations — no geometry is touched.
+
+### BREP-aware STEP meshing
+
+STEP input is tessellated through the BREP itself (`brep.py`, OCCT via the
+OCP bindings) instead of meshlib's anonymous import: each TopoDS face is
+triangulated separately and tagged, then the per-face node arrays are welded
+into one conformal mesh — OCCT discretizes every shared BREP edge once and
+reuses that polygon on both adjacent faces, so boundary vertices coincide
+exactly and the welded mesh shares vertices along BREP edges by construction.
+Refinement to analysis resolution is our own conformal midpoint subdivision
+(`subdivide_tagged`) because meshlib's subdivide flips edges across face
+boundaries; children inherit their parent's face id exactly. The result is
+`brep_faces.npy`: every fine triangle knows its source BREP face — the basis
+for whole-face mold assignments, the future attributed adjacency graph (AAG)
+and draft-angle checks (per-face surface types are recorded in
+`brep_meta.json`).
 
 ### Stage 4 — per-direction tool checks
 
@@ -364,9 +394,6 @@ Every check in the repo follows the same pattern:
 
 - `projectAllMeshVertices`' limits are *squared* distances (`upDistLimitSq`), which
   the `map_result_faces` call sites treat as plain distances.
-- `find_combinations_matching_best` duplicates its sort/truncate block, and the slide
-  search enumerates `combinations` over *all* perpendicular directions, which explodes
-  for large direction counts.
 - `get_inside_indices` loops face-by-face building one-bit bitsets — correct but very
   slow; `inside_test.py` is a sandbox exploring a bulk-mapping alternative.
 - `toolart.py`, `drawer.py`, `tooltest.py` are standalone sketches for drawing tool

@@ -147,6 +147,8 @@ function buildCtx(): ViewCtx | null {
     highlights,
     getField: fetchField,
     paintFaces: (colorOf) => theScene.paintFaces(colorOf),
+    setLines: (positions, color) => theScene.setLines(positions, color),
+    setArrows: (arrows) => theScene.setArrows(arrows),
   };
 }
 
@@ -179,9 +181,11 @@ async function repaint() {
   const mode = plugin?.modes.find((m) => m.id === store.modeId) ?? plugin?.modes[0];
   if (!plugin || !mode) return;
   try {
+    scene?.clearOverlays();
     const info = await mode.paint(ctx);
     useStore.getState().set({ legend: info.legend, stats: info.stats ?? '', error: null });
   } catch (err) {
+    scene?.clearOverlays();
     ctx.paintFaces(() => [0.87, 0.9, 0.92]);
     useStore.getState().set({
       legend: [], stats: `⚠ ${err instanceof Error ? err.message : err}`,

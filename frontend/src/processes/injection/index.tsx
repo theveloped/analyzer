@@ -1,10 +1,18 @@
-// Injection molding plugin: parting-direction coverage plus rolling-sphere
-// wall thickness and gaps/clearance heatmaps over generic result fields.
+// Injection molding plugin: mold-orientation assignment view (per-face side
+// assignment with parting lines and direction arrows), rolling-sphere wall
+// thickness and gaps/clearance heatmaps.
 
-import { COL, heatmapMode, highlightsMode, paintMask } from '../../colorizers/core';
+import {
+  brepFacesMode, COL, heatmapMode, highlightsMode, paintCategory,
+} from '../../colorizers/core';
 import type { Manifest } from '../../api/types';
-import type { PaintInfo, ProcessPlugin, ViewCtx, ViewMode } from '../../registry/types';
+import type { PaintInfo, ProcessPlugin, RGB, ViewCtx, ViewMode } from '../../registry/types';
 import { useStore } from '../../state/store';
+
+const ARROW_COLORS: Record<string, RGB> = {
+  main_a: [0.44, 0.64, 0.86], // side A
+  main_b: [0.62, 0.8, 0.58], // side B
+};
 
 function resultsFor(manifest: Manifest, analysis: string) {
   return manifest.results.filter(
@@ -19,25 +27,53 @@ function scalarField(ctx: ViewCtx, analysis: string, member: string) {
   return fieldId ? ctx.manifest.fields.find((f) => f.id === fieldId) ?? null : null;
 }
 
-const coverageMode: ViewMode = {
-  id: 'coverage',
-  label: 'Parting option coverage',
+function resolveField(ctx: ViewCtx, result: any, member: string) {
+  const fieldId = result.fields.find((f: string) => f.endsWith(`.${member}`));
+  return fieldId ? ctx.manifest.fields.find((f) => f.id === fieldId) ?? null : null;
+}
+
+const assignmentMode: ViewMode = {
+  id: 'assignment',
+  label: 'Mold orientation assignment',
   async paint(ctx): Promise<PaintInfo> {
-    const results = resultsFor(ctx.manifest, 'parting_directions');
-    const result = results[ctx.params.result ?? 0] ?? results[0];
+    const results = resultsFor(ctx.manifest, 'mold_orientation');
+    const result = results[ctx.params.result ?? 0] ?? results[results.length - 1];
     if (!result) {
-      throw new Error('no parting_directions result yet — run the analysis below');
+      throw new Error('no mold_orientation result yet — run the analysis below');
     }
-    const fieldId = result.fields[ctx.params.option ?? 0] ?? result.fields[0];
-    const desc = ctx.manifest.fields.find((f) => f.id === fieldId);
-    if (!desc) throw new Error('coverage mask missing from the manifest');
-    const mask = await ctx.getField(desc);
-    const info = paintMask(ctx, mask, COL.floor, COL.tip,
-      'covered by the selected parting set', 'not covered (needs a slide / redesign)');
-    const option = result.stats.options?.[ctx.params.option ?? 0];
-    if (option) {
-      info.stats = `directions [${option.directions.join(', ')}] — `
-        + `coverage ${(option.coverage * 100).toFixed(1)}%\n${info.stats}`;
+    const option = ctx.params.option ?? 0;
+    const variant = ctx.params.display ?? 'resolved';
+    const desc = resolveField(ctx, result, `${variant}_${option}`);
+    if (!desc) {
+      throw new Error(variant === 'brep'
+        ? 'no BREP assignment stored — re-mesh the part from STEP, then re-run'
+        : 'assignment field missing — re-run mold_orientation');
+    }
+    const values = await ctx.getField(desc) as Uint8Array;
+    const info = paintCategory(ctx, values, desc.params.labels, desc.params.colors);
+
+    if (ctx.params.showLines !== false) {
+      const linesDesc = resolveField(ctx, result, `parting_lines_${option}`);
+      if (linesDesc) ctx.setLines(await ctx.getField(linesDesc) as Float32Array);
+    }
+    const opt = result.stats.options?.[option];
+    if (ctx.params.showArrows !== false && opt) {
+      ctx.setArrows(opt.arrows.map((arrow: any) => ({
+        direction: arrow.direction,
+        color: arrow.kind === 'slide'
+          ? desc.params.colors[4 + arrow.index] ?? COL.holder
+          : ARROW_COLORS[arrow.kind] ?? COL.ok,
+      })));
+    }
+
+    if (opt) {
+      const slides = opt.slides.length
+        ? ` [${opt.slides.map((s: any) => `d${s.direction} +${s.marginal}`).join(', ')}]`
+        : '';
+      info.stats = `${opt.feasible ? 'FEASIBLE' : 'infeasible'}`
+        + ` · coverage ${(opt.coverage * 100).toFixed(1)}%`
+        + ` · ${opt.slides.length} slide(s)${slides}`
+        + ` · internal ${opt.counts.internal}`;
     }
     return info;
   },
@@ -67,6 +103,23 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
   const lines: string[] = [];
   const at3 = (field: Float32Array) =>
     [0, 1, 2].map((k) => field[ctx.faces[3 * face + k]].toFixed(2)).join(' / ');
+
+  const results = resultsFor(ctx.manifest, 'mold_orientation');
+  const result = results[ctx.params.result ?? 0] ?? results[results.length - 1];
+  if (result) {
+    const option = ctx.params.option ?? 0;
+    const variant = ctx.params.display ?? 'resolved';
+    const desc = resolveField(ctx, result, `${variant}_${option}`);
+    if (desc) {
+      const values = await ctx.getField(desc) as Uint8Array;
+      lines.push(`assignment: ${desc.params.labels[values[face]] ?? values[face]}`);
+    }
+  }
+  const brep = ctx.manifest.fields.find((f) => f.id === 'brep_faces');
+  if (brep) {
+    const ids = await ctx.getField(brep) as Uint32Array;
+    lines.push(`brep face: ${ids[face]}`);
+  }
   const thickness = scalarField(ctx, 'thickness', 'thickness');
   if (thickness) {
     lines.push(`wall thickness: ${at3(await ctx.getField(thickness) as Float32Array)} mm`);
@@ -101,38 +154,63 @@ function InjectionControls() {
   const setParam = useStore((s) => s.setViewerParam);
   const set = (name: string, value: any) => setParam('injection_molding', name, value);
 
-  const results = manifest ? resultsFor(manifest, 'parting_directions') : [];
-  const result = results[params.result ?? 0] ?? results[0];
-  const options: { directions: number[]; coverage: number }[] = result?.stats.options ?? [];
+  const results = manifest ? resultsFor(manifest, 'mold_orientation') : [];
+  const result = results[params.result ?? 0] ?? results[results.length - 1];
+  const options: any[] = result?.stats.options ?? [];
+  const fieldOptions = options.slice(0, 3);
 
   return (
     <>
-      {modeId === 'coverage' && (
+      {modeId === 'assignment' && (
         <>
           <label>Result (parameter set)</label>
           <select value={params.result ?? 0} onChange={(e) => set('result', parseInt(e.target.value))}>
             {results.map((r, i) => (
               <option key={r.hash} value={i}>
-                {`slides ${r.params.slides ?? 0} · ${r.hash}`}
+                {`max slides ${r.params.max_slides ?? '?'} · ${r.hash}`}
               </option>
             ))}
             {!results.length && <option value={0}>no results yet</option>}
           </select>
 
-          <label>Parting option</label>
+          <label>Orientation option</label>
           <select value={params.option ?? 0} onChange={(e) => set('option', parseInt(e.target.value))}>
-            {options.slice(0, result?.fields.length ?? 0).map((o, i) => (
+            {fieldOptions.map((o, i) => (
               <option key={i} value={i}>
-                {`[${o.directions.join(', ')}] — ${(o.coverage * 100).toFixed(1)}%`}
+                {`±d${o.pair[0]} · ${o.slides.length} slide(s) · ${o.feasible ? 'feasible' : 'infeasible'}`}
               </option>
             ))}
-            {!options.length && <option value={0}>—</option>}
+            {!fieldOptions.length && <option value={0}>—</option>}
           </select>
+
+          <label>Display</label>
+          <select value={params.display ?? 'resolved'} onChange={(e) => set('display', e.target.value)}>
+            <option value="band">band (either faces explicit)</option>
+            <option value="resolved">resolved (auto-assigned)</option>
+            <option value="brep">whole BREP faces</option>
+          </select>
+
+          <div className="row">
+            <label className="check">
+              <input
+                type="checkbox" checked={params.showLines !== false}
+                onChange={(e) => set('showLines', e.target.checked)}
+              />
+              parting lines
+            </label>
+            <label className="check">
+              <input
+                type="checkbox" checked={params.showArrows !== false}
+                onChange={(e) => set('showArrows', e.target.checked)}
+              />
+              direction arrows
+            </label>
+          </div>
 
           {options.length > 0 && (
             <div className="hint">
-              all ranked options:{' '}
-              {options.map((o) => `[${o.directions.join(',')}] ${(o.coverage * 100).toFixed(1)}%`).join(' · ')}
+              ranked: {options.map((o, i) =>
+                `#${i} ±d${o.pair[0]} ${o.feasible ? '✓' : '✗'} ${(o.coverage * 100).toFixed(0)}%`).join(' · ')}
             </div>
           )}
         </>
@@ -170,9 +248,10 @@ function InjectionControls() {
 export const injectionPlugin: ProcessPlugin = {
   processId: 'injection_molding',
   label: 'Injection molding',
-  modes: [coverageMode, thicknessMode, gapsMode, highlightsMode],
+  modes: [assignmentMode, thicknessMode, gapsMode, brepFacesMode, highlightsMode],
   defaults: () => ({
-    result: 0, option: 0,
+    result: 0, option: 0, display: 'resolved',
+    showLines: true, showArrows: true,
     minThickness: 1.0, thicknessScale: '',
     minGap: 0.5, gapScale: '',
   }),

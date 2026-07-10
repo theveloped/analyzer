@@ -123,9 +123,11 @@ def _result_entries(workdir, base_url, face_count, vert_count):
             fields.append({
                 "id": field_id,
                 "association": association,
-                "dtype": "u1" if role in ("mask", "category") else "f4",
+                "dtype": meta.get("dtype")
+                         or ("u1" if role in ("mask", "category") else "f4"),
                 "role": role,
-                "length": face_count if association == "face" else vert_count,
+                "length": (face_count if association == "face"
+                           else vert_count if association == "vertex" else None),
                 "url": f"{base_url}/results/{process_id}/{analysis_id}/{result_hash}/{name}",
                 "params": meta,
             })

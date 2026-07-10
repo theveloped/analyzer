@@ -22,8 +22,12 @@ export interface ViewCtx {
   faceCount: number;
   params: Record<string, any>; // viewer params of the active process
   highlights: number[] | null;
-  getField(desc: FieldDescriptor): Promise<Float32Array | Uint8Array>;
+  getField(desc: FieldDescriptor): Promise<Float32Array | Uint8Array | Uint32Array>;
   paintFaces(colorOf: (f: number) => RGB): void;
+  /** Overlay line segments (flattened endpoint pairs, N*2*3 floats). */
+  setLines(positions: Float32Array, color?: RGB): void;
+  /** Overlay direction arrows pointing at the part. */
+  setArrows(arrows: { direction: number[]; color: RGB }[]): void;
 }
 
 export interface ViewMode {

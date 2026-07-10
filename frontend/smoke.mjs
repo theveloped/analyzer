@@ -37,16 +37,14 @@ await page.fill('.panel input[type=text]', '8:0');
 await page.waitForTimeout(1000);
 report.push('stickout+holder: ' + (await page.locator('.stats').textContent() || '').split('\n')[0]);
 
-// injection molding tab (large_part has the parting result)
-await page.selectOption('.panel .row select', 'large_part');
-await page.waitForFunction(
-  () => (document.querySelector('.stats')?.textContent ?? '').length > 0, null, { timeout: 60000 });
+// injection molding tab (testpart_42 has a mold_orientation result); the
+// assignment mode errors into .stats on parts without one, so wait on stats
 await page.click('.tabs button:nth-child(2)');
 await page.waitForFunction(
-  () => document.querySelector('.legend')?.children.length > 0, null, { timeout: 30000 });
+  () => (document.querySelector('.stats')?.textContent ?? '').length > 0, null, { timeout: 30000 });
 await page.waitForTimeout(1500);
-report.push('IM coverage: ' + ((await page.locator('.stats').textContent().catch(() => '')) || '').split('\n')[0]);
-await page.screenshot({ path: process.env.SHOT_DIR + '/im_coverage.png' });
+report.push('IM assignment: ' + ((await page.locator('.stats').textContent().catch(() => '')) || '').split('\n')[0]);
+await page.screenshot({ path: process.env.SHOT_DIR + '/im_assignment.png' });
 
 // click to inspect
 await page.mouse.click(900, 450);

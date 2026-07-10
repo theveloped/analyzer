@@ -80,7 +80,7 @@ export function faceAngles(ctx: ViewCtx, direction: number[]): Float32Array {
 
 /** Generic mask painter: on/off face field with a two-entry legend. */
 export function paintMask(
-  ctx: ViewCtx, mask: Uint8Array | Float32Array,
+  ctx: ViewCtx, mask: Uint8Array | Float32Array | Uint32Array,
   onColor: RGB, offColor: RGB, onLabel: string, offLabel: string,
 ): { legend: LegendEntry[]; stats: string } {
   let n = 0;
@@ -189,6 +189,59 @@ export function heatmapMode(
     },
   };
 }
+
+/** Paint a per-face u1 category field with labels/colors indexed by code. */
+export function paintCategory(
+  ctx: ViewCtx, values: Uint8Array, labels: string[], colors: RGB[],
+): { legend: LegendEntry[]; stats: string } {
+  const counts = new Array(labels.length).fill(0);
+  ctx.paintFaces((f) => {
+    const code = values[f];
+    if (code < counts.length) counts[code]++;
+    return colors[code] ?? COL.inaccess;
+  });
+  return {
+    legend: labels
+      .map((label, i) => ({ color: colors[i] ?? COL.inaccess, label: `${label} (${counts[i]})` }))
+      .filter((_, i) => counts[i] > 0),
+    stats: '',
+  };
+}
+
+/** Golden-ratio hue for stable, well-separated per-id colors. */
+export function segmentIdColor(id: number): RGB {
+  const h = (id * 0.618034) % 1;
+  const s = 0.5;
+  const l = 0.62;
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const channel = (t: number) => {
+    t = ((t % 1) + 1) % 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  return [channel(h + 1 / 3), channel(h), channel(h - 1 / 3)];
+}
+
+/** Source BREP faces (from the STEP-aware mesher), one color per face id. */
+export const brepFacesMode: ViewMode = {
+  id: 'brep_faces',
+  label: 'BREP faces',
+  async paint(ctx) {
+    const desc = ctx.manifest.fields.find((f) => f.id === 'brep_faces');
+    if (!desc) {
+      throw new Error('no BREP face ids — re-mesh the part from its STEP file');
+    }
+    const ids = await ctx.getField(desc) as Uint32Array;
+    ctx.paintFaces((f) => segmentIdColor(ids[f]));
+    return {
+      legend: [],
+      stats: `${desc.params.count} BREP faces over ${ctx.faceCount} triangles`,
+    };
+  },
+};
 
 /** "Last CLI highlights.json" — process-agnostic replay of the legacy result. */
 export const highlightsMode: ViewMode = {
