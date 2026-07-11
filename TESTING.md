@@ -176,6 +176,36 @@ clearance" → the thickness and gaps heatmap view modes, with min-threshold
 and heatmap-max inputs recomputed live; clicking a face prints both maps'
 values at its three vertices.
 
+## Wall skeleton, fill flow & sprue proposals
+
+The rolling-sphere centers form a medial skeleton graph (`wall_skeleton`,
+validated by `test_skeleton.py` against analytic plate/rib midplanes). The
+"Skeleton & fill flow" view runs a client-side Dijkstra over
+`length / r^4` edge resistances from a clicked gate.
+
+`sprue_proposals` ranks injection-gate locations automatically over that
+same flow model: surface candidates (grid-decimated, one per skeleton
+node) pass hard filters (min gate thickness; slide/undercut/forbidden-side
+faces when a `mold_orientation` result exists — skipped gracefully
+otherwise), then a multi-source Dijkstra scores each on p95/max fill
+resistance, unreached volume, overpack exposure, thick-region packing
+access through wide channels, and weld-line/air-trap indicators. Scores
+are p5–p95 normalized and weight-combined; every proposal carries its
+subscores and human-readable pros/cons.
+
+```bash
+python test_skeleton.py   # analytic midplanes + result serving round-trip
+python test_sprue.py      # plate → center gate, thick boss → packing access,
+                          # T-part → junction balance, hard filters, round-trip
+```
+
+In the UI: injection molding tab → Compute "Sprue / gate proposals" → the
+"Sprue proposals" view: ranked markers on the part (white = best), a
+clickable proposal list with the pros/cons explanation, per-proposal fill
+painting with a weld-front overlay, an all-candidates score heatmap
+toggle, and "open in fill-flow mode" to carry the gate into the
+interactive view.
+
 Catalog math: of the 16 x 13 nose-radius/diameter grid, ~156 combinations are
 valid (rc <= D/2). Per direction that is ~156 tip closings at ~8 s each
 (pixel 0.1 on a 100 mm part) ~ 20 min once, plus ~1 s per clearance radius —

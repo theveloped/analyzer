@@ -180,7 +180,8 @@ def main():
 
         from api.fields import result_field_bytes
         from processes.base import params_hash
-        result_hash = params_hash(params)
+        from processes.injection_molding import skeleton_cache_params
+        result_hash = params_hash(skeleton_cache_params(params))
         for name, entry in by_id.items():
             data, dtype = result_field_bytes(
                 workdir, "injection_molding", "wall_skeleton", result_hash, name)

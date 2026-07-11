@@ -403,43 +403,39 @@ def _skeleton_centers(mesh, verts, faces, radii, settings, progress):
 
 
 def _cluster_nodes(nodes, radii, cluster_factor):
-    """Merge nodes whose centers overlap within their local radius scale.
+    """Merge nodes into radius-scaled grid cells.
+
+    Nodes merge when they share a cell sized to their radius octave
+    (cell = cluster_factor * 2^k for radii in [2^k, 2^(k+1))). The earlier
+    connected-components merge of overlapping spheres chained transitively:
+    a uniform midplane sheet collapsed into one giant cluster, making every
+    flow distance across it zero. Grid cells bound the cluster extent by
+    its members' own radius scale instead, so clustered edge lengths stay
+    meaningful while the reduction is still radius-proportional.
 
     Returns per-node cluster labels and the representative (max radius)
     member index per cluster; averaging positions instead would drift off
     the medial axis in thin features.
     """
-    from scipy.sparse import coo_matrix
-    from scipy.sparse.csgraph import connected_components
-    from scipy.spatial import cKDTree
-
     count = len(nodes)
     if count == 0:
         return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64)
-    tree = cKDTree(nodes)
-    neighborhoods = tree.query_ball_point(nodes, r=cluster_factor * radii,
-                                          workers=-1)
-    pair_a = np.fromiter(
-        (i for i, hits in enumerate(neighborhoods) for _ in hits),
-        dtype=np.int64, count=sum(len(hits) for hits in neighborhoods))
-    pair_b = np.fromiter(
-        (j for hits in neighborhoods for j in hits),
-        dtype=np.int64, count=len(pair_a))
-    # keep pairs within cluster_factor of the smaller sphere of the two
-    span = np.linalg.norm(nodes[pair_a] - nodes[pair_b], axis=1)
-    close = span <= cluster_factor * np.minimum(radii[pair_a], radii[pair_b])
-    pair_a, pair_b = pair_a[close], pair_b[close]
 
-    adjacency = coo_matrix((np.ones(len(pair_a), dtype=np.int8),
-                            (pair_a, pair_b)), shape=(count, count))
-    cluster_count, labels = connected_components(adjacency, directed=False)
+    octave = np.floor(np.log2(np.maximum(radii, 1e-9)))
+    cell = cluster_factor * np.exp2(octave)
+    quantized = np.floor(nodes / cell[:, None]).astype(np.int64)
+    keys = np.concatenate([octave.astype(np.int64)[:, None], quantized],
+                          axis=1)
+    _, labels = np.unique(keys, axis=0, return_inverse=True)
+    labels = labels.astype(np.int64)
 
+    cluster_count = int(labels.max()) + 1
     representative = np.zeros(cluster_count, dtype=np.int64)
     best_radius = np.full(cluster_count, -1.0)
     np.maximum.at(best_radius, labels, radii)
     is_best = radii >= best_radius[labels]
     representative[labels[is_best]] = np.where(is_best)[0]
-    return labels.astype(np.int64), representative
+    return labels, representative
 
 
 def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
@@ -498,6 +494,23 @@ def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
     cluster_vert_node = np.full(vert_count, NODE_SENTINEL, dtype=np.uint32)
     cluster_vert_node[keep] = labels[vert_node[keep].astype(np.int64)]
 
+    # stray nodes (every mesh neighbor was dropped, so no adjacency edge
+    # survived) reconnect through sphere overlap: two inscribed spheres that
+    # intersect sit in connected material even without a mesh edge
+    degree = np.bincount(cluster_edges.astype(np.int64).ravel(),
+                         minlength=len(cluster_nodes))
+    isolated = np.flatnonzero(degree == 0)
+    if len(isolated) and len(cluster_nodes) > 1:
+        from scipy.spatial import cKDTree
+
+        span, neighbor = cKDTree(cluster_nodes).query(
+            cluster_nodes[isolated], k=2, workers=-1)
+        other = neighbor[:, 1]  # first hit is the node itself
+        overlap = span[:, 1] <= cluster_radii[isolated] + cluster_radii[other]
+        extra = np.stack([isolated[overlap], other[overlap]], axis=1)
+        extra = extra[extra[:, 0] != extra[:, 1]].astype(np.uint32)
+        cluster_edges = np.concatenate([cluster_edges, extra])
+
     def graph_meta(role, graph, array, dtype):
         return {"kind": "skeleton", "association": "graph", "role": role,
                 "graph": graph, "dtype": dtype, "length": int(array.size),
@@ -544,6 +557,284 @@ def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
     logger.info(
         f"wall skeleton: {node_count} raw / {len(cluster_nodes)} clustered "
         f"nodes, mean thickness {stats['mean_thickness']}")
+    return stats, arrays, field_meta
+
+
+def _latest_mold_orientation(workdir):
+    """Newest schema-2 mold_orientation result: (hash, payload, npz) or Nones.
+
+    "results" mirrors processes.base.RESULTS_DIR — importing processes here
+    would be circular (processes imports pipeline).
+    """
+    import glob
+
+    pattern = os.path.join(workdir, "results", "injection_molding",
+                           "mold_orientation", "*.json")
+    best = None
+    for json_path in glob.glob(pattern):
+        if json_path.endswith("_overrides.json"):
+            continue
+        with open(json_path) as f:
+            payload = json.load(f)
+        if payload.get("stats", {}).get("schema") != 2:
+            continue
+        mtime = os.path.getmtime(json_path)
+        if best is None or mtime > best[0]:
+            best = (mtime, json_path, payload)
+    if best is None:
+        return None, None, None
+    result_hash = os.path.splitext(os.path.basename(best[1]))[0]
+    npz_path = best[1][:-len(".json")] + ".npz"
+    arrays = (np.load(npz_path, allow_pickle=False)
+              if os.path.exists(npz_path) else None)
+    return result_hash, best[2], arrays
+
+
+def _parting_tree(workdir, brep_default):
+    """cKDTree over sampled parting-line points, or None.
+
+    Parting segments are the BREP edges whose two faces carry different
+    default features (both real, not conflict/internal) — the same rule the
+    viewer applies (frontend/src/processes/injection/index.tsx), except over
+    defaults: user overrides are ignored in v1.
+    """
+    from scipy.spatial import cKDTree
+
+    edges_path = os.path.join(workdir, BREP_EDGES_FILE)
+    pairs_path = os.path.join(workdir, BREP_EDGE_PAIRS_FILE)
+    if not (os.path.exists(edges_path) and os.path.exists(pairs_path)):
+        return None
+    segments = np.load(edges_path).reshape(-1, 2, 3)
+    pairs = np.load(pairs_path).reshape(-1, 2).astype(np.int64)
+    feat = brep_default[pairs]
+    keep = (feat[:, 0] != feat[:, 1]) & (feat < 254).all(axis=1)
+    segments = segments[keep]
+    if not len(segments):
+        return None
+    samples = np.concatenate(
+        [segments[:, 0], segments[:, 1], segments.mean(axis=1)])
+    return cKDTree(samples)
+
+
+def sprue_proposals(workdir, *, skeleton, skeleton_hash,
+                    min_gate_thickness=0.8, max_candidates=400,
+                    thick_percentile=85.0, pack_factor=0.5,
+                    edge_gate_distance=5.0, forbid_side="none",
+                    orientation_option=0, top_n=10, weights=None,
+                    progress=None):
+    """Ranked automatic injection-gate proposals over the wall skeleton.
+
+    Candidate surface vertices -> hard moldability filters -> multi-source
+    Dijkstra screening on the clustered skeleton (same length/r^4
+    resistances as the interactive fill view) -> normalized weighted score
+    with per-proposal explanations. ``skeleton`` maps the wall_skeleton
+    result arrays; ``skeleton_hash`` its cache hash so the viewer binds the
+    identical graph. A mold_orientation result is used when present
+    (slide/undercut rejection, side tags, parting distance) and skipped
+    gracefully otherwise. Returns (stats, arrays, field_meta) — storing is
+    the caller's job.
+    """
+    import gating
+
+    verts, faces = load_mesh_arrays(workdir)
+    faces = faces.astype(np.int64, copy=False)
+    thickness = np.asarray(skeleton["thickness"], dtype=np.float64)
+    nodes = np.asarray(skeleton["cluster_nodes"], dtype=np.float64)
+    radii = np.asarray(skeleton["cluster_radii"], dtype=np.float64)
+    edges = np.asarray(skeleton["cluster_edges"],
+                       dtype=np.int64).reshape(-1, 2)
+    vert_node = np.asarray(skeleton["cluster_vert_node"])
+    weights = {**gating.DEFAULT_WEIGHTS, **(weights or {})}
+
+    # thick-region threshold: volume-weighted radius percentile — a plain
+    # node-count percentile collapses to the thin-wall radius whenever thin
+    # nodes dominate the graph, hiding a lone thick boss from the packing
+    # metric
+    volume = radii ** 3
+    if len(radii):
+        by_radius = np.argsort(radii)
+        cumulative = np.cumsum(volume[by_radius])
+        pick = np.searchsorted(cumulative,
+                               thick_percentile / 100.0 * cumulative[-1])
+        thick_radius = float(radii[by_radius][min(pick, len(radii) - 1)])
+        thick_fraction = float(volume[radii >= thick_radius].sum()
+                               / max(volume.sum(), 1e-30))
+    else:
+        thick_radius, thick_fraction = 0.0, 0.0
+
+    _report(progress, 0.05, "generating gate candidates")
+    cands, rejected_thin = gating.generate_candidates(
+        verts, thickness, vert_node, min_gate_thickness=min_gate_thickness,
+        max_candidates=max_candidates, thick_diameter=1.9 * thick_radius)
+    generated = int(len(cands))
+    rejected = {"thin": rejected_thin, "slide": 0, "internal": 0,
+                "conflict": 0, "side": 0, "disconnected": 0}
+
+    # optional mold-orientation context: category filters, side, parting
+    mold_hash, mold_payload, mold_arrays = _latest_mold_orientation(workdir)
+    orientation = {"used": False, "reason": "no mold_orientation result"}
+    sides = np.full(len(cands), "unknown", dtype=object)
+    parting_tree = None
+    if mold_payload is not None and mold_arrays is not None:
+        option = int(orientation_option)
+        if f"membership_{option}" not in mold_arrays:
+            option = 0
+    if (mold_payload is not None and mold_arrays is not None
+            and f"membership_{option}" in mold_arrays):
+        brep_path = os.path.join(workdir, BREP_FACES_FILE)
+        brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
+        default_name = f"brep_default_{option}"
+        use_brep = brep_ids is not None and default_name in mold_arrays
+        if use_brep:
+            defaults = mold_arrays[default_name]
+            face_cats = gating.face_categories_from_defaults(
+                defaults[brep_ids.astype(np.int64)])
+            parting_tree = _parting_tree(workdir, defaults)
+        else:
+            face_cats = gating.face_categories_from_membership(
+                mold_arrays[f"membership_{option}"])
+        vert_cats = gating.vertex_categories(faces, face_cats, len(verts))
+        orientation = {"used": True, "hash": mold_hash, "option": option,
+                       "brep": bool(use_brep), "parting_from": "defaults"}
+
+        cats = vert_cats[cands]
+        internal = (cats & gating.CAT_INTERNAL) > 0
+        conflict = ((cats & gating.CAT_CONFLICT) > 0) & ~internal
+        slide = ((cats & gating.CAT_SLIDE) > 0) & ~internal & ~conflict
+        rejected["internal"] = int(internal.sum())
+        rejected["conflict"] = int(conflict.sum())
+        rejected["slide"] = int(slide.sum())
+        cands = cands[~(internal | conflict | slide)]
+        sides = gating.side_labels(vert_cats[cands])
+        if forbid_side in ("A", "B"):
+            banned = sides == forbid_side
+            rejected["side"] = int(banned.sum())
+            cands, sides = cands[~banned], sides[~banned]
+
+    _report(progress, 0.2, f"screening {len(cands)} candidates")
+    cand_nodes = vert_node[cands].astype(np.int64)
+    raws, reached = gating.screen_candidates(
+        nodes, radii, edges, cand_nodes, thick_radius=thick_radius,
+        pack_factor=pack_factor,
+        progress=(lambda f, m: _report(progress, 0.2 + 0.6 * f, m)))
+    connected = reached >= 0.5
+    rejected["disconnected"] = int((~connected).sum())
+    cands, cand_nodes, sides = (cands[connected], cand_nodes[connected],
+                                sides[connected])
+    raws = {name: values[connected] for name, values in raws.items()}
+
+    _report(progress, 0.85, "scoring candidates")
+    subscores, score, degenerate = gating.normalize_scores(raws, weights)
+    order = np.argsort(-score, kind="stable")
+
+    parting_dist = None
+    if parting_tree is not None and len(cands):
+        parting_dist, _ = parting_tree.query(verts[cands], workers=-1)
+
+    # any incident face works as the candidate's representative face
+    vert_face = np.zeros(len(verts), dtype=np.int64)
+    for corner in range(3):
+        vert_face[faces[:, corner]] = np.arange(len(faces))
+
+    if len(cands):
+        best_fill, weld_best = gating.fill_and_weld(
+            nodes, radii, edges, cand_nodes[order[0]])
+    else:
+        best_fill = np.full(len(radii), np.inf)
+        weld_best = np.zeros(len(edges), dtype=np.uint8)
+
+    proposals = []
+    for rank, idx in enumerate(order[:top_n]):
+        idx = int(idx)
+        sub = {name: float(subscores[idx, col])
+               for col, name in enumerate(gating.METRICS)}
+        raw = {name: float(raws[name][idx]) for name in gating.METRICS}
+        distance = (float(parting_dist[idx])
+                    if parting_dist is not None else None)
+        style = ("unknown" if distance is None
+                 else "edge" if distance <= edge_gate_distance else "hot_tip")
+        proposals.append({
+            "rank": rank,
+            "vertex": int(cands[idx]),
+            "face": int(vert_face[cands[idx]]),
+            "node": int(cand_nodes[idx]),
+            "point": [float(c) for c in verts[cands[idx]]],
+            "score": float(score[idx]),
+            "subscores": sub,
+            "raw": raw,
+            "side": str(sides[idx]),
+            "parting_distance": distance,
+            "gate_style": style,
+            "reasons": gating.proposal_reasons(
+                sub, raw, side=str(sides[idx]), parting_distance=distance,
+                gate_style=style, degenerate=degenerate),
+        })
+
+    def sprue_meta(role, graph, array, dtype, **extra):
+        return {"kind": "sprue", "association": "graph", "graph": graph,
+                "role": role, "dtype": dtype, "length": int(array.size),
+                "count": int(array.shape[0]), **extra}
+
+    arrays = {
+        "candidate_points": verts[cands].astype("f4").reshape(-1, 3),
+        "candidate_node": cand_nodes.astype(np.uint32),
+        "candidate_vertex": cands.astype(np.uint32),
+        "candidate_face": vert_face[cands].astype(np.uint32),
+        "candidate_score": score.astype("f4"),
+        "candidate_subscores": subscores.astype("f4"),
+        "proposal_index": order[:top_n].astype(np.uint32),
+        "best_fill": best_fill.astype("f4"),
+        "weld_edges_best": weld_best.astype(np.uint8),
+    }
+    field_meta = {
+        "candidate_points": sprue_meta("nodes", "sprue",
+                                       arrays["candidate_points"], "f4"),
+        "candidate_node": sprue_meta("data", "sprue",
+                                     arrays["candidate_node"], "u4"),
+        "candidate_vertex": sprue_meta("data", "sprue",
+                                       arrays["candidate_vertex"], "u4"),
+        "candidate_face": sprue_meta("data", "sprue",
+                                     arrays["candidate_face"], "u4"),
+        "candidate_score": sprue_meta("scalar", "sprue",
+                                      arrays["candidate_score"], "f4"),
+        "candidate_subscores": sprue_meta(
+            "data", "sprue", arrays["candidate_subscores"], "f4",
+            metrics=list(gating.METRICS)),
+        "proposal_index": sprue_meta("data", "sprue",
+                                     arrays["proposal_index"], "u4"),
+        "best_fill": sprue_meta("scalar", "clustered",
+                                arrays["best_fill"], "f4"),
+        "weld_edges_best": sprue_meta("mask", "clustered",
+                                      arrays["weld_edges_best"], "u1"),
+    }
+
+    stats = {
+        "schema": 1,
+        "skeleton_hash": skeleton_hash,
+        "graph": "cluster",
+        "nodes": int(len(radii)),
+        "edges": int(len(edges)),
+        "orientation": orientation,
+        "confidence": "full" if orientation["used"] else "no_orientation",
+        "candidates": {
+            "eligible_verts": int((vert_node != NODE_SENTINEL).sum()),
+            "generated": generated,
+            "scored": int(len(cands)),
+            "rejected": rejected,
+        },
+        "thick": {"radius_threshold": thick_radius,
+                  "percentile": float(thick_percentile),
+                  "pack_radius": float(pack_factor * thick_radius),
+                  "volume_fraction": thick_fraction},
+        "weights": {name: float(weights[name]) for name in gating.METRICS},
+        "metrics": list(gating.METRICS),
+        "degenerate_metrics": degenerate,
+        "proposals": proposals,
+    }
+    logger.info(
+        f"sprue proposals: {generated} candidates, {len(cands)} scored, "
+        f"top score {proposals[0]['score']:.3f}" if proposals
+        else "sprue proposals: no viable candidates")
     return stats, arrays, field_meta
 
 

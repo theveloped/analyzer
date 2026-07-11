@@ -65,6 +65,10 @@ body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
 .hint { color: #9fb0bd; font-size: 11px; margin-top: 4px; }
 .hint.error { color: #e08a80; }
 
+.proposal-list { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+.proposal-list button { text-align: left; font-size: 11px; }
+.proposal-list button.selected { background: #3b5268; border-color: #5a7793; }
+
 .jobs { margin-top: 8px; }
 .job {
   display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap;

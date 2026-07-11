@@ -17,6 +17,9 @@ import {
   buildAdjacency, dijkstra, loadSkeleton, nearestNode, SENTINEL,
   skeletonResults,
 } from './skeleton';
+import {
+  loadSprue, markerGraph, sprueResults, weldSegments, type Proposal,
+} from './sprue';
 
 const CONFLICT_FEATURE = 254;
 const INTERNAL_FEATURE = 255;
@@ -337,6 +340,127 @@ const skeletonMode: ViewMode = {
   },
 };
 
+/** Marker color by rank: the winner white, runners-up gold fading to grey. */
+function rankColor(rank: number, count: number): RGB {
+  if (rank === 0) return GATE;
+  const t = count > 1 ? rank / (count - 1) : 1;
+  return [1 - 0.4 * t, 0.85 - 0.25 * t, 0.2 + 0.4 * t];
+}
+
+/** Last-painted proposal markers, so the synchronous onPick can snap to
+ * them without re-fetching (same idea as the adjacency cache). */
+let pickableProposals: { points: Float32Array; snap: number } | null = null;
+
+const WELD: RGB = [1.0, 0.3, 0.75];
+
+const sprueMode: ViewMode = {
+  id: 'sprue',
+  label: 'Sprue proposals',
+  async paint(ctx): Promise<PaintInfo> {
+    const results = sprueResults(ctx);
+    const result = results[ctx.params.sprueResult ?? 0] ?? results[0];
+    if (!result) {
+      throw new Error('no sprue_proposals result yet — run the analysis below');
+    }
+    const data = await loadSprue(ctx, result);
+    const { skeleton: sk, proposals } = data;
+    const showAll = ctx.params.showCandidates === true;
+
+    const markers = showAll
+      ? data.candidatePoints
+      : new Float32Array(proposals.flatMap((p) => p.point));
+    const { nodes, radii, markerBase } = markerGraph(sk, markers);
+    const markerCount = markers.length / 3;
+    ctx.setGraph(`${sk.key}:sprue:${result.hash}:${showAll ? 'all' : 'top'}`,
+                 nodes, sk.edges, radii);
+    ctx.setMeshOpacity(0.35);
+
+    // snap radius for picking: 5% of the part's bounding-box diagonal
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = 0; i < ctx.verts.length; i++) {
+      if (ctx.verts[i] < min) min = ctx.verts[i];
+      if (ctx.verts[i] > max) max = ctx.verts[i];
+    }
+    const proposalPoints = new Float32Array(proposals.flatMap((p) => p.point));
+    pickableProposals = { points: proposalPoints, snap: 0.05 * (max - min) * Math.sqrt(3) };
+
+    const markerColor = (m: number): RGB => {
+      if (showAll) {
+        // candidate heatmap: score 1 = best (cold), 0 = worst (hot)
+        return rampColor(1 - data.candidateScore[m]);
+      }
+      return rankColor(m, markerCount);
+    };
+
+    const selected: number | null = ctx.params.proposal;
+    const proposal = selected != null ? proposals[selected] : undefined;
+    const stats = result.stats;
+    const summary = proposals.slice(0, 3).map((p) =>
+      `#${p.rank} ${p.score.toFixed(2)}`
+      + (p.gate_style !== 'unknown' ? ` ${p.gate_style}` : '')
+      + (p.side !== 'unknown' ? ` ${p.side}` : ''))
+      .join(' · ');
+    const confidence = stats.confidence === 'full' ? ''
+      : '\nno mold orientation result — side/parting filters skipped';
+
+    if (!proposal) {
+      const rMax = percentile(sk.radii, 0.98);
+      ctx.paintGraph((n) => (n >= markerBase
+        ? markerColor(n - markerBase)
+        : rampColor(1 - sk.radii[n] / rMax)));
+      ctx.paintFaces(() => COL.ok);
+      return {
+        legend: [
+          { color: GATE, label: 'best gate proposal' },
+          { color: rankColor(1, 3), label: 'runner-up proposals' },
+        ],
+        stats: `${proposals.length} proposals over ${stats.candidates.scored}`
+          + ` scored candidates — click one (or pick from the list) to see`
+          + ` its fill\n${summary}${confidence}`,
+      };
+    }
+
+    const dist = dijkstra(buildAdjacency(sk.key, sk), proposal.node);
+    const tMax = Math.max(percentile(dist, 0.98), 1e-12);
+    ctx.paintGraph((n) => {
+      if (n >= markerBase) {
+        return (!showAll && n - markerBase === selected) ? GATE : markerColor(n - markerBase);
+      }
+      return isFinite(dist[n]) ? rampColor(dist[n] / tMax) : COL.inaccess;
+    });
+
+    const vertexFill = new Float32Array(ctx.manifest.mesh!.counts.verts).fill(NaN);
+    for (let v = 0; v < vertexFill.length; v++) {
+      const node = sk.vertNode[v];
+      if (node !== SENTINEL && isFinite(dist[node])) vertexFill[v] = dist[node];
+    }
+    const vals = faceValues(ctx, vertexFill, null);
+    ctx.paintFaces((f) => (isNaN(vals[f]) ? COL.inaccess : rampColor(vals[f] / tMax)));
+
+    if (ctx.params.showWeld !== false) {
+      const segments = weldSegments(sk, dist);
+      if (segments.length) ctx.setLines(segments, WELD);
+    }
+
+    const reasons = [
+      ...proposal.reasons.pros.map((r) => `+ ${r}`),
+      ...proposal.reasons.cons.map((r) => `− ${r}`),
+    ].join('\n');
+    return {
+      legend: [
+        { color: GATE, label: `gate #${proposal.rank} (score ${proposal.score.toFixed(2)})` },
+        { color: rampColor(0), label: 'fills early' },
+        { color: rampColor(1), label: 'fills late' },
+        ...(ctx.params.showWeld !== false
+          ? [{ color: WELD, label: 'weld-line indicator (fronts meet)' }] : []),
+        { color: COL.inaccess, label: 'unreached / no skeleton node' },
+      ],
+      stats: `${reasons}${confidence}`,
+    };
+  },
+};
+
 const thicknessMode = heatmapMode(
   'thickness', 'Wall thickness heatmap',
   (ctx) => scalarField(ctx, 'thickness', 'thickness'),
@@ -429,8 +553,88 @@ function InjectionControls() {
   const skelResults = (manifest?.results ?? []).filter(
     (r) => r.process === 'injection_molding' && r.analysis === 'wall_skeleton');
 
+  const sprueResultList = (manifest?.results ?? []).filter(
+    (r) => r.process === 'injection_molding' && r.analysis === 'sprue_proposals'
+      && r.stats.schema === 1);
+  const sprueResult = sprueResultList[params.sprueResult ?? 0] ?? sprueResultList[0];
+  const proposals: Proposal[] = sprueResult?.stats.proposals ?? [];
+
   return (
     <>
+      {modeId === 'sprue' && (
+        <>
+          <label>Result (parameter set)</label>
+          <select
+            value={params.sprueResult ?? 0}
+            onChange={(e) => {
+              set('sprueResult', parseInt(e.target.value));
+              set('proposal', null);
+            }}
+          >
+            {sprueResultList.map((r, i) => (
+              <option key={r.hash} value={i}>
+                {`${r.stats.proposals?.length ?? 0} proposals · ${r.hash}`}
+              </option>
+            ))}
+            {!sprueResultList.length && <option value={0}>no results yet</option>}
+          </select>
+
+          <div className="proposal-list">
+            {proposals.map((p) => (
+              <button
+                key={p.rank}
+                className={params.proposal === p.rank ? 'selected' : ''}
+                onClick={() => set('proposal', params.proposal === p.rank ? null : p.rank)}
+              >
+                {`#${p.rank} · ${p.score.toFixed(2)}`}
+                {p.gate_style !== 'unknown' && ` · ${p.gate_style === 'edge' ? 'edge gate' : 'hot tip'}`}
+                {p.side !== 'unknown' && ` · side ${p.side}`}
+              </button>
+            ))}
+          </div>
+
+          {params.proposal != null && proposals[params.proposal] && (
+            <>
+              <div className="hint">
+                {proposals[params.proposal].reasons.pros.map((r) => `+ ${r}`).join(' · ')}
+                {proposals[params.proposal].reasons.cons.length > 0 && (
+                  ` · ${proposals[params.proposal].reasons.cons.map((r) => `− ${r}`).join(' · ')}`)}
+              </div>
+              <button
+                onClick={() => {
+                  set('gate', proposals[params.proposal].point);
+                  useStore.getState().set({ modeId: 'skeleton' });
+                }}
+              >
+                open in fill-flow mode
+              </button>
+              <button onClick={() => set('proposal', null)}>clear selection</button>
+            </>
+          )}
+
+          <div className="row">
+            <label className="check">
+              <input
+                type="checkbox" checked={params.showCandidates === true}
+                onChange={(e) => set('showCandidates', e.target.checked)}
+              />
+              all candidates (score heatmap)
+            </label>
+            <label className="check">
+              <input
+                type="checkbox" checked={params.showWeld !== false}
+                onChange={(e) => set('showWeld', e.target.checked)}
+              />
+              weld indicator
+            </label>
+          </div>
+
+          <div className="hint">
+            click a marker on the part (or a proposal above) to inspect its fill
+          </div>
+        </>
+      )}
+
       {modeId === 'skeleton' && (
         <>
           <label>Result (parameter set)</label>
@@ -546,7 +750,7 @@ function InjectionControls() {
 export const injectionPlugin: ProcessPlugin = {
   processId: 'injection_molding',
   label: 'Injection molding',
-  modes: [assignmentMode, thicknessMode, gapsMode, skeletonMode,
+  modes: [assignmentMode, sprueMode, thicknessMode, gapsMode, skeletonMode,
           brepFacesMode, highlightsMode],
   defaults: () => ({
     result: 0, option: 0,
@@ -554,12 +758,38 @@ export const injectionPlugin: ProcessPlugin = {
     minThickness: 1.0, thicknessScale: '',
     minGap: 0.5, gapScale: '',
     skelResult: 0, graph: 'cluster', gate: null,
+    sprueResult: 0, proposal: null, showCandidates: false, showWeld: true,
   }),
   Controls: InjectionControls,
   inspect,
   onPick(face, point) {
-    if (useStore.getState().modeId !== 'skeleton') return false;
-    useStore.getState().setViewerParam('injection_molding', 'gate', point);
-    return true;
+    const { modeId, setViewerParam } = useStore.getState();
+    if (modeId === 'skeleton') {
+      setViewerParam('injection_molding', 'gate', point);
+      return true;
+    }
+    if (modeId === 'sprue' && pickableProposals) {
+      // snap the click to the nearest proposal marker
+      const { points, snap } = pickableProposals;
+      let best = -1;
+      let bestDist = snap * snap;
+      for (let p = 0; p < points.length / 3; p++) {
+        const dx = points[3 * p] - point[0];
+        const dy = points[3 * p + 1] - point[1];
+        const dz = points[3 * p + 2] - point[2];
+        const d = dx * dx + dy * dy + dz * dz;
+        if (d < bestDist) {
+          bestDist = d;
+          best = p;
+        }
+      }
+      if (best < 0) return false;
+      setViewerParam('injection_molding', 'proposal', best);
+      // keep the fill-flow mode's gate in sync with the picked proposal
+      setViewerParam('injection_molding', 'gate',
+                     [points[3 * best], points[3 * best + 1], points[3 * best + 2]]);
+      return true;
+    }
+    return false;
   },
 };
