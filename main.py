@@ -79,6 +79,16 @@ if __name__ == "__main__":
     parser_options.add_argument("--min_slide_faces", help="minimum faces a slide must gain", type=int, default=50)
     parser_options.add_argument("--serve", help="serve results in browser", action="store_true")
     
+    # Create the parser for the "setups" command
+    parser_setups = subparsers.add_parser("setups", help="rank CNC setup combinations (3-axis / indexed 3+2)")
+    parser_setups.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_setups.add_argument("--no_indexed", help="skip the indexed 5-axis (3+2) machine", action="store_true")
+    parser_setups.add_argument("--tilt", help="3+2 head tilt cone half-angle in degrees", type=float, default=90.0)
+    parser_setups.add_argument("--max_setups", help="maximum setups per option", type=int, default=4)
+    parser_setups.add_argument("--min_setup_faces", help="minimum faces a setup must gain", type=int, default=10)
+    parser_setups.add_argument("--count", help="ranked options to report", type=int, default=10)
+    parser_setups.add_argument("--serve", help="serve results in browser", action="store_true")
+
     # Create the parser for the "options" command
     parser_serve = subparsers.add_parser("serve", help="find injection molding options")
     parser_serve.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
@@ -233,6 +243,35 @@ if __name__ == "__main__":
                 f"{'FEASIBLE' if option['feasible'] else 'infeasible'}  "
                 f"coverage {option['coverage'] * 100:.1f}%  slides: {slides}  "
                 f"internal {option['counts']['internal']}")
+
+        if args.serve:
+            serve_workdir(args.directory)
+
+    elif args.command == "setups":
+        logger.info("Searching CNC setup combinations")
+
+        import processes
+        from processes.base import apply_defaults
+
+        analysis = processes.get_analysis("cnc", "setups")
+        merged = apply_defaults(analysis, {
+            "indexed": not args.no_indexed,
+            "tilt": args.tilt,
+            "max_setups": args.max_setups,
+            "min_setup_faces": args.min_setup_faces,
+            "count": args.count,
+        })
+        result = analysis.run(args.directory, merged, None)
+
+        for rank, option in enumerate(result.stats["options"]):
+            setups = ", ".join(f"d{s['direction']} (+{s['marginal']})"
+                               for s in option["setups"])
+            logger.info(
+                f"#{rank}  {option['machine']:6s} {len(option['setups'])} setup(s)"
+                f"{' FLIP' if option['flip'] else '     '}  "
+                f"{'FEASIBLE' if option['feasible'] else 'infeasible'}  "
+                f"coverage {option['coverage'] * 100:.1f}%  [{setups}]  "
+                f"unmachinable {option['counts']['internal']}")
 
         if args.serve:
             serve_workdir(args.directory)

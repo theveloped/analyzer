@@ -103,6 +103,47 @@ accessibility rows):
 Because accessibility is precomputed, the whole search and all field
 derivations are numpy row operations — no geometry is touched.
 
+### Stage 3b — `setups`: CNC setup combinations & per-setup assignment
+
+The CNC mirror of the mold-orientation stage (`machining.py`,
+`pipeline.cnc_setups`, the `cnc/setups` analysis): over the same
+accessibility matrix, rank the **combinations of setups** that could
+machine the part. A machine is modelled as a tilt cone — a setup fixes the
+part once with a primary (untilted spindle) direction and covers the union
+of the accessibility rows of every sampled direction within `tilt` degrees
+of it. Tilt 0 is a plain 2.5D/3-axis setup (exactly one direction); tilt 90
+(the default, parameterized) is an indexed 5-axis (3+2) setup that can
+swing down to horizontal.
+
+Options are generated per machine by **greedy set cover seeded at every
+direction** (each added setup maximizes newly-covered faces and must gain
+`--min_setup_faces`), with marginal-gain ties preferring the **antipode of
+a chosen setup** — the classic flip re-fixture. The found set is then
+re-ordered so the biggest setup machines the bulk first, sequential
+marginals are recomputed (setups left redundant by the re-order are
+dropped), and duplicates collapse. Ranking is machine-first (a two-setup
+job on a plain 3-axis beats booking a 3+2), then fewer setups, coverage,
+flips before other ties. Faces no setup covers are **unmachinable regions**
+(numbered connected components — EDM / another process / more setups).
+
+Assignment reuses the molding membership machinery one-to-one: membership
+bit `s` = setup `s`'s *cover* reaches the face, whole-BREP-face validity,
+defaults (the **earliest valid setup** wins — machine as much as possible
+early; 254 = conflict/needs split, 255 = unmachinable), striped multi-valid
+faces with click-to-cycle overrides in the viewer, and **setup boundary
+lines** on the BREP edges between differently-assigned faces (the
+witness/blend lines between setups). Per-face fields are derived for the
+best option of each distinct (machine, setup count) signature, so a
+single-setup 3+2 plan is explorable next to the 3-axis flips instead of
+buried under equally-ranked pair variants.
+
+Cover from sampled directions inside the cone both underestimates a
+continuous tilt (finite sampling) and overestimates reality — the fixture
+and table occlude nothing yet, so a "feasible single 3+2 setup" typically
+still needs a flip for the clamped face. The fixture-aware 3D accessibility
+recheck is the planned next stage; keeping the cone half-angle a parameter
+means it can slot in as a per-setup effective-tilt reduction.
+
 ### BREP-aware STEP meshing
 
 STEP input is tessellated through the BREP itself (`brep.py`, OCCT via the

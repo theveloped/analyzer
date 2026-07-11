@@ -1,7 +1,30 @@
-"""CNC 3-axis machining process: tool-field precompute and composition."""
+"""CNC machining process: setup-combination search over the shared
+accessibility matrix, plus tool-field precompute and composition."""
 
 import pipeline
-from processes.base import AnalysisDef, AnalysisResult, Param, ProcessDef
+from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
+                            load_cached_result, store_result)
+
+SETUPS_SCHEMA = 1  # result schema version, salted into the cache key
+SETUP_FIELD_OPTIONS = 3  # options that get per-face assignment fields
+
+
+def run_setups(workdir, params, progress):
+    cache_params = {**params, "schema": SETUPS_SCHEMA}
+    cached = load_cached_result(workdir, "cnc", "setups", cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    result = pipeline.cnc_setups(
+        workdir, indexed=params["indexed"], tilt=params["tilt"],
+        max_setups=params["max_setups"],
+        min_setup_faces=params["min_setup_faces"], count=params["count"],
+        field_options=SETUP_FIELD_OPTIONS, progress=progress)
+
+    store_result(workdir, "cnc", "setups", cache_params, result["stats"],
+                 arrays=result["arrays"], field_meta=result["field_meta"])
+    return AnalysisResult(stats=result["stats"], fields=list(result["arrays"]))
 
 
 def _tips(params):
@@ -45,9 +68,28 @@ def run_compose(workdir, params, progress):
 
 PROCESS = ProcessDef(
     id="cnc",
-    label="CNC machining (3-axis)",
-    description="Tool reachability: tip gap, holder clearance and stickout fields per approach direction.",
+    label="CNC machining",
+    description="Setup combinations (3-axis / indexed 3+2) and tool reachability: tip gap, holder clearance and stickout fields per approach direction.",
     analyses=[
+        AnalysisDef(
+            id="setups",
+            label="Setup combinations",
+            description="Rank setup sequences that cover the part: plain 3-axis setups and indexed 5-axis (3+2) tilt-cone setups; per-BREP-face setup assignment with toggles.",
+            requires=["prep/directions"],
+            params=[
+                Param("indexed", "bool", default=True,
+                      label="Include indexed 5-axis (3+2) machine"),
+                Param("tilt", "number", default=90.0, unit="deg", min=0,
+                      label="3+2 head tilt cone half-angle"),
+                Param("max_setups", "int", default=4, min=1,
+                      label="Max setups per option"),
+                Param("min_setup_faces", "int", default=10, min=1,
+                      label="Min faces a setup must gain"),
+                Param("count", "int", default=10, min=1,
+                      label="Ranked options in stats"),
+            ],
+            run=run_setups,
+        ),
         AnalysisDef(
             id="precompute",
             label="Precompute tool fields",

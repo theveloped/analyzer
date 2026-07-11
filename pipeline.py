@@ -330,6 +330,117 @@ def mold_orientation(workdir, *, max_slides=2, slide_tollerance=2.0, count=10,
     return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
 
 
+def cnc_setups(workdir, *, indexed=True, tilt=90.0, max_setups=4,
+               min_setup_faces=10, count=10, field_options=3, progress=None):
+    """Search CNC setup combinations and derive per-face assignment fields.
+
+    Machines searched: a plain 3-axis (one direction per setup) and, with
+    ``indexed``, a 3+2 whose setups cover a ``tilt``-degree cone. Returns
+    {"stats": <JSON-safe>, "arrays": {...}, "field_meta": {...}} with
+    membership/region/brep fields for up to `field_options` options —
+    picked as the best of each distinct (machine, setup count) signature
+    within the reported top `count`, so a single-setup 3+2 plan is
+    explorable next to the 3-axis flips instead of buried under them.
+    stats["field_options"] maps field index k -> index into
+    stats["options"]. The brep fields need brep_faces.npy (STEP-meshed
+    parts); they are skipped otherwise.
+    """
+    import machining
+    import molding
+
+    verts, faces = load_mesh_arrays(workdir)
+    directions = np.load(os.path.join(workdir, DIRECTIONS_FILE))
+    accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))
+
+    brep_path = os.path.join(workdir, BREP_FACES_FILE)
+    brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
+
+    machines = [("3-axis", 0.0)]
+    if indexed:
+        machines.append(("3+2", float(tilt)))
+
+    _report(progress, 0.1, "searching setup combinations")
+    options = machining.setup_search(
+        directions, accessibility, machines=machines, max_setups=max_setups,
+        min_setup_faces=min_setup_faces)
+
+    reported = options[:count]
+    picked, signatures = [], set()
+    for index, option in enumerate(options):
+        signature = (option["machine"], len(option["setups"]))
+        if signature in signatures:
+            continue
+        signatures.add(signature)
+        if index >= count:
+            # a signature's best plan ranked past the report cut — append
+            # it so every field option is present in stats["options"]
+            reported.append(option)
+            index = len(reported) - 1
+        picked.append(index)
+        if len(picked) == field_options:
+            break
+
+    _report(progress, 0.5, "deriving membership fields")
+    pairs, _ = molding.face_adjacency(faces)
+
+    covers = {}
+    arrays, field_meta = {}, {}
+    for k, index in enumerate(picked):
+        option = reported[index]
+        if option["machine"] not in covers:
+            covers[option["machine"]] = machining.machine_cover(
+                directions, accessibility, option["tilt"])
+        cover = covers[option["machine"]]
+
+        setup_dirs = [s["direction"] for s in option["setups"]]
+        membership = machining.setup_membership(setup_dirs, cover)
+        region, region_counts = molding.internal_regions(membership, pairs,
+                                                         len(faces))
+        labels, colors = machining.setup_labels_colors(
+            [s["vector"] for s in option["setups"]])
+
+        common = {"kind": "setup_membership", "option": index,
+                  "machine": option["machine"], "features": len(setup_dirs),
+                  "labels": labels, "colors": colors,
+                  "conflict_color": machining.CATEGORY_COLORS["conflict"],
+                  "internal_color": machining.CATEGORY_COLORS["unmachinable"]}
+        arrays[f"membership_{k}"] = membership
+        field_meta[f"membership_{k}"] = {
+            **common, "variant": "membership", "association": "face",
+            "role": "category", "dtype": "u4"}
+        arrays[f"internal_region_{k}"] = region
+        field_meta[f"internal_region_{k}"] = {
+            **common, "variant": "internal_region", "association": "face",
+            "role": "category", "dtype": "u4", "regions": len(region_counts),
+            "region_counts": region_counts}
+
+        if brep_ids is not None:
+            valid = molding.brep_validity(membership, brep_ids,
+                                          len(setup_dirs))
+            arrays[f"brep_valid_{k}"] = valid
+            field_meta[f"brep_valid_{k}"] = {
+                **common, "variant": "brep_valid", "association": "none",
+                "role": "data", "dtype": "u4", "count": int(len(valid))}
+            defaults = machining.setup_defaults(membership, valid, brep_ids)
+            arrays[f"brep_default_{k}"] = defaults
+            field_meta[f"brep_default_{k}"] = {
+                **common, "variant": "brep_default", "association": "none",
+                "role": "data", "dtype": "u1", "count": int(len(defaults))}
+
+    for option in options:
+        option.pop("machine_rank", None)
+
+    stats = {
+        "schema": 1,
+        "face_count": int(accessibility.shape[1]),
+        "direction_count": int(directions.shape[0]),
+        "brep": brep_ids is not None,
+        "options": reported,
+        "field_options": picked,
+    }
+    return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
+
+
 def thickness_highlights(faces, thickness, hi=1.3):
     """Face indices whose three vertices all exceed hi * mean thickness."""
     mask = thickness > hi * float(np.mean(thickness))

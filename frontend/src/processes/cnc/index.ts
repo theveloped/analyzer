@@ -5,13 +5,34 @@ import { CncControls } from './Controls';
 import {
   accessMode, classMode, diffMode, gapMode, stickoutMode, unifiedMode,
 } from './modes';
+import { loadSetups, setupsMode } from './setups';
 import { currentSource, currentTip } from './sources';
 
 async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
-  const source = currentSource(ctx.manifest, ctx.params);
-  if (!source) return [];
-  const tip = currentTip(source, ctx.params);
   const lines: string[] = [];
+
+  try {
+    const data = await loadSetups(ctx);
+    const labels: string[] = data.desc.params.labels;
+    const b = data.brepIds[face];
+    const bits: string[] = [];
+    for (let s = 0; s < labels.length; s++) {
+      if ((data.membership[face] >>> s) & 1) bits.push(labels[s]);
+    }
+    lines.push(`machinable in: ${bits.join(', ') || 'nothing (unmachinable)'}`);
+    const cat = data.current[b];
+    const catName = cat === 255
+      ? `unmachinable region ${data.region[face] || ''}`
+      : cat === 254 ? 'conflict / needs split' : labels[cat];
+    const overridden = cat !== data.defaults[b] ? ' (override)' : '';
+    lines.push(`assigned: ${catName}${overridden}`);
+  } catch {
+    // no setups result — skip those lines
+  }
+
+  const source = currentSource(ctx.manifest, ctx.params);
+  if (!source) return lines;
+  const tip = currentTip(source, ctx.params);
   const d = ctx.directions[source.direction];
   const dot = ctx.normals[3 * face] * d[0] + ctx.normals[3 * face + 1] * d[1]
     + ctx.normals[3 * face + 2] * d[2];
@@ -33,8 +54,8 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
 export const cncPlugin: ProcessPlugin = {
   processId: 'cnc',
   label: 'CNC machining',
-  modes: [unifiedMode, accessMode, classMode, gapMode, stickoutMode, diffMode,
-          brepFacesMode, highlightsMode],
+  modes: [setupsMode, unifiedMode, accessMode, classMode, gapMode,
+          stickoutMode, diffMode, brepFacesMode, highlightsMode],
   defaults: () => ({
     source: 0,
     tip: 0,
@@ -46,6 +67,10 @@ export const cncPlugin: ProcessPlugin = {
     wallTol: 1.0,
     sideMill: true,
     mask: true,
+    setupsResult: 0,
+    setupsOption: 0,
+    showLines: true,
+    showArrows: true,
   }),
   Controls: CncControls,
   inspect,
