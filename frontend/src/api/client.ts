@@ -62,3 +62,19 @@ export async function putOverrides(
   });
   if (!res.ok) throw new Error(`saving overrides failed: ${res.status}`);
 }
+
+export async function postEjectorSimulate<T>(
+  partId: string, body: Record<string, any>,
+): Promise<T> {
+  const res = await fetch(
+    `/api/parts/${encodeURIComponent(partId)}/ejector/simulate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `ejector simulation failed: ${res.status}`);
+  }
+  return res.json();
+}

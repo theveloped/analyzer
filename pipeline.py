@@ -838,6 +838,112 @@ def sprue_proposals(workdir, *, skeleton, skeleton_hash,
     return stats, arrays, field_meta
 
 
+def ejection_sticking(workdir, *, skeleton, skeleton_hash, grip_deg=15.0,
+                      mu=0.5, p_shrink=0.5, orientation_option=0,
+                      progress=None):
+    """Draft-scaled wall sticking model for ejector-pin simulation.
+
+    Per-face draft angle relative to the mold pull axis, grip mask and
+    release traction (the force distribution ejector pins must overcome),
+    plus the same loads aggregated per clustered skeleton node for the
+    interactive stiffness solve. A mold_orientation result supplies the
+    pull axis and restricts gripping to the B/core side when present;
+    otherwise the pull falls back to +Z with a degraded-confidence note.
+    Returns (stats, arrays, field_meta) — storing is the caller's job.
+    """
+    import ejection
+
+    verts, faces = load_mesh_arrays(workdir)
+    faces = faces.astype(np.int64, copy=False)
+    radii = np.asarray(skeleton["cluster_radii"], dtype=np.float64)
+    vert_node = np.asarray(skeleton["cluster_vert_node"])
+
+    _report(progress, 0.1, "face geometry")
+    normals, areas = ejection.face_geometry(verts, faces)
+
+    # pull axis + B-side scope from the newest mold orientation, if any
+    mold_hash, mold_payload, mold_arrays = _latest_mold_orientation(workdir)
+    pull = np.array([0.0, 0.0, 1.0])
+    scope = None
+    orientation = {"used": False, "reason": "no mold_orientation result"}
+    if mold_payload is not None:
+        options = mold_payload.get("stats", {}).get("options", [])
+        option = int(orientation_option)
+        if not 0 <= option < len(options):
+            option = 0
+        if options:
+            arrows = options[option].get("arrows", [])
+            direction = next((arrow["direction"] for arrow in arrows
+                              if arrow.get("kind") == "main_b"), None)
+            if direction is not None:
+                pull = np.asarray(direction, dtype=np.float64)
+                orientation = {"used": True, "hash": mold_hash,
+                               "option": option, "brep": False}
+        if orientation["used"] and mold_arrays is not None \
+                and f"membership_{option}" in mold_arrays:
+            brep_path = os.path.join(workdir, BREP_FACES_FILE)
+            brep_ids = (np.load(brep_path) if os.path.exists(brep_path)
+                        else None)
+            default_name = f"brep_default_{option}"
+            if brep_ids is not None and default_name in mold_arrays:
+                defaults = mold_arrays[default_name]
+                scope = defaults[brep_ids.astype(np.int64)] == 1  # side B
+                orientation["brep"] = True
+            else:
+                membership = mold_arrays[f"membership_{option}"]
+                scope = (membership & 2) > 0  # reachable from side B
+
+    _report(progress, 0.4, "sticking forces")
+    draft = ejection.draft_angles(normals, pull)
+    grip, face_force = ejection.sticking_forces(
+        normals, areas, pull, grip_deg=grip_deg, mu=mu, p_shrink=p_shrink,
+        scope=scope)
+    vert_force = ejection.vertex_loads(faces, face_force, len(verts))
+    node_load, lost = ejection.node_loads(vert_force, vert_node, len(radii))
+
+    arrays = {
+        "draft_deg": draft.astype("f4"),
+        "grip_faces": grip.astype(np.uint8),
+        "vert_force": vert_force.astype("f4"),
+        "node_load": node_load.astype("f4"),
+    }
+    field_meta = {
+        "draft_deg": {"kind": "ejection_draft", "association": "face",
+                      "role": "scalar", "units": "deg", "dtype": "f4"},
+        "grip_faces": {"kind": "ejection_grip", "association": "face",
+                       "role": "mask", "dtype": "u1"},
+        "vert_force": {"kind": "ejection_sticking", "association": "vertex",
+                       "role": "scalar", "units": "N", "dtype": "f4"},
+        "node_load": {"kind": "ejection_sticking", "association": "graph",
+                      "graph": "clustered", "role": "scalar", "units": "N",
+                      "dtype": "f4", "length": int(node_load.size),
+                      "count": int(node_load.shape[0])},
+    }
+    total = float(face_force.sum())
+    stats = {
+        "schema": 1,
+        "skeleton_hash": skeleton_hash,
+        "pull": [float(c) for c in pull],
+        "orientation": orientation,
+        "confidence": "full" if orientation["used"] else "no_orientation",
+        "grip_deg": float(grip_deg),
+        "mu": float(mu),
+        "p_shrink": float(p_shrink),
+        "totals": {
+            "sticking_force_n": total,
+            "gripping_area_mm2": float(areas[grip].sum()),
+            "gripping_faces": int(grip.sum()),
+        },
+        "lost_load_fraction": lost,
+        "nodes": int(len(radii)),
+        "edges": int(np.asarray(skeleton["cluster_edges"]).size // 2),
+    }
+    logger.info(
+        f"ejection sticking: {stats['totals']['gripping_faces']} gripping "
+        f"faces, total {total:.1f} N, confidence {stats['confidence']}")
+    return stats, arrays, field_meta
+
+
 def highlight_union(workdir, include=(), exclude=()):
     """Union of accessibility rows (or its inverse) as highlighted faces."""
     accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))

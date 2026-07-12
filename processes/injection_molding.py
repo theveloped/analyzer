@@ -21,6 +21,7 @@ ASSIGNMENT_OPTIONS = 3  # options that get per-face assignment fields
 MOLD_SCHEMA = 2  # result schema version, salted into the cache key
 SPRUE_SCHEMA = 1  # sprue_proposals schema version, salted into the cache key
 SKELETON_SCHEMA = 2  # wall_skeleton schema (2: grid clustering), cache salt
+EJECTION_SCHEMA = 1  # ejection_sticking schema version, cache salt
 
 SKELETON_PARAMS = ("max_radius", "min_radius", "cluster_factor")
 
@@ -149,6 +150,37 @@ def run_sprue_proposals(workdir, params, progress):
     return AnalysisResult(stats=stats, fields=list(arrays))
 
 
+def run_ejection_sticking(workdir, params, progress):
+    cache_params = {**params, "schema": EJECTION_SCHEMA}
+    cached = load_cached_result(workdir, "injection_molding",
+                                "ejection_sticking", cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    def scaled(lo, hi):
+        if progress is None:
+            return None
+        return lambda f, m: progress(lo + (hi - lo) * f, m)
+
+    # the skeleton is a cache-aware sub-run: shared params -> shared result
+    run_wall_skeleton(workdir, params, scaled(0.0, 0.6))
+    skel_cache = skeleton_cache_params(params)
+    skeleton = load_result_arrays(workdir, "injection_molding",
+                                  "wall_skeleton", skel_cache)
+
+    stats, arrays, field_meta = pipeline.ejection_sticking(
+        workdir, skeleton=skeleton, skeleton_hash=params_hash(skel_cache),
+        grip_deg=params["grip_deg"], mu=params["mu"],
+        p_shrink=params["p_shrink"],
+        orientation_option=params["orientation_option"],
+        progress=scaled(0.6, 1.0))
+
+    store_result(workdir, "injection_molding", "ejection_sticking",
+                 cache_params, stats, arrays=arrays, field_meta=field_meta)
+    return AnalysisResult(stats=stats, fields=list(arrays))
+
+
 PROCESS = ProcessDef(
     id="injection_molding",
     label="Injection molding",
@@ -252,6 +284,30 @@ PROCESS = ProcessDef(
                       label="Weight: air-trap indicator"),
             ],
             run=run_sprue_proposals,
+        ),
+        AnalysisDef(
+            id="ejection_sticking",
+            label="Ejection sticking",
+            description="Draft-scaled mold sticking forces per face and per skeleton node — the loads the interactive ejector-pin simulation solves against.",
+            requires=[],  # skeleton computed internally; mold_orientation optional
+            params=[
+                Param("max_radius", "number", default=5.0, unit="mm",
+                      label="Max sphere radius (skeleton)"),
+                Param("min_radius", "number", default=0.1, unit="mm",
+                      label="Min node radius (skeleton)"),
+                Param("cluster_factor", "number", default=1.0, min=0.1,
+                      label="Cluster radius factor (skeleton)"),
+                Param("grip_deg", "number", default=15.0, unit="deg", min=0,
+                      max=90, label="Grip draft threshold"),
+                Param("mu", "number", default=0.5, min=0,
+                      label="Steel-polymer friction coefficient"),
+                Param("p_shrink", "number", default=0.5, unit="MPa", min=0,
+                      label="Shrinkage contact pressure"),
+                Param("orientation_option", "int", default=0, min=0,
+                      max=ASSIGNMENT_OPTIONS - 1,
+                      label="Mold orientation option"),
+            ],
+            run=run_ejection_sticking,
         ),
     ],
 )

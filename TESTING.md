@@ -206,6 +206,32 @@ painting with a weld-front overlay, an all-candidates score heatmap
 toggle, and "open in fill-flow mode" to carry the gate into the
 interactive view.
 
+## Ejector pins (sticking model + stiffness solve)
+
+`ejection_sticking` estimates how the part grips the mold after shrinkage:
+per-face draft angle vs the pull axis (from the mold orientation when
+present, +Z otherwise), a grip mask (draft below a threshold, restricted
+to B/core-reachable faces when orientation data exists), and a release
+traction `p_shrink · area · max(mu·cosθ − sinθ, 0)` per face — stored as a
+per-vertex heatmap and aggregated per skeleton node. Pin layouts are then
+solved interactively by `POST /api/parts/{id}/ejector/simulate`: a 1-DOF
+deflection model along the pull axis over the clustered skeleton (edge
+springs `3·E·I/L³` with `I = (π/4)r⁴`), pins as supports, sticking forces
+as loads — returning the deflection field plus per-pin force, pressure and
+utilization against an allowable. Deflections are indicative (the spring
+constant is uncalibrated); comparisons between layouts are the product.
+
+```bash
+python test_ejector.py   # analytic wall sticking, chain-spring deflection,
+                         # pin-layout comparisons, equilibrium, round-trip
+```
+
+In the UI: injection molding tab → Compute "Ejection sticking" → the
+"Ejector pins" view: sticking-force heatmap (or a draft-angle view via the
+checkbox), click the part to place pins at the selected diameter, click a
+pin to remove it; the deflection heatmap, utilization-colored pin markers
+and the per-pin force/pressure list update after every change.
+
 Catalog math: of the 16 x 13 nose-radius/diameter grid, ~156 combinations are
 valid (rc <= D/2). Per direction that is ~156 tip closings at ~8 s each
 (pixel 0.1 on a 100 mm part) ~ 20 min once, plus ~1 s per clearance radius —

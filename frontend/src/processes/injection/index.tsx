@@ -20,6 +20,10 @@ import {
 import {
   loadSprue, markerGraph, sprueResults, weldSegments, type Proposal,
 } from './sprue';
+import {
+  loadSticking, simulateCached, stickingResults,
+  type EjectorSimResponse, type Pin,
+} from './ejector';
 
 const CONFLICT_FEATURE = 254;
 const INTERNAL_FEATURE = 255;
@@ -461,6 +465,131 @@ const sprueMode: ViewMode = {
   },
 };
 
+const PIN_OVER: RGB = [1, 0.15, 0.15];
+
+/** Publish the latest simulation summary for the Controls pin list.
+ * paintKey includes viewerParams, so the JSON-equality guard is what keeps
+ * this from looping the repaint. */
+function publishEjSim(sim: EjectorSimResponse | null) {
+  const summary = sim && {
+    pins: sim.pins.map((p) => ({
+      force_n: p.force_n, pressure_mpa: p.pressure_mpa,
+      utilization: p.utilization, over_limit: p.over_limit,
+    })),
+    max_deflection_mm: sim.stats.max_deflection_mm,
+    total_sticking_n: sim.stats.total_sticking_n,
+  };
+  const current = useStore.getState().viewerParams.injection_molding?.ejSim;
+  if (JSON.stringify(current ?? null) !== JSON.stringify(summary)) {
+    useStore.getState().setViewerParam('injection_molding', 'ejSim', summary);
+  }
+}
+
+const ejectorMode: ViewMode = {
+  id: 'ejector',
+  label: 'Ejector pins',
+  async paint(ctx): Promise<PaintInfo> {
+    const results = stickingResults(ctx);
+    const result = results[ctx.params.stickResult ?? 0] ?? results[0];
+    if (!result) {
+      throw new Error('no ejection_sticking result yet — run the analysis below');
+    }
+    const data = await loadSticking(ctx, result);
+    const sk = data.skeleton;
+    const pins: Pin[] = ctx.params.pins ?? [];
+    const confidence = result.stats.confidence === 'full' ? ''
+      : '\nno mold orientation result — pull assumed +Z, all steep faces grip';
+
+    if (ctx.params.ejShowDraft) {
+      publishEjSim(null);
+      const grip = result.stats.grip_deg ?? 15;
+      ctx.paintFaces((f) => rampColor(1 - Math.min(data.draftDeg[f], 45) / 45));
+      return {
+        legend: [
+          { color: rampColor(1), label: `no draft — grips below ${grip}°` },
+          { color: rampColor(0), label: 'draft ≥ 45° / perpendicular' },
+        ],
+        stats: `draft angle vs pull axis [${result.stats.pull
+          .map((c: number) => c.toFixed(0)).join(', ')}]${confidence}`,
+      };
+    }
+
+    if (!pins.length) {
+      publishEjSim(null);
+      const vals = faceValues(ctx, data.vertForce, null);
+      const vMax = Math.max(percentile(data.vertForce, 0.98), 1e-9);
+      ctx.paintFaces((f) => (vals[f] > 0 ? rampColor(Math.min(vals[f] / vMax, 1)) : COL.ok));
+      return {
+        legend: [
+          { color: rampColor(1), label: 'sticks hard (release force)' },
+          { color: COL.ok, label: 'no grip' },
+        ],
+        stats: `total sticking force ${result.stats.totals.sticking_force_n.toFixed(0)} N — `
+          + `click the part to place an ejector pin${confidence}`,
+      };
+    }
+
+    const sim = await simulateCached(ctx.manifest.part.id, {
+      result_hash: result.hash,
+      pins,
+      E: parseFloat(ctx.params.ejE) || 2000,
+      allowable_pressure: parseFloat(ctx.params.ejAllow) || 80,
+    });
+    publishEjSim(sim);
+
+    // deflection per node -> per vertex -> per face (fill-flow pattern)
+    const deflection = sim.deflection;
+    const finite = new Float32Array(
+      deflection.filter((w): w is number => w != null));
+    // p95 scale: sliver-chain outliers must not wash out the bulk field
+    const wMax = Math.max(percentile(finite, 0.95), 1e-12);
+    const vertexW = new Float32Array(ctx.manifest.mesh!.counts.verts).fill(NaN);
+    for (let v = 0; v < vertexW.length; v++) {
+      const node = sk.vertNode[v];
+      const w = node !== SENTINEL ? deflection[node] : null;
+      if (w != null) vertexW[v] = w;
+    }
+    const vals = faceValues(ctx, vertexW, null);
+    ctx.paintFaces((f) => (isNaN(vals[f]) ? COL.inaccess : rampColor(vals[f] / wMax)));
+
+    // pins as marker-only graph dots (visible through the mesh)
+    const markerScale = Math.max(2 * percentile(sk.radii, 0.98), 1);
+    const positions = new Float32Array(pins.flatMap((p) => p.point));
+    const radii = new Float32Array(pins.map(
+      (p) => Math.max(p.diameter, markerScale)));
+    ctx.setGraph(`ejector:${result.hash}:${JSON.stringify(pins)}`,
+                 positions, new Uint32Array(0), radii);
+    ctx.paintGraph((m) => (sim.pins[m]?.over_limit
+      ? PIN_OVER : rampColor(Math.min(sim.pins[m]?.utilization ?? 0, 1))));
+
+    const worst = Math.max(...sim.pins.map((p) => p.utilization));
+    const unsupported = sim.stats.unsupported
+      .reduce((sum, u) => sum + u.load_n, 0);
+    // bulk (p95) deflection is the headline: thin sliver chains in the
+    // skeleton can blow up the raw max far beyond anything physical
+    const bulk = sim.stats.p95_deflection_mm;
+    const max = sim.stats.max_deflection_mm;
+    const sliver = max > 5 * Math.max(bulk, 1e-9)
+      ? ' (local thin slivers flex much further — model unreliable there)'
+      : '';
+    return {
+      legend: [
+        { color: rampColor(0), label: 'pin lightly loaded / deflects least' },
+        { color: rampColor(1), label: 'pin near limit / deflects most' },
+        { color: PIN_OVER, label: 'pin over allowable pressure' },
+        { color: COL.inaccess, label: 'unsupported / no skeleton node' },
+      ],
+      stats: `sticking ${sim.stats.total_sticking_n.toFixed(0)} N · `
+        + `bulk deflection ${bulk.toFixed(3)} mm (indicative)${sliver} · `
+        + `worst pin ${(100 * worst).toFixed(0)}% of allowable`
+        + (unsupported > 1e-6
+          ? `\n${unsupported.toFixed(0)} N of sticking load is on regions no pin supports`
+          : '')
+        + `\nclick to add a pin · click a pin to remove it${confidence}`,
+    };
+  },
+};
+
 const thicknessMode = heatmapMode(
   'thickness', 'Wall thickness heatmap',
   (ctx) => scalarField(ctx, 'thickness', 'thickness'),
@@ -559,6 +688,12 @@ function InjectionControls() {
   const sprueResult = sprueResultList[params.sprueResult ?? 0] ?? sprueResultList[0];
   const proposals: Proposal[] = sprueResult?.stats.proposals ?? [];
 
+  const stickingList = (manifest?.results ?? []).filter(
+    (r) => r.process === 'injection_molding'
+      && r.analysis === 'ejection_sticking' && r.stats.schema === 1);
+  const pins: Pin[] = params.pins ?? [];
+  const ejSim = params.ejSim ?? null;
+
   return (
     <>
       {modeId === 'sprue' && (
@@ -631,6 +766,84 @@ function InjectionControls() {
 
           <div className="hint">
             click a marker on the part (or a proposal above) to inspect its fill
+          </div>
+        </>
+      )}
+
+      {modeId === 'ejector' && (
+        <>
+          <label>Result (parameter set)</label>
+          <select
+            value={params.stickResult ?? 0}
+            onChange={(e) => set('stickResult', parseInt(e.target.value))}
+          >
+            {stickingList.map((r, i) => (
+              <option key={r.hash} value={i}>
+                {`${(r.stats.totals?.sticking_force_n ?? 0).toFixed(0)} N sticking · ${r.hash}`}
+              </option>
+            ))}
+            {!stickingList.length && <option value={0}>no results yet</option>}
+          </select>
+
+          <div className="row">
+            <div>
+              <label>Pin diameter (mm)</label>
+              <select
+                value={params.pinDiameter ?? 3}
+                onChange={(e) => set('pinDiameter', parseFloat(e.target.value))}
+              >
+                {[2, 3, 4, 6, 8].map((d) => (
+                  <option key={d} value={d}>{`Ø${d}`}</option>
+                ))}
+              </select>
+            </div>
+            <label className="check">
+              <input
+                type="checkbox" checked={params.ejShowDraft === true}
+                onChange={(e) => set('ejShowDraft', e.target.checked)}
+              />
+              draft-angle view
+            </label>
+          </div>
+
+          <div className="row">
+            <NumberParam
+              label="E modulus (MPa)" value={params.ejE ?? 2000}
+              onChange={(v) => set('ejE', v)}
+            />
+            <NumberParam
+              label="Allowable pin pressure (MPa)" value={params.ejAllow ?? 80}
+              onChange={(v) => set('ejAllow', v)}
+            />
+          </div>
+
+          {pins.length > 0 && (
+            <div className="proposal-list">
+              {pins.map((p, i) => (
+                <button
+                  key={i}
+                  className={ejSim?.pins?.[i]?.over_limit ? 'over' : ''}
+                  onClick={() => set('pins', pins.filter((_, j) => j !== i))}
+                  title="remove this pin"
+                >
+                  {`#${i} · Ø${p.diameter}`}
+                  {ejSim?.pins?.[i] && (
+                    ` · ${ejSim.pins[i].force_n.toFixed(1)} N`
+                    + ` · ${ejSim.pins[i].pressure_mpa.toFixed(1)} MPa`
+                    + ` (${(100 * ejSim.pins[i].utilization).toFixed(0)}%)`
+                  )}
+                  {' ✕'}
+                </button>
+              ))}
+            </div>
+          )}
+          {pins.length > 0 && (
+            <button onClick={() => set('pins', [])}>clear pins</button>
+          )}
+
+          <div className="hint">
+            click the part to add a pin at the chosen diameter ·
+            click a pin (marker or list) to remove it
           </div>
         </>
       )}
@@ -750,8 +963,8 @@ function InjectionControls() {
 export const injectionPlugin: ProcessPlugin = {
   processId: 'injection_molding',
   label: 'Injection molding',
-  modes: [assignmentMode, sprueMode, thicknessMode, gapsMode, skeletonMode,
-          brepFacesMode, highlightsMode],
+  modes: [assignmentMode, sprueMode, ejectorMode, thicknessMode, gapsMode,
+          skeletonMode, brepFacesMode, highlightsMode],
   defaults: () => ({
     result: 0, option: 0,
     showLines: true, showArrows: true,
@@ -759,13 +972,35 @@ export const injectionPlugin: ProcessPlugin = {
     minGap: 0.5, gapScale: '',
     skelResult: 0, graph: 'cluster', gate: null,
     sprueResult: 0, proposal: null, showCandidates: false, showWeld: true,
+    stickResult: 0, pins: [], pinDiameter: 3, ejE: 2000, ejAllow: 80,
+    ejShowDraft: false, ejSim: null,
   }),
   Controls: InjectionControls,
   inspect,
-  onPick(face, point) {
+  onPick(face, point, ctx) {
     const { modeId, setViewerParam } = useStore.getState();
     if (modeId === 'skeleton') {
       setViewerParam('injection_molding', 'gate', point);
+      return true;
+    }
+    if (modeId === 'ejector') {
+      // click near an existing pin removes it, anywhere else adds one
+      const params = useStore.getState().viewerParams.injection_molding ?? {};
+      const pins: Pin[] = params.pins ?? [];
+      let min = Infinity;
+      let max = -Infinity;
+      for (let i = 0; i < ctx.verts.length; i++) {
+        if (ctx.verts[i] < min) min = ctx.verts[i];
+        if (ctx.verts[i] > max) max = ctx.verts[i];
+      }
+      const snap = 0.05 * (max - min) * Math.sqrt(3);
+      const hit = pins.findIndex((p) => Math.hypot(
+        p.point[0] - point[0], p.point[1] - point[1],
+        p.point[2] - point[2]) < snap);
+      const next = hit >= 0
+        ? pins.filter((_, i) => i !== hit)
+        : [...pins, { point, diameter: params.pinDiameter ?? 3 }];
+      setViewerParam('injection_molding', 'pins', next);
       return true;
     }
     if (modeId === 'sprue' && pickableProposals) {
