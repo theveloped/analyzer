@@ -80,6 +80,19 @@ def load_mesh_arrays(workdir):
     return verts, faces
 
 
+def auto_subdivide(diagonal):
+    """Default analysis-mesh edge target from the part size.
+
+    Every analysis anchors on vertices (thickness, skeleton nodes), so the
+    canonical mesh needs bounded, well-spaced edges everywhere — including
+    the large flat faces a curvature-driven tessellation leaves nearly
+    empty. 0.5% of the bounding-box diagonal, clamped to a practical
+    range; the wall_skeleton mesh-spec gate warns when thin walls call for
+    a finer manual setting.
+    """
+    return float(np.clip(0.005 * diagonal, 0.3, 2.0))
+
+
 def mesh_part(input_path, workdir=None, *, heal=False, subdivide=None, offset=None,
               tollerance=1e-1, deflection=0.5, progress=None):
     """Canonicalize an input STL/STEP into a part working directory.
@@ -104,6 +117,10 @@ def mesh_part(input_path, workdir=None, *, heal=False, subdivide=None, offset=No
         verts, faces, brep_ids, surface_types = brep.mesh_step(
             input_path, deflection=deflection)
 
+        if subdivide is None:  # blank = auto; 0 disables explicitly
+            diagonal = float(np.linalg.norm(verts.max(0) - verts.min(0)))
+            subdivide = auto_subdivide(diagonal)
+            logger.info(f"auto subdivide target {subdivide:.2f} mm")
         if subdivide:
             _report(progress, 0.4, "subdividing mesh (tag preserving)")
             verts, faces, brep_ids = brep.subdivide_tagged(
@@ -115,6 +132,10 @@ def mesh_part(input_path, workdir=None, *, heal=False, subdivide=None, offset=No
         _report(progress, 0.0, "loading mesh")
         mesh = load_mesh(input_path, heal=heal, offset=offset, tollerance=tollerance)
 
+        if subdivide is None:  # blank = auto; 0 disables explicitly
+            box = mesh.computeBoundingBox()
+            subdivide = auto_subdivide((box.max - box.min).length())
+            logger.info(f"auto subdivide target {subdivide:.2f} mm")
         if subdivide:
             _report(progress, 0.5, "subdividing mesh")
             mesh = subdivide_mesh(mesh, subdivide)

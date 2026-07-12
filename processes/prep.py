@@ -58,7 +58,7 @@ PROCESS = ProcessDef(
                 Param("heal", "bool", default=False,
                       label="Heal (voxel remesh, for dirty STL)"),
                 Param("subdivide", "number", default=None, unit="mm", min=0,
-                      label="Subdivide max edge length (clean STEP)"),
+                      label="Subdivide max edge length (blank = auto, 0 = off)"),
                 Param("offset", "number", default=None, unit="mm",
                       label="Offset before storing"),
                 Param("tollerance", "number", default=1e-1, min=0,

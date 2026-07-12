@@ -37,7 +37,13 @@ python main.py mesh part.stl --heal --tollerance 0.15
 
 `--subdivide` splits edges without moving anything (planar faces stay planar,
 walls stay exactly 90°); face size is the reporting resolution, since results
-are per-face masks over per-vertex fields.
+are per-face masks over per-vertex fields. When left unset the mesh stage
+picks an automatic target from the part size (0.5% of the bounding-box
+diagonal, clamped to 0.3–2 mm), so every analysis mesh has bounded,
+well-spaced vertices even on large flat faces — a curvature-driven
+tessellation alone leaves those nearly empty, which starves the
+vertex-anchored thickness/skeleton analyses. Pass `--subdivide 0` to store
+the input tessellation untouched.
 
 Stage 2 — accessibility per direction. `--axes` prepends exact ±X/±Y/±Z as
 indices 0..5 (so +Z is index 4). `--relax` is important for endmill work:

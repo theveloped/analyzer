@@ -62,6 +62,28 @@ def main():
         if not ok:
             failures.append(f"{name}: {detail}")
 
+    # --- mesh stage: auto subdivide bounds edge lengths everywhere -------
+    print("=== mesh_part auto subdivide ===")
+    with tempfile.TemporaryDirectory() as tmp:
+        cube = mm.makeCube(mm.Vector3f(20, 20, 20), mm.Vector3f(0, 0, 0))
+        stl = os.path.join(tmp, "cube.stl")
+        mm.saveMesh(cube, stl)
+
+        target = pipeline.auto_subdivide(np.linalg.norm([20, 20, 20]))
+        pipeline.mesh_part(stl, os.path.join(tmp, "auto"))
+        verts, faces = pipeline.load_mesh_arrays(os.path.join(tmp, "auto"))
+        tri = verts[faces.astype(np.int64)]
+        edge_max = float(np.linalg.norm(
+            tri - np.roll(tri, -1, axis=1), axis=2).max())
+        check("auto subdivide bounds every edge (flats included)",
+              edge_max <= target * 1.001,
+              f"max edge {edge_max:.3f} mm vs auto target {target:.2f} mm")
+
+        pipeline.mesh_part(stl, os.path.join(tmp, "off"), subdivide=0)
+        _, faces_off = pipeline.load_mesh_arrays(os.path.join(tmp, "off"))
+        check("subdivide 0 disables refinement",
+              len(faces_off) == 12, f"{len(faces_off)} faces")
+
     # --- flat plate ------------------------------------------------------
     print("=== plate 20 x 20 x 2 ===")
     with tempfile.TemporaryDirectory() as workdir:
