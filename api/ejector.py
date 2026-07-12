@@ -16,6 +16,7 @@ import os
 import numpy as np
 
 import ejection
+from processes.injection_molding import EJECTION_SCHEMA
 
 
 def _load_result(workdir, analysis, result_hash):
@@ -51,7 +52,7 @@ def simulate(workdir, result_hash, pins, E=2000.0, allowable_pressure=80.0):
 
     payload, arrays = _load_result(workdir, "ejection_sticking", result_hash)
     stats = payload.get("stats", {})
-    if stats.get("schema") != 1:
+    if stats.get("schema") != EJECTION_SCHEMA:
         raise FileNotFoundError("unsupported ejection_sticking schema")
     skeleton_hash = stats["skeleton_hash"]
     try:

@@ -26,7 +26,8 @@ import gating
 import pipeline
 from analysis import get_mesh_data, subdivide_mesh
 from processes.base import apply_defaults, params_hash, store_result
-from processes.injection_molding import PROCESS, skeleton_cache_params
+from processes.injection_molding import (PROCESS, SPRUE_SCHEMA,
+                                         skeleton_cache_params)
 
 
 def make_plate():
@@ -70,7 +71,7 @@ def nearest_candidate(result_arrays, target):
 
 def load_arrays(workdir, params):
     from processes.base import load_result_arrays
-    cache_params = {**params, "schema": 1}
+    cache_params = {**params, "schema": SPRUE_SCHEMA}
     return load_result_arrays(workdir, "injection_molding",
                               "sprue_proposals", cache_params)
 
@@ -270,7 +271,7 @@ def main():
               str(by_id["candidate_subscores"]["params"]["metrics"]))
 
         from api.fields import result_field_bytes
-        result_hash = params_hash({**params, "schema": 1})
+        result_hash = params_hash({**params, "schema": SPRUE_SCHEMA})
         for name in ("candidate_points", "proposal_index", "best_fill",
                      "weld_edges_best"):
             entry = by_id[name]

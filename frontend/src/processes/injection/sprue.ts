@@ -38,7 +38,7 @@ export interface SprueData {
 export function sprueResults(ctx: ViewCtx): ResultEntry[] {
   return ctx.manifest.results.filter(
     (r) => r.process === 'injection_molding' && r.analysis === 'sprue_proposals'
-      && r.stats.schema === 1);
+      && r.stats.schema === 2);
 }
 
 function fieldDesc(ctx: ViewCtx, result: ResultEntry, name: string) {

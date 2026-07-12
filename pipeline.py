@@ -438,15 +438,83 @@ def _cluster_nodes(nodes, radii, cluster_factor):
     return labels, representative
 
 
+def _absorb_clusters(nodes, radii, labels, representative, raw_edges,
+                     absorb_factor, max_rounds=8):
+    """Merge curvature-artifact clusters into the member they belong to.
+
+    At a convex rounded rim or fillet the inscribed sphere measures the
+    local edge curvature, not the wall thickness, so walls grow chains of
+    tiny-radius nodes along their rims. Those clusters are absorbed into a
+    graph neighbor when their sphere is much smaller than AND overlaps the
+    neighbor's sphere — rim nodes hug their parent wall, while genuinely
+    thin members (hinges, webs) extend away from their thick neighbors and
+    only lose their junction nodes. Iterates because chains absorb layer by
+    layer. Returns (labels, representative, absorbed_count) with labels
+    compacted to the surviving clusters.
+    """
+    cluster_count = len(representative)
+    if absorb_factor <= 0 or cluster_count == 0:
+        return labels, representative, 0
+
+    rep_radius = radii[representative]
+    rep_pos = nodes[representative]
+    parent = np.arange(cluster_count)
+
+    def find(cluster):
+        while parent[cluster] != cluster:
+            parent[cluster] = parent[parent[cluster]]
+            cluster = parent[cluster]
+        return cluster
+
+    pairs = labels[raw_edges.astype(np.int64)]
+    pairs = np.unique(np.sort(pairs, axis=1), axis=0)
+    pairs = pairs[pairs[:, 0] != pairs[:, 1]]
+
+    absorbed = 0
+    for _ in range(max_rounds):
+        roots = np.fromiter((find(c) for c in range(cluster_count)),
+                            dtype=np.int64, count=cluster_count)
+        live = roots[pairs]
+        live = np.unique(np.sort(live[live[:, 0] != live[:, 1]], axis=1),
+                         axis=0)
+        merged = 0
+        for a, b in live:
+            root_a, root_b = find(a), find(b)
+            if root_a == root_b:
+                continue
+            small, big = ((root_a, root_b)
+                          if rep_radius[root_a] <= rep_radius[root_b]
+                          else (root_b, root_a))
+            if rep_radius[small] >= absorb_factor * rep_radius[big]:
+                continue
+            span = np.linalg.norm(rep_pos[small] - rep_pos[big])
+            if span <= rep_radius[small] + rep_radius[big]:
+                parent[small] = big
+                merged += 1
+        if merged == 0:
+            break
+        absorbed += merged
+
+    roots = np.fromiter((find(c) for c in range(cluster_count)),
+                        dtype=np.int64, count=cluster_count)
+    survivors, compact = np.unique(roots, return_inverse=True)
+    return compact[labels].astype(np.int64), representative[survivors], absorbed
+
+
 def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
-                  cluster_factor=1.0, progress=None):
+                  cluster_factor=1.0, absorb_factor=0.5, progress=None):
     """Wall thickness + medial skeleton graphs from inscribed spheres.
 
     Every vertex gets its maximal inscribed ("rolling") sphere; the sphere
     centers become skeleton nodes carrying the local wall radius, connected
     by the mesh edge adjacency (raw graph) and additionally merged into a
-    reduced clustered graph. Returns (stats, arrays, field_meta) — storing
-    the result is the caller's job.
+    reduced clustered graph, with curvature-artifact rim clusters absorbed
+    into their walls (_absorb_clusters). Stats include a mesh-resolution
+    spec (p95 edge length vs the median measured wall thickness) — the
+    workdir's single canonical mesh is shared by every analysis and
+    visualization, and this gate validates that its resolution is adequate
+    for thickness/skeleton work. Returns (stats, arrays, field_meta) —
+    storing the result is the caller's job.
     """
     from meshlib import mrmeshpy as mm
 
@@ -482,9 +550,28 @@ def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
     edges = vert_node[edges]
     raw_edges = edges[(edges != NODE_SENTINEL).all(axis=1)].astype(np.uint32)
 
+    # prune non-physical edges: an edge spanning far beyond its endpoint
+    # spheres comes from a degenerate sliver triangle in the tessellation —
+    # it cannot represent contiguous material at that radius, and one such
+    # edge can tether a whole region to the graph through a near-zero
+    # stiffness / huge flow resistance artifact
+    tri = verts[faces]
+    edge_lengths = np.linalg.norm(tri - np.roll(tri, -1, axis=1), axis=2)
+    mesh_edge = float(edge_lengths.mean())
+    a = raw_edges[:, 0].astype(np.int64)
+    b = raw_edges[:, 1].astype(np.int64)
+    span = np.linalg.norm(raw_nodes[a] - raw_nodes[b], axis=1)
+    reach = 4.0 * (raw_radii[a] + raw_radii[b])
+    physical = span <= np.maximum(reach, 4.0 * mesh_edge)
+    pruned = int((~physical).sum())
+    raw_edges = raw_edges[physical]
+
     _report(progress, 0.7, "clustering skeleton nodes")
     labels, representative = _cluster_nodes(raw_nodes, raw_radii,
                                             cluster_factor)
+    labels, representative, absorbed = _absorb_clusters(
+        raw_nodes, raw_radii, labels, representative, raw_edges,
+        absorb_factor)
     cluster_nodes = raw_nodes[representative]
     cluster_radii = raw_radii[representative]
     cluster_edges = labels[raw_edges.astype(np.int64)]
@@ -542,13 +629,29 @@ def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
         field_meta[f"{graph}_vert_node"] = graph_meta(
             "vert_map", graph_name, arrays[f"{graph}_vert_node"], "u4")
 
+    # mesh-resolution spec: a vertex-anchored skeleton needs mesh edges
+    # comfortably below the wall thickness it measures
     finite = thickness[np.isfinite(thickness)]
+    p95_edge = float(np.percentile(edge_lengths, 95))
+    median_thickness = float(np.median(finite)) if len(finite) else 0.0
+    ratio = p95_edge / max(median_thickness, 1e-9)
+    mesh_spec = {
+        "p95_edge_mm": p95_edge,
+        "median_thickness_mm": median_thickness,
+        "edge_thickness_ratio": ratio,
+        "status": "ok" if ratio <= 0.5 else
+                  "marginal" if ratio <= 1.0 else "coarse",
+    }
+
     stats = {
         "verts": vert_count,
         "raw_nodes": node_count,
         "raw_edges": int(len(raw_edges)),
         "cluster_nodes": int(len(cluster_nodes)),
         "cluster_edges": int(len(cluster_edges)),
+        "absorbed": int(absorbed),
+        "pruned_edges": pruned,
+        "mesh": mesh_spec,
         "mean_thickness": float(finite.mean()) if len(finite) else None,
         "min_thickness": float(finite.min()) if len(finite) else None,
         "corrected": int(corrected),
@@ -616,7 +719,7 @@ def _parting_tree(workdir, brep_default):
     return cKDTree(samples)
 
 
-def sprue_proposals(workdir, *, skeleton, skeleton_hash,
+def sprue_proposals(workdir, *, skeleton, skeleton_hash, mesh_spec=None,
                     min_gate_thickness=0.8, max_candidates=400,
                     thick_percentile=85.0, pack_factor=0.5,
                     edge_gate_distance=5.0, forbid_side="none",
@@ -809,11 +912,12 @@ def sprue_proposals(workdir, *, skeleton, skeleton_hash,
     }
 
     stats = {
-        "schema": 1,
+        "schema": 2,
         "skeleton_hash": skeleton_hash,
         "graph": "cluster",
         "nodes": int(len(radii)),
         "edges": int(len(edges)),
+        "mesh": mesh_spec,
         "orientation": orientation,
         "confidence": "full" if orientation["used"] else "no_orientation",
         "candidates": {
@@ -838,9 +942,9 @@ def sprue_proposals(workdir, *, skeleton, skeleton_hash,
     return stats, arrays, field_meta
 
 
-def ejection_sticking(workdir, *, skeleton, skeleton_hash, grip_deg=15.0,
-                      mu=0.5, p_shrink=0.5, orientation_option=0,
-                      progress=None):
+def ejection_sticking(workdir, *, skeleton, skeleton_hash, mesh_spec=None,
+                      grip_deg=15.0, mu=0.5, p_shrink=0.5,
+                      orientation_option=0, progress=None):
     """Draft-scaled wall sticking model for ejector-pin simulation.
 
     Per-face draft angle relative to the mold pull axis, grip mask and
@@ -921,8 +1025,9 @@ def ejection_sticking(workdir, *, skeleton, skeleton_hash, grip_deg=15.0,
     }
     total = float(face_force.sum())
     stats = {
-        "schema": 1,
+        "schema": 2,
         "skeleton_hash": skeleton_hash,
+        "mesh": mesh_spec,
         "pull": [float(c) for c in pull],
         "orientation": orientation,
         "confidence": "full" if orientation["used"] else "no_orientation",

@@ -40,6 +40,30 @@ def make_strip():
     return subdivide_mesh(strip, 0.8)
 
 
+def make_rounded_plate():
+    """Plate with rounded rims: a positive offset rounds every convex edge,
+    creating the curvature-artifact nodes the absorption pass must absorb."""
+    from analysis import offset_mesh
+    plate = mm.makeCube(mm.Vector3f(30, 30, 2), mm.Vector3f(-15, -15, 0))
+    return subdivide_mesh(offset_mesh(plate, 0.5, tollerance=0.1), 0.8)
+
+
+def make_web_bridge():
+    """Two thick plates bridged by a thin web — the web must SURVIVE
+    absorption (only its junction nodes overlap the plates' spheres)."""
+    a = mm.makeCube(mm.Vector3f(20, 20, 4), mm.Vector3f(-25, -10, 0))
+    b = mm.makeCube(mm.Vector3f(20, 20, 4), mm.Vector3f(5, -10, 0))
+    web = mm.makeCube(mm.Vector3f(12, 8, 0.6), mm.Vector3f(-6, -4, 0))
+    part = mm.boolean(a, b, mm.BooleanOperation.Union).mesh
+    part = mm.boolean(part, web, mm.BooleanOperation.Union).mesh
+    return subdivide_mesh(part, 0.4)
+
+
+def make_plate_at(subdivide):
+    plate = mm.makeCube(mm.Vector3f(40, 40, 2), mm.Vector3f(-20, -20, 0))
+    return subdivide_mesh(plate, subdivide)
+
+
 def prepare_workdir(workdir, mesh):
     verts, faces = get_mesh_data(mesh)
     np.save(os.path.join(workdir, pipeline.FINE_VERTS_FILE), verts)
@@ -225,6 +249,91 @@ def main():
             check(f"equilibrium ({name} pin layout)",
                   abs(total_pins - supported) < 1e-6 * max(supported, 1),
                   f"pins {total_pins:.6f} N vs supported {supported:.6f} N")
+
+    # --- rounded rims: absorption kills curvature slivers ----------------
+    print("=== rounded-rim plate: absorption ===")
+    with tempfile.TemporaryDirectory() as workdir:
+        prepare_workdir(workdir, make_rounded_plate())
+        result, params, result_hash = run_analysis(workdir)
+        from processes.base import load_result_arrays
+        skeleton = load_result_arrays(workdir, "injection_molding",
+                                      "wall_skeleton",
+                                      skeleton_cache_params(params))
+        radii = skeleton["cluster_radii"]
+        median_r = float(np.median(radii))
+        sliver_fraction = float(np.mean(radii < 0.3 * median_r))
+        check("rim slivers absorbed into the walls",
+              sliver_fraction < 0.05,
+              f"{100 * sliver_fraction:.1f}% of nodes below 0.3x median "
+              f"radius ({median_r:.2f} mm)")
+
+        response = simulate(workdir, result_hash, [pin(0, 0, 3)])
+        max_w = response["stats"]["max_deflection_mm"]
+        p95_w = response["stats"]["p95_deflection_mm"]
+        check("no sliver deflection blow-up",
+              max_w <= 5 * max(p95_w, 1e-12),
+              f"max {max_w:.4f} mm vs p95 {p95_w:.4f} mm")
+
+    # --- thin web between thick plates survives absorption ---------------
+    print("=== thin web bridge: flexibility preserved ===")
+    with tempfile.TemporaryDirectory() as workdir:
+        prepare_workdir(workdir, make_web_bridge())
+        result, params, result_hash = run_analysis(workdir)
+        from processes.base import load_result_arrays
+        skeleton = load_result_arrays(workdir, "injection_molding",
+                                      "wall_skeleton",
+                                      skeleton_cache_params(params))
+        nodes = skeleton["cluster_nodes"]
+        radii = skeleton["cluster_radii"]
+        web = (np.abs(nodes[:, 0]) < 3) & (radii < 0.5)
+        check("web interior nodes survive absorption", web.sum() > 0,
+              f"{int(web.sum())} web nodes (r < 0.5) at |x| < 3")
+
+        response = simulate(workdir, result_hash, [pin(-15, 0, 4)])
+        w = np.array([x if x is not None else np.nan
+                      for x in response["deflection"]])
+        near = np.nanmean(w[nodes[:, 0] < -5])
+        far = np.nanmean(w[nodes[:, 0] > 5])
+        check("far plate hangs on the flexible web",
+              far > 5 * max(near, 1e-12),
+              f"far plate {far:.4f} mm vs pinned plate {near:.6f} mm")
+
+    # --- mesh-resolution invariance + spec statuses ----------------------
+    print("=== resolution invariance and mesh spec ===")
+    medians, deflections, statuses = [], [], []
+    for subdivide in (0.6, 1.2):
+        with tempfile.TemporaryDirectory() as workdir:
+            prepare_workdir(workdir, make_plate_at(subdivide))
+            result, params, result_hash = run_analysis(workdir)
+            from processes.base import load_result_arrays
+            skeleton = load_result_arrays(workdir, "injection_molding",
+                                          "wall_skeleton",
+                                          skeleton_cache_params(params))
+            medians.append(float(np.median(skeleton["cluster_radii"])))
+            response = simulate(workdir, result_hash, [pin(0, 0, 2)])
+            deflections.append(response["stats"]["max_deflection_mm"])
+            statuses.append(result.stats["mesh"]["status"])
+    check("median radius resolution-invariant",
+          abs(medians[0] - medians[1]) < 0.1 * max(medians),
+          f"{medians[0]:.3f} vs {medians[1]:.3f} mm")
+    ratio = deflections[0] / max(deflections[1], 1e-12)
+    check("deflection resolution-invariant (±35%)",
+          1 / 1.35 < ratio < 1.35,
+          f"{deflections[0]:.4f} vs {deflections[1]:.4f} mm (x{ratio:.2f})")
+    check("fine meshes pass the spec", all(s == "ok" for s in statuses),
+          str(statuses))
+
+    # under-resolved meshes get flagged (subdivide is a max edge length, so
+    # actual edges land well below it — pick values that cross the bands)
+    for subdivide, expected in ((2.5, "marginal"), (6.0, "coarse")):
+        with tempfile.TemporaryDirectory() as workdir:
+            prepare_workdir(workdir, make_plate_at(subdivide))
+            result, _, _ = run_analysis(workdir)
+            spec = result.stats["mesh"]
+            check(f"subdivide {subdivide} flagged {expected}",
+                  spec["status"] == expected,
+                  f"ratio {spec['edge_thickness_ratio']:.2f} -> "
+                  f"{spec['status']} (in ejection stats)")
 
     # --- B-side scope over a synthetic orientation ----------------------
     print("=== B-side scope (synthetic mold_orientation) ===")

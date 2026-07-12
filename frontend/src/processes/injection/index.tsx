@@ -14,8 +14,8 @@ import type {
 } from '../../registry/types';
 import { useStore } from '../../state/store';
 import {
-  buildAdjacency, dijkstra, loadSkeleton, nearestNode, SENTINEL,
-  skeletonResults,
+  buildAdjacency, dijkstra, loadSkeleton, meshSpecNote, nearestNode,
+  SENTINEL, skeletonResults,
 } from './skeleton';
 import {
   loadSprue, markerGraph, sprueResults, weldSegments, type Proposal,
@@ -304,7 +304,8 @@ const skeletonMode: ViewMode = {
           { color: rampColor(0), label: `wide channel (≥ ${rMax.toFixed(2)} mm radius)` },
         ],
         stats: `${graphLabel} · ${sk.edges.length / 2} edges — `
-          + `click the part to place an injection gate`,
+          + `click the part to place an injection gate`
+          + meshSpecNote(result.stats),
       };
     }
 
@@ -339,7 +340,8 @@ const skeletonMode: ViewMode = {
       ],
       stats: `${graphLabel} — gate at node ${source}, `
         + `${((100 * reached) / vertexFill.length).toFixed(1)}% of vertices reached\n`
-        + `fill time = Σ length / r⁴ along the skeleton (relative units)`,
+        + `fill time = Σ length / r⁴ along the skeleton (relative units)`
+        + meshSpecNote(result.stats),
     };
   },
 };
@@ -405,8 +407,9 @@ const sprueMode: ViewMode = {
       + (p.gate_style !== 'unknown' ? ` ${p.gate_style}` : '')
       + (p.side !== 'unknown' ? ` ${p.side}` : ''))
       .join(' · ');
-    const confidence = stats.confidence === 'full' ? ''
-      : '\nno mold orientation result — side/parting filters skipped';
+    const confidence = (stats.confidence === 'full' ? ''
+      : '\nno mold orientation result — side/parting filters skipped')
+      + meshSpecNote(stats);
 
     if (!proposal) {
       const rMax = percentile(sk.radii, 0.98);
@@ -497,8 +500,9 @@ const ejectorMode: ViewMode = {
     const data = await loadSticking(ctx, result);
     const sk = data.skeleton;
     const pins: Pin[] = ctx.params.pins ?? [];
-    const confidence = result.stats.confidence === 'full' ? ''
-      : '\nno mold orientation result — pull assumed +Z, all steep faces grip';
+    const confidence = (result.stats.confidence === 'full' ? ''
+      : '\nno mold orientation result — pull assumed +Z, all steep faces grip')
+      + meshSpecNote(result.stats);
 
     if (ctx.params.ejShowDraft) {
       publishEjSim(null);
@@ -684,13 +688,13 @@ function InjectionControls() {
 
   const sprueResultList = (manifest?.results ?? []).filter(
     (r) => r.process === 'injection_molding' && r.analysis === 'sprue_proposals'
-      && r.stats.schema === 1);
+      && r.stats.schema === 2);
   const sprueResult = sprueResultList[params.sprueResult ?? 0] ?? sprueResultList[0];
   const proposals: Proposal[] = sprueResult?.stats.proposals ?? [];
 
   const stickingList = (manifest?.results ?? []).filter(
     (r) => r.process === 'injection_molding'
-      && r.analysis === 'ejection_sticking' && r.stats.schema === 1);
+      && r.analysis === 'ejection_sticking' && r.stats.schema === 2);
   const pins: Pin[] = params.pins ?? [];
   const ejSim = params.ejSim ?? null;
 

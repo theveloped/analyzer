@@ -183,6 +183,17 @@ validated by `test_skeleton.py` against analytic plate/rib midplanes). The
 "Skeleton & fill flow" view runs a client-side Dijkstra over
 `length / r^4` edge resistances from a clicked gate.
 
+Two cleanup passes keep the clustered graph structural: curvature-artifact
+nodes (at convex rounded rims the inscribed sphere measures the fillet
+radius, not the wall) are **absorbed** into the wall they hug (their
+spheres overlap a much larger neighbor's — genuinely thin webs/hinges
+extend away and survive), and edges spanning far beyond their endpoint
+spheres (degenerate sliver triangles that would tether whole regions
+through one phantom bridge) are **pruned**. Every skeleton result also
+carries a **mesh spec** — p95 mesh edge vs the median measured wall
+thickness, status ok/marginal/coarse — and downstream analyses surface a
+warning when the shared analysis mesh is under-resolved for its walls.
+
 `sprue_proposals` ranks injection-gate locations automatically over that
 same flow model: surface candidates (grid-decimated, one per skeleton
 node) pass hard filters (min gate thickness; slide/undercut/forbidden-side

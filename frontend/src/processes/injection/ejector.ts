@@ -56,7 +56,7 @@ export interface StickingData {
 export function stickingResults(ctx: ViewCtx): ResultEntry[] {
   return ctx.manifest.results.filter(
     (r) => r.process === 'injection_molding'
-      && r.analysis === 'ejection_sticking' && r.stats.schema === 1);
+      && r.analysis === 'ejection_sticking' && r.stats.schema === 2);
 }
 
 function fieldDesc(ctx: ViewCtx, result: ResultEntry, name: string) {
