@@ -23,6 +23,13 @@ function formatDefault(spec: ParamSpec): string | boolean {
       .map((t) => (typeof t === 'string' ? t : `${t.diameter}:${t.corner_radius}`))
       .join(', ');
   }
+  if (spec.type === 'tool_list') {
+    return (spec.default as any[])
+      .map((t) => (typeof t === 'string' ? t
+        : [t.diameter, t.corner_radius ?? 0, t.stickout ?? '', t.holder_radius ?? '']
+          .join(':').replace(/:+$/, '')))
+      .join(', ');
+  }
   return String(spec.default);
 }
 
@@ -45,6 +52,10 @@ export function parseValues(analysis: AnalysisInfo, values: ParamValues): ParamV
         break;
       case 'tip_list':
         out[spec.name] = text.split(/[\s,]+/).filter(Boolean); // "D:rc" strings
+        break;
+      case 'tool_list':
+        // "D:rc:stickout:holder_radius" strings, parsed by the backend
+        out[spec.name] = text.split(/[\s,]+/).filter(Boolean);
         break;
       default: out[spec.name] = text;
     }

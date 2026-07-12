@@ -14,8 +14,14 @@ C. Internal notch (laterally occluded): unreachable by every direction,
 B2. Through-slot STEP (BREP end-to-end): whole-face validity across two
    flip setups, earliest-setup defaults, and the client setup-boundary
    filter replicated over brep_edge_pairs.
-D. Unit checks of setup_membership / setup_defaults on hand-built arrays.
-E. Cache round-trip through the cnc/setups AnalysisDef.
+D. Unit checks of setup_membership / setup_defaults / parse_tools /
+   face_areas on hand-built arrays.
+E. Cache round-trip through the cnc/setups AnalysisDef, plus the
+   directions-fingerprint guard (results and zcache invalidate when the
+   direction set is regenerated).
+F. Tool verdict on a step block: a flat endmill machines the step exactly
+   (feasible, nothing lost), a too-short tool loses the wall-adjacent
+   band to stickout.
 
 Run from the repo root: python test_setups.py
 """
@@ -181,8 +187,17 @@ def fixture_slot_brep(check):
         result = pipeline.cnc_setups(workdir, indexed=True, count=10,
                                      field_options=3)
         stats = result["stats"]
-        check("stats carry schema 1 and brep", stats["schema"] == 1
+        check("stats carry schema 2 and brep", stats["schema"] == 2
               and stats["brep"], "")
+        check("stats carry the directions fingerprint",
+              stats["directions_fingerprint"]
+              == pipeline.directions_fingerprint(workdir), "")
+        # 20x20x10 block, 4x4 through-slot along X: outer skin minus the
+        # two slot apertures plus the four 4x20 tunnel walls
+        expected_area = (2 * 400 + 2 * 200 + 2 * (200 - 16)) + 4 * 4 * 20
+        check("counts are area-weighted (exact block area)",
+              abs(stats["total_area"] - expected_area) < 2.0,
+              f"total {stats['total_area']:.1f} / {expected_area} mm²")
         check("field_options index into the reported options",
               stats["field_options"]
               and all(0 <= i < len(stats["options"])
@@ -281,6 +296,24 @@ def fixture_unit(check):
           machining.setup_labels_colors([[0, 0, 1], [0.6, 0.6, 0.52]])[0]
           == ["setup 1 (+Z)", "setup 2"], "")
 
+    verts = np.array([[0, 0, 0], [2, 0, 0], [0, 3, 0]], dtype=np.float32)
+    areas = machining.face_areas(verts, np.array([[0, 1, 2]]))
+    check("unit: face areas", abs(areas[0] - 3.0) < 1e-6, f"{areas[0]}")
+
+    tools = pipeline.parse_tools([
+        "6", "8:1", "4:2:20", "10:0:50:5",
+        {"diameter": 3, "stickout": 12, "holder_radius": 1.5},
+    ])
+    check("unit: parse_tools",
+          tools[0] == {"diameter": 6.0, "corner_radius": 0.0,
+                       "stickout": None, "holder_radius": None}
+          and tools[1]["corner_radius"] == 1.0
+          and tools[2]["stickout"] == 20.0 and tools[2]["holder_radius"] is None
+          and tools[3] == {"diameter": 10.0, "corner_radius": 0.0,
+                           "stickout": 50.0, "holder_radius": 5.0}
+          and tools[4] == {"diameter": 3.0, "corner_radius": 0.0,
+                           "stickout": 12.0, "holder_radius": 1.5}, "")
+
 
 def cache_round_trip(check):
     with tempfile.TemporaryDirectory() as workdir:
@@ -306,6 +339,97 @@ def cache_round_trip(check):
               and first.stats["options"][0]["flip"], "")
 
 
+def fixture_fingerprint(check):
+    with tempfile.TemporaryDirectory() as workdir:
+        block = mm.makeCube(mm.Vector3f(20, 20, 10), mm.Vector3f(-10, -10, -5))
+        verts, faces = save_workdir(workdir, block, subdivide=2.0)
+        pipeline.compute_directions(workdir, count=4, axes=True)
+        first_fp = pipeline.directions_fingerprint(workdir)
+
+        from zmap import DirectionCache
+        cache = DirectionCache(workdir, 4, verts=verts, faces=faces, pixel=0.2)
+        cache.tip_gap(4.0, 0.0)
+
+        analysis = processes.get_analysis("cnc", "setups")
+        merged = apply_defaults(analysis, {})
+        analysis.run(workdir, merged, None)
+
+        pipeline.compute_directions(workdir, count=8, axes=True)
+        second_fp = pipeline.directions_fingerprint(workdir)
+        check("fingerprint changes with the direction set",
+              first_fp and second_fp and first_fp != second_fp,
+              f"{first_fp} -> {second_fp}")
+
+        # the zcache from the old set must be discarded, not reused
+        fresh = DirectionCache(workdir, 4, verts=verts, faces=faces, pixel=0.2)
+        check("stale zcache discarded on direction change",
+              "tip_4_0" not in fresh._fields, "")
+
+        # the setups result must not be served from the stale cache
+        calls = []
+        analysis.run(workdir, merged,
+                     lambda fraction, message: calls.append(message))
+        check("stale setups result recomputed, not reused", len(calls) > 0,
+              f"{len(calls)} progress calls")
+
+
+def make_step_block(workdir):
+    """20x20x10 block with a 10-wide, 5-deep full-width step: every concave
+    feature is a single horizontal edge, so a flat endmill machines it
+    exactly — the analytic 'feasible with tools' fixture."""
+    block = mm.makeCube(mm.Vector3f(20, 20, 10), mm.Vector3f(-10, -10, -5))
+    cut = mm.makeCube(mm.Vector3f(12, 24, 7), mm.Vector3f(0, -12, 0))
+    part = mm.boolean(block, cut, mm.BooleanOperation.DifferenceAB).mesh
+    return save_workdir(workdir, part)
+
+
+def fixture_tool_verdict(check):
+    with tempfile.TemporaryDirectory() as workdir:
+        verts, faces = make_step_block(workdir)
+        pipeline.compute_directions(workdir, count=4, axes=True)
+
+        base = pipeline.cnc_setups(workdir, indexed=False, count=10)
+        options = base["stats"]["options"]
+        option = next(i for i, o in enumerate(options)
+                      if {s["direction"] for s in o["setups"]} == {4, 5})
+        check("step block: +-Z flip is feasible on visibility",
+              options[option]["feasible"] and options[option]["flip"], "")
+
+        # holder fatter than the tool: flank contact on a wall puts the
+        # holder rim 2 mm inside the wall, so depth genuinely costs stickout
+        good = pipeline.setup_verdict(
+            workdir, option=option,
+            tools=[{"diameter": 4, "stickout": 30, "holder_radius": 4}],
+            pixel=0.2, indexed=False)
+        opt = good["stats"]["options"][0]
+        check("flat endmill machines the step exactly",
+              opt["feasible"] and opt["verdict"]["lost"] < 1.0,
+              f"lost {opt['verdict']['lost']} mm²")
+        check("verdict stats mirror the setups schema",
+              good["stats"]["schema"] == 2 and good["stats"]["verdict"]
+              and good["stats"]["field_options"] == [0]
+              and "membership_0" in good["arrays"], "")
+
+        short = pipeline.setup_verdict(
+            workdir, option=option,
+            tools=[{"diameter": 4, "stickout": 1, "holder_radius": 4}],
+            pixel=0.2, indexed=False)
+        opt_short = short["stats"]["options"][0]
+        membership = short["arrays"]["membership_0"]
+        centroids = verts[faces].mean(axis=1)
+        # deep on the step wall (x = 0 plane, z in [0, 5]): the holder needs
+        # nearly the full step depth of stickout there
+        wall_deep = (np.abs(centroids[:, 0]) < 0.05) \
+            & (centroids[:, 2] > 0.5) & (centroids[:, 2] < 2.0) \
+            & (np.abs(centroids[:, 1]) < 8.0)
+        check("short tool loses the step to stickout",
+              not opt_short["feasible"] and opt_short["verdict"]["lost"] > 10.0
+              and int(wall_deep.sum()) > 0
+              and np.all(membership[wall_deep] == 0),
+              f"lost {opt_short['verdict']['lost']:.0f} mm², "
+              f"{int(wall_deep.sum())} deep wall faces")
+
+
 def main():
     failures = []
     check = check_factory(failures)
@@ -321,6 +445,10 @@ def main():
     fixture_unit(check)
     print("=== fixture E: cache round-trip ===")
     cache_round_trip(check)
+    print("=== fixture E2: directions fingerprint guard ===")
+    fixture_fingerprint(check)
+    print("=== fixture F: tool verdict on the step block ===")
+    fixture_tool_verdict(check)
     print("ALL CHECKS PASSED" if not failures else "FAILURES:\n  " + "\n  ".join(failures))
     return 1 if failures else 0
 

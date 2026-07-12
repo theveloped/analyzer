@@ -47,6 +47,32 @@ CATEGORY_COLORS = {
 AXIS_NAMES = ("+X", "-X", "+Y", "-Y", "+Z", "-Z")
 
 
+def face_areas(verts, faces):
+    """float64[F] triangle areas — the weights behind every setup count.
+
+    Counting triangles instead would bias every number towards finely
+    tessellated features (a small fillet outvoting a big flat face).
+    """
+    tri = verts[faces].astype(np.float64)
+    cross = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    return 0.5 * np.linalg.norm(cross, axis=1)
+
+
+def face_unit_normals(verts, faces):
+    """float64[F, 3] unit face normals."""
+    tri = verts[faces].astype(np.float64)
+    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-30)
+    return normals
+
+
+def face_angles_deg(normals, direction):
+    """float64[F] angle between each face normal and an approach direction:
+    0 = floor seen straight on, 90 = vertical wall, > 90 = overhang."""
+    dots = np.clip(normals @ np.asarray(direction, dtype=float), -1.0, 1.0)
+    return np.degrees(np.arccos(dots))
+
+
 def machine_cover(directions, accessibility, tilt_deg):
     """bool (D, F): faces a setup with primary direction d can cover.
 
@@ -66,6 +92,19 @@ def machine_cover(directions, accessibility, tilt_deg):
     return cover
 
 
+def cone_members(directions, tilt_deg):
+    """Per direction, the sampled direction indices inside its tilt cone.
+
+    Returns a list of int arrays; tilt 0 degenerates to [d] itself. Same
+    epsilon convention as machine_cover.
+    """
+    if tilt_deg <= 0:
+        return [np.array([d]) for d in range(directions.shape[0])]
+    dots = directions @ directions.T
+    inside = dots >= np.cos(np.radians(tilt_deg)) - 1e-9
+    return [np.flatnonzero(inside[d]) for d in range(directions.shape[0])]
+
+
 def direction_label(vector):
     """'+Z'-style tag when the vector is (near) a principal axis, else ''."""
     vector = np.asarray(vector, dtype=float)
@@ -75,24 +114,28 @@ def direction_label(vector):
     return ""
 
 
-def _greedy_setups(cover, seed, max_setups, min_setup_faces):
+def _greedy_setups(cover, seed, max_setups, min_gain, weights):
     """Greedy set cover from one seed direction; returns direction indices.
 
-    Ties in marginal gain prefer the antipode of an already-chosen setup
-    (directions are laid out as antipodal pairs, antipode(i) == i ^ 1) —
-    the classic flip re-fixture is the cheapest second setup, so among
-    equals it should surface.
+    Gains are area-weighted. Ties prefer the antipode of an already-chosen
+    setup (directions are laid out as antipodal pairs, antipode(i) == i ^ 1)
+    — the classic flip re-fixture is the cheapest second setup, so among
+    equals it should surface. Equal gains come from identical residual face
+    sets, so the comparison only needs a rounding-slack epsilon.
     """
     chosen = [int(seed)]
     residual = ~cover[seed]
     while residual.any() and len(chosen) < max_setups:
-        gains = (cover & residual).sum(axis=1)
-        best_gain = int(gains.max())
-        if best_gain < min_setup_faces:
+        masked = weights * residual
+        # row-wise dot: one row is promoted to float at a time, never the
+        # whole (D, F) matrix
+        gains = np.array([np.dot(masked, row) for row in cover])
+        best_gain = float(gains.max())
+        if best_gain < min_gain:
             break
         best = int(np.argmax(gains))
         for direction in chosen:
-            if gains[direction ^ 1] == best_gain:
+            if gains[direction ^ 1] >= best_gain - 1e-9 * max(best_gain, 1.0):
                 best = direction ^ 1
                 break
         chosen.append(best)
@@ -100,16 +143,23 @@ def _greedy_setups(cover, seed, max_setups, min_setup_faces):
     return chosen
 
 
-def _option(machine, machine_rank, tilt_deg, setup_dirs, directions, cover):
-    """Assemble the JSON-safe option dict for one setup set."""
+def _option(machine, machine_rank, tilt_deg, setup_dirs, directions, cover,
+            weights):
+    """Assemble the JSON-safe option dict for one setup set.
+
+    All counts are area-weighted (mm² for a mm-unit part); feasibility stays
+    an exact face-set property so a sliver of uncovered triangles cannot
+    round away.
+    """
     face_count = cover.shape[1]
     rows = cover[setup_dirs]
+    total = float(weights.sum())
 
     # presentation order: the biggest setup machines the bulk first,
     # regardless of which greedy seed found the set; setups left with no
     # marginal contribution after the reorder (a redundant seed demoted
     # behind the picks that replaced it) are dropped
-    order = np.argsort([-int(r.sum()) for r in rows], kind="stable")
+    order = np.argsort([-float(weights[r].sum()) for r in rows], kind="stable")
     setup_dirs = [setup_dirs[i] for i in order]
     rows = rows[order]
     residual = np.ones(face_count, dtype=bool)
@@ -122,18 +172,19 @@ def _option(machine, machine_rank, tilt_deg, setup_dirs, directions, cover):
     rows = rows[keep]
 
     hit_count = rows.sum(axis=0)
-    covered = int((hit_count > 0).sum())
-    internal = face_count - covered
+    uncovered = hit_count == 0
+    internal_area = float(weights[uncovered].sum())
 
+    area = lambda mask: round(float(weights[mask].sum()), 3)  # noqa: E731
     setups = []
     residual = np.ones(face_count, dtype=bool)
     for row, direction in zip(rows, setup_dirs):
         setups.append({
             "direction": int(direction),
             "vector": [float(c) for c in directions[direction]],
-            "reachable": int(row.sum()),
-            "exclusive": int((row & (hit_count == 1)).sum()),
-            "marginal": int((row & residual).sum()),
+            "reachable": area(row),
+            "exclusive": area(row & (hit_count == 1)),
+            "marginal": area(row & residual),
         })
         residual &= ~row
 
@@ -143,14 +194,15 @@ def _option(machine, machine_rank, tilt_deg, setup_dirs, directions, cover):
         "machine_rank": machine_rank,
         "tilt": float(tilt_deg),
         "setups": setups,
-        "coverage": covered / face_count,
-        "feasible": internal == 0,
+        "coverage": 1.0 - internal_area / total,
+        "feasible": not bool(uncovered.any()),
         "flip": flip,
         "counts": {
             "per_setup": [{k: s[k] for k in ("reachable", "exclusive", "marginal")}
                           for s in setups],
-            "multi": int((hit_count > 1).sum()),
-            "internal": internal,
+            "multi": area(hit_count > 1),
+            "internal": round(internal_area, 3),
+            "internal_faces": int(uncovered.sum()),
         },
         "arrows": [{"kind": "setup", "index": j, "direction": s["vector"]}
                    for j, s in enumerate(setups)],
@@ -158,26 +210,33 @@ def _option(machine, machine_rank, tilt_deg, setup_dirs, directions, cover):
 
 
 @log_execution_time
-def setup_search(directions, accessibility, *, machines=(("3-axis", 0.0),
-                                                         ("3+2", 90.0)),
-                 max_setups=4, min_setup_faces=10):
+def setup_search(directions, accessibility, *, weights=None,
+                 machines=(("3-axis", 0.0), ("3+2", 90.0)),
+                 max_setups=4, min_setup_gain=0.0):
     """Rank setup combinations per machine: greedy cover from every seed.
 
     ``machines`` is a sequence of (name, tilt_deg); earlier machines rank
-    higher at equal setup counts. Returns the full ranked list of option
-    dicts (JSON-safe, plus an internal machine_rank used by the sort).
+    higher at equal setup counts. ``weights`` (default: uniform) weight the
+    gains, counts and coverage — pass triangle areas so numbers read in mm²
+    instead of tessellation-biased triangle counts; ``min_setup_gain`` is in
+    the same unit. Returns the full ranked list of option dicts (JSON-safe,
+    plus an internal machine_rank used by the sort).
     """
+    if weights is None:
+        weights = np.ones(accessibility.shape[1])
+    weights = np.asarray(weights, dtype=np.float64)
+
     options = []
     for machine_rank, (machine, tilt_deg) in enumerate(machines):
         cover = machine_cover(directions, accessibility, tilt_deg)
         seen = set()
         for seed in range(directions.shape[0]):
             setup_dirs = _greedy_setups(cover, seed, max_setups,
-                                        min_setup_faces)
+                                        min_setup_gain, weights)
             if frozenset(setup_dirs) in seen:
                 continue
             option = _option(machine, machine_rank, tilt_deg, setup_dirs,
-                             directions, cover)
+                             directions, cover, weights)
             final = frozenset(s["direction"] for s in option["setups"])
             fresh = final not in seen
             seen.update((frozenset(setup_dirs), final))
@@ -191,16 +250,56 @@ def setup_search(directions, accessibility, *, machines=(("3-axis", 0.0),
     return options
 
 
+def membership_from_rows(rows):
+    """u4[F] bitmask: bit s set iff coverage row s reaches the face."""
+    membership = np.zeros(len(rows[0]), dtype=np.uint32)
+    for s, row in enumerate(rows):
+        membership |= row.astype(np.uint32) << s
+    return membership
+
+
 def setup_membership(setup_dirs, cover):
     """u4[F] bitmask: bit s set iff setup s's cover reaches the face.
 
     Cover rows, not raw accessibility — a 3+2 setup counts everything its
     tilt cone reaches; 0 means no setup machines the face.
     """
-    membership = np.zeros(cover.shape[1], dtype=np.uint32)
-    for s, direction in enumerate(setup_dirs):
-        membership |= cover[direction].astype(np.uint32) << s
-    return membership
+    return membership_from_rows([cover[d] for d in setup_dirs])
+
+
+def reweight_option(option, rows, weights):
+    """Copy of an option with its counts recomputed from new coverage rows.
+
+    Used by the tool verdict: the plan (setup directions, order, arrows)
+    stays exactly as ranked, only reachability changed — so no reordering
+    or pruning, a setup that lost all its faces to tooling should show a
+    zero, not vanish.
+    """
+    rows = [np.asarray(row) for row in rows]
+    hit_count = np.sum(rows, axis=0)
+    uncovered = hit_count == 0
+    total = float(weights.sum())
+
+    area = lambda mask: round(float(weights[mask].sum()), 3)  # noqa: E731
+    out = {**option, "setups": [dict(s) for s in option["setups"]]}
+    residual = np.ones(len(hit_count), dtype=bool)
+    for setup, row in zip(out["setups"], rows):
+        setup["reachable"] = area(row)
+        setup["exclusive"] = area(row & (hit_count == 1))
+        setup["marginal"] = area(row & residual)
+        residual &= ~row
+
+    internal_area = float(weights[uncovered].sum())
+    out["coverage"] = 1.0 - internal_area / total
+    out["feasible"] = not bool(uncovered.any())
+    out["counts"] = {
+        "per_setup": [{k: s[k] for k in ("reachable", "exclusive", "marginal")}
+                      for s in out["setups"]],
+        "multi": area(hit_count > 1),
+        "internal": round(internal_area, 3),
+        "internal_faces": int(uncovered.sum()),
+    }
+    return out
 
 
 def setup_defaults(membership, brep_valid, brep_ids):

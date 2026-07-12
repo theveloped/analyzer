@@ -137,12 +137,54 @@ best option of each distinct (machine, setup count) signature, so a
 single-setup 3+2 plan is explorable next to the 3-axis flips instead of
 buried under equally-ranked pair variants.
 
+All setup counts (`reachable` / `exclusive` / `marginal` per setup,
+coverage, `min_setup_area`) are **area-weighted** (mm²), not triangle
+counts — a finely tessellated fillet must not outvote a big flat face;
+feasibility stays an exact face-set property so uncovered slivers cannot
+round away.
+
 Cover from sampled directions inside the cone both underestimates a
 continuous tilt (finite sampling) and overestimates reality — the fixture
 and table occlude nothing yet, so a "feasible single 3+2 setup" typically
 still needs a flip for the clamped face. The fixture-aware 3D accessibility
 recheck is the planned next stage; keeping the cone half-angle a parameter
 means it can slot in as a per-setup effective-tilt reduction.
+
+### Stage 3c — `verdict`: tool-library re-verdict of a setup plan
+
+The funnel's second step (`pipeline.setup_verdict`, the `cnc/setup_verdict`
+analysis, CLI `verdict`): the visibility-only search proposes ranked plans
+in under a second; the verdict then re-prices ONE chosen plan against a
+real **tool library** — entries `(diameter, corner_radius, max stickout,
+holder radius)`, e.g. a few flat endmills at their longest practical reach
+plus a couple of ball mills. A face counts as machinable in a setup iff
+some tool reaches it from a direction the setup can use (the primary for
+3-axis, every sampled direction inside the tilt cone for 3+2): tip gap
+within tolerance — near-vertical walls side-milled with the
+pixel-noise-proof threshold — and required stickout within the tool's
+length. The per-face rule lives in ONE place, `zmap.tool_face_verdict`,
+shared by `compose` and the verdict (the viewer's interactive thresholds
+mirror it client-side).
+
+All per-(direction, tool) fields come lazily from the `DirectionCache`, so
+a verdict costs seconds per direction the first time and nothing after.
+The stored result mirrors a setups result — same schema, membership /
+brep-validity / defaults fields, single option with tool-aware counts plus
+a `verdict` block (lost area, base coverage) — so the viewer's setups mode
+renders it unchanged: faces the search covered but no tool reaches show as
+"lost to tooling" regions, partially covered BREP faces as conflicts
+(rest-machining / needs a split).
+
+### Cache integrity — the directions fingerprint
+
+`zcache/dir_<idx>.npz` fields, setup results and mold-orientation results
+are all keyed by direction *index*, but re-running `prep/directions`
+renumbers the set. Every such artifact therefore records a content hash of
+`directions.npy`: the `DirectionCache` discards mismatching caches, result
+cache keys salt the fingerprint in (so a changed direction set recomputes
+instead of silently reusing), and the manifest flags stored results whose
+fingerprint no longer matches as `stale` — the viewer marks them and warns
+instead of rendering wrong-direction arrows and memberships as truth.
 
 ### BREP-aware STEP meshing
 

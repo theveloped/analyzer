@@ -16,7 +16,7 @@ import { useStore } from '../../state/store';
 
 const CONFLICT_FEATURE = 254;
 const INTERNAL_FEATURE = 255;
-const SETUPS_SCHEMA = 1;
+const SETUPS_SCHEMA = 2;
 
 export function setupsResults(manifest: Manifest): ResultEntry[] {
   return manifest.results.filter(
@@ -99,7 +99,16 @@ export function optionLabel(opt: any): string {
   if (!opt) return '—';
   return `${opt.machine} · ${opt.setups.length} setup(s)`
     + `${opt.flip ? ' (flip)' : ''}`
+    + `${opt.verdict ? ' · tool verdict' : ''}`
     + ` · ${opt.feasible ? 'feasible' : `${(opt.coverage * 100).toFixed(1)}%`}`;
+}
+
+/** Result-selector label: search vs verdict entries, stale warning. */
+export function resultLabel(r: ResultEntry): string {
+  const base = r.stats.verdict
+    ? `${optionLabel(r.stats.options?.[0])} · ${r.params.tools?.length ?? '?'} tools`
+    : `tilt ${r.params.tilt ?? '?'}° · max ${r.params.max_setups ?? '?'} setups`;
+  return `${r.stale ? '⚠ stale · ' : ''}${base} · ${r.hash}`;
 }
 
 export const setupsMode: ViewMode = {
@@ -160,9 +169,17 @@ export const setupsMode: ViewMode = {
     }
     const regionDesc = resolveField(ctx, data.result, `internal_region_${data.option}`);
     const regionCounts: number[] = regionDesc?.params.region_counts ?? [];
-    regionCounts.forEach((count: number, i: number) => {
+    const SHOWN_REGIONS = 8;
+    regionCounts.slice(0, SHOWN_REGIONS).forEach((count: number, i: number) => {
       legend.push({ color: regionColor(i + 1), label: `unmachinable region ${i + 1} (${count})` });
     });
+    if (regionCounts.length > SHOWN_REGIONS) {
+      const rest = regionCounts.slice(SHOWN_REGIONS).reduce((a, b) => a + b, 0);
+      legend.push({
+        color: regionColor(SHOWN_REGIONS + 1),
+        label: `… ${regionCounts.length - SHOWN_REGIONS} more regions (${rest} faces)`,
+      });
+    }
 
     if (ctx.params.showLines !== false) {
       const edgesDesc = ctx.manifest.fields.find((f) => f.id === 'brep_edges');
@@ -193,8 +210,16 @@ export const setupsMode: ViewMode = {
     let stats = '';
     if (opt) {
       const setups = opt.setups.map((s: any, j: number) =>
-        `${labels[j]}: d${s.direction} +${s.marginal}`).join(' · ');
-      stats = `${optionLabel(opt)} · unmachinable ${internalCount}\n${setups}`;
+        `${labels[j]}: d${s.direction} +${s.marginal.toFixed(0)} mm²`).join(' · ');
+      stats = `${optionLabel(opt)} · unmachinable ${opt.counts.internal.toFixed(0)} mm²\n${setups}`;
+      if (opt.verdict) {
+        stats += `\ntool verdict: coverage ${(opt.coverage * 100).toFixed(1)}%`
+          + ` (visibility ${(opt.verdict.base_coverage * 100).toFixed(1)}%)`
+          + ` · lost to tooling ${opt.verdict.lost.toFixed(0)} mm²`;
+      }
+    }
+    if (data.result.stale) {
+      stats += '\n⚠ directions changed since this result — re-run the analysis';
     }
     stats += '\nstriped = machinable in several setups — click a face to cycle';
     return { legend, stats };
@@ -247,9 +272,7 @@ export function SetupsControls() {
         onChange={(e) => { set('setupsResult', parseInt(e.target.value)); set('setupsOption', 0); }}
       >
         {results.map((r, i) => (
-          <option key={r.hash} value={i}>
-            {`tilt ${r.params.tilt ?? '?'}° · max ${r.params.max_setups ?? '?'} setups · ${r.hash}`}
-          </option>
+          <option key={r.hash} value={i}>{resultLabel(r)}</option>
         ))}
         {!results.length && <option value={0}>no results yet</option>}
       </select>

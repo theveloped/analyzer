@@ -85,9 +85,24 @@ if __name__ == "__main__":
     parser_setups.add_argument("--no_indexed", help="skip the indexed 5-axis (3+2) machine", action="store_true")
     parser_setups.add_argument("--tilt", help="3+2 head tilt cone half-angle in degrees", type=float, default=90.0)
     parser_setups.add_argument("--max_setups", help="maximum setups per option", type=int, default=4)
-    parser_setups.add_argument("--min_setup_faces", help="minimum faces a setup must gain", type=int, default=10)
+    parser_setups.add_argument("--min_setup_area", help="minimum area (mm^2) a setup must gain (default: 0.1%% of the part)", type=float, default=None)
     parser_setups.add_argument("--count", help="ranked options to report", type=int, default=10)
+    parser_setups.add_argument("--field_options", help="plans that get per-face assignment fields", type=int, default=3)
     parser_setups.add_argument("--serve", help="serve results in browser", action="store_true")
+
+    # Create the parser for the "verdict" command
+    parser_verdict = subparsers.add_parser("verdict", help="re-verdict one ranked setup plan with a real tool library")
+    parser_verdict.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_verdict.add_argument("--option", help="ranked plan index to verdict", type=int, default=0)
+    parser_verdict.add_argument("--tools", help="tools as D[:rc[:stickout[:holder_radius]]] (default: builtin flat+ball library)", nargs="*", type=str, default=None)
+    parser_verdict.add_argument("--tollerance", help="gap threshold to flag a vertex", type=float, default=1e-1)
+    parser_verdict.add_argument("--wall_tollerance", help="wall angle tolerance in degrees (side-milled)", type=float, default=1.0)
+    parser_verdict.add_argument("--pixel", help="height map pixel size", type=float, default=1e-1)
+    parser_verdict.add_argument("--no_indexed", help="skip the indexed 5-axis (3+2) machine", action="store_true")
+    parser_verdict.add_argument("--tilt", help="3+2 head tilt cone half-angle in degrees", type=float, default=90.0)
+    parser_verdict.add_argument("--max_setups", help="maximum setups per option", type=int, default=4)
+    parser_verdict.add_argument("--min_setup_area", help="minimum area (mm^2) a setup must gain (default: 0.1%% of the part)", type=float, default=None)
+    parser_verdict.add_argument("--serve", help="serve results in browser", action="store_true")
 
     # Create the parser for the "options" command
     parser_serve = subparsers.add_parser("serve", help="find injection molding options")
@@ -254,24 +269,64 @@ if __name__ == "__main__":
         from processes.base import apply_defaults
 
         analysis = processes.get_analysis("cnc", "setups")
-        merged = apply_defaults(analysis, {
+        params = {
             "indexed": not args.no_indexed,
             "tilt": args.tilt,
             "max_setups": args.max_setups,
-            "min_setup_faces": args.min_setup_faces,
             "count": args.count,
-        })
+            "field_options": args.field_options,
+        }
+        if args.min_setup_area is not None:
+            params["min_setup_area"] = args.min_setup_area
+        merged = apply_defaults(analysis, params)
         result = analysis.run(args.directory, merged, None)
 
         for rank, option in enumerate(result.stats["options"]):
-            setups = ", ".join(f"d{s['direction']} (+{s['marginal']})"
+            setups = ", ".join(f"d{s['direction']} (+{s['marginal']:.0f}mm2)"
                                for s in option["setups"])
             logger.info(
                 f"#{rank}  {option['machine']:6s} {len(option['setups'])} setup(s)"
                 f"{' FLIP' if option['flip'] else '     '}  "
                 f"{'FEASIBLE' if option['feasible'] else 'infeasible'}  "
                 f"coverage {option['coverage'] * 100:.1f}%  [{setups}]  "
-                f"unmachinable {option['counts']['internal']}")
+                f"unmachinable {option['counts']['internal']:.0f}mm2")
+
+        if args.serve:
+            serve_workdir(args.directory)
+
+    elif args.command == "verdict":
+        logger.info("Tool-library verdict of one setup plan")
+
+        import processes
+        from processes.base import apply_defaults
+
+        analysis = processes.get_analysis("cnc", "setup_verdict")
+        params = {
+            "option": args.option,
+            "tollerance": args.tollerance,
+            "wall_tollerance": args.wall_tollerance,
+            "pixel": args.pixel,
+            "indexed": not args.no_indexed,
+            "tilt": args.tilt,
+            "max_setups": args.max_setups,
+        }
+        if args.tools is not None:
+            params["tools"] = args.tools
+        if args.min_setup_area is not None:
+            params["min_setup_area"] = args.min_setup_area
+        merged = apply_defaults(analysis, params)
+        result = analysis.run(args.directory, merged, None)
+
+        option = result.stats["options"][0]
+        verdict = option["verdict"]
+        setups = ", ".join(f"d{s['direction']} (+{s['marginal']:.0f}mm2)"
+                           for s in option["setups"])
+        logger.info(
+            f"{option['machine']} {len(option['setups'])} setup(s)  "
+            f"{'FEASIBLE' if option['feasible'] else 'infeasible'} with tools  "
+            f"coverage {option['coverage'] * 100:.1f}% "
+            f"(visibility {verdict['base_coverage'] * 100:.1f}%)  [{setups}]  "
+            f"lost to tooling {verdict['lost']:.0f}mm2")
 
         if args.serve:
             serve_workdir(args.directory)
