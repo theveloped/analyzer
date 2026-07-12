@@ -331,6 +331,12 @@ def compute_thickness(workdir, *, max_radius=None, inverted=False,
     _report(progress, 0.2, "rolling inscribed spheres")
     result = mm.computeInSphereThicknessAtVertices(mesh, settings)
     values = _per_vertex(np.array(result.vec, dtype=np.float32), len(verts))
+    # meshlib returns an unbounded (inf) radius where no sphere is limited by
+    # an opposing wall — degenerate/open spots common on welded STEP meshes.
+    # Saturate those to the documented cap so the field, its stats and the
+    # heatmap stay finite (cap = "no opposing wall worth considering").
+    cap = np.float32(2.0 * max_radius)
+    values = np.where(np.isfinite(values), np.minimum(values, cap), cap)
     _report(progress, 1.0, "thickness field done")
     return values, float(max_radius)
 

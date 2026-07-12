@@ -16,6 +16,19 @@ import numpy as np
 import pipeline
 from processes.base import RESULTS_DIR
 
+
+def _json_safe(obj):
+    """Replace non-finite floats (NaN/Inf) with None so a single stray value
+    from one analysis cannot make the whole manifest fail to serialize and
+    500 the viewer."""
+    if isinstance(obj, float):
+        return obj if np.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
+
 # same key scheme DirectionCache uses in <workdir>/zcache/dir_<idx>[_engine].npz
 CACHE_FILE_RE = re.compile(r"^dir_(\d+)(?:_([a-z]+))?\.npz$")
 TIP_KEY_RE = re.compile(r"^tip_([0-9.eE+-]+)_([0-9.eE+-]+)$")
@@ -169,7 +182,7 @@ def _result_entries(workdir, base_url, face_count, vert_count):
             "analysis": analysis_id,
             "hash": result_hash,
             "params": payload.get("params", {}),
-            "stats": stats,
+            "stats": _json_safe(stats),
             "fields": field_ids,
             # direction indices in the result no longer match the current
             # direction set — the result is stale, re-run the analysis
