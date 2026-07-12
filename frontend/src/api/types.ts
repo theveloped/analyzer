@@ -31,6 +31,8 @@ export interface ResultEntry {
   params: Record<string, any>;
   stats: Record<string, any>;
   fields: string[];
+  /** Direction indices no longer match the current direction set. */
+  stale?: boolean;
   overrides_url?: string;
 }
 
@@ -50,7 +52,7 @@ export interface Manifest {
 
 export interface ParamSpec {
   name: string;
-  type: 'bool' | 'int' | 'number' | 'string' | 'select' | 'int_list' | 'number_list' | 'tip_list';
+  type: 'bool' | 'int' | 'number' | 'string' | 'select' | 'int_list' | 'number_list' | 'tip_list' | 'tool_list';
   default: any;
   label?: string;
   unit?: string;

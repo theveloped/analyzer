@@ -1,7 +1,63 @@
-"""CNC 3-axis machining process: tool-field precompute and composition."""
+"""CNC machining process: setup-combination search over the shared
+accessibility matrix, plus tool-field precompute and composition."""
 
 import pipeline
-from processes.base import AnalysisDef, AnalysisResult, Param, ProcessDef
+from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
+                            load_cached_result, store_result)
+
+SETUPS_SCHEMA = 2  # result schema version, salted into the cache key
+
+# default library: 3 flat endmills + 2 ball mills, each at its longest
+# practical reach (stickout 5xD) with the shank as the holder cylinder
+DEFAULT_TOOLS = [
+    {"diameter": 16.0, "corner_radius": 0.0, "stickout": 80.0, "holder_radius": 8.0},
+    {"diameter": 8.0, "corner_radius": 0.0, "stickout": 40.0, "holder_radius": 4.0},
+    {"diameter": 4.0, "corner_radius": 0.0, "stickout": 20.0, "holder_radius": 2.0},
+    {"diameter": 10.0, "corner_radius": 5.0, "stickout": 50.0, "holder_radius": 5.0},
+    {"diameter": 4.0, "corner_radius": 2.0, "stickout": 20.0, "holder_radius": 2.0},
+]
+
+
+def run_setups(workdir, params, progress):
+    cache_params = {**params, "schema": SETUPS_SCHEMA,
+                    "directions": pipeline.directions_fingerprint(workdir)}
+    cached = load_cached_result(workdir, "cnc", "setups", cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    result = pipeline.cnc_setups(
+        workdir, indexed=params["indexed"], tilt=params["tilt"],
+        max_setups=params["max_setups"],
+        min_setup_area=params["min_setup_area"], count=params["count"],
+        field_options=params["field_options"], progress=progress)
+
+    store_result(workdir, "cnc", "setups", cache_params, result["stats"],
+                 arrays=result["arrays"], field_meta=result["field_meta"])
+    return AnalysisResult(stats=result["stats"], fields=list(result["arrays"]))
+
+
+def run_setup_verdict(workdir, params, progress):
+    cache_params = {**params, "schema": SETUPS_SCHEMA, "verdict": 1,
+                    "directions": pipeline.directions_fingerprint(workdir)}
+    cached = load_cached_result(workdir, "cnc", "setups", cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    result = pipeline.setup_verdict(
+        workdir, option=params["option"],
+        tools=pipeline.parse_tools(params["tools"]),
+        tollerance=params["tollerance"],
+        wall_tollerance=params["wall_tollerance"], pixel=params["pixel"],
+        window=params["window"], indexed=params["indexed"],
+        tilt=params["tilt"], max_setups=params["max_setups"],
+        min_setup_area=params["min_setup_area"], count=params["count"],
+        field_options=params["field_options"], progress=progress)
+
+    store_result(workdir, "cnc", "setups", cache_params, result["stats"],
+                 arrays=result["arrays"], field_meta=result["field_meta"])
+    return AnalysisResult(stats=result["stats"], fields=list(result["arrays"]))
 
 
 def _tips(params):
@@ -38,6 +94,7 @@ def run_compose(workdir, params, progress):
         tollerance=params["tollerance"], diameter=params["diameter"],
         corner_radius=params["corner_radius"], stickout=params["stickout"],
         cylinders=cylinders, sweep=params["sweep"] or [],
+        wall_tollerance=params["wall_tollerance"],
         engine=params["engine"], window=params["window"], progress=progress)
     stats = {key: result[key] for key in ("unreachable", "accessible", "sweep")}
     return AnalysisResult(stats=stats)
@@ -45,9 +102,63 @@ def run_compose(workdir, params, progress):
 
 PROCESS = ProcessDef(
     id="cnc",
-    label="CNC machining (3-axis)",
-    description="Tool reachability: tip gap, holder clearance and stickout fields per approach direction.",
+    label="CNC machining",
+    description="Setup combinations (3-axis / indexed 3+2) and tool reachability: tip gap, holder clearance and stickout fields per approach direction.",
     analyses=[
+        AnalysisDef(
+            id="setups",
+            label="Setup combinations",
+            description="Rank setup sequences that cover the part: plain 3-axis setups and indexed 5-axis (3+2) tilt-cone setups; per-BREP-face setup assignment with toggles.",
+            requires=["prep/directions"],
+            params=[
+                Param("indexed", "bool", default=True,
+                      label="Include indexed 5-axis (3+2) machine"),
+                Param("tilt", "number", default=90.0, unit="deg", min=0,
+                      label="3+2 head tilt cone half-angle"),
+                Param("max_setups", "int", default=4, min=1,
+                      label="Max setups per option"),
+                Param("min_setup_area", "number", default=None, unit="mm²",
+                      min=0, label="Min area a setup must gain (blank = 0.1% of part)"),
+                Param("count", "int", default=10, min=1,
+                      label="Ranked options in stats"),
+                Param("field_options", "int", default=3, min=1,
+                      label="Plans with per-face assignment fields"),
+            ],
+            run=run_setups,
+        ),
+        AnalysisDef(
+            id="setup_verdict",
+            label="Setup plan tool verdict",
+            description="Re-verdict one ranked setup plan with a real tool library: per-setup coverage from tip gap + stickout fields; faces no tool reaches become 'lost to tooling' regions.",
+            requires=["cnc/setups"],
+            params=[
+                Param("option", "int", default=0, min=0,
+                      label="Ranked plan to verdict (index in the setups result)"),
+                Param("tools", "tool_list", default=DEFAULT_TOOLS,
+                      label="Tool library (D : rc : stickout : holder radius)"),
+                Param("tollerance", "number", default=1e-1, unit="mm", min=0,
+                      label="Gap threshold"),
+                Param("wall_tollerance", "number", default=1.0, unit="deg",
+                      min=0, label="Wall angle tolerance (side-milled)"),
+                Param("pixel", "number", default=1e-1, unit="mm", min=0,
+                      label="Height map pixel size"),
+                Param("window", "number", default=0.3, unit="mm", min=0,
+                      label="Exact gap window"),
+                Param("indexed", "bool", default=True,
+                      label="Include indexed 5-axis (3+2) machine"),
+                Param("tilt", "number", default=90.0, unit="deg", min=0,
+                      label="3+2 head tilt cone half-angle"),
+                Param("max_setups", "int", default=4, min=1,
+                      label="Max setups per option"),
+                Param("min_setup_area", "number", default=None, unit="mm²",
+                      min=0, label="Min area a setup must gain (blank = 0.1% of part)"),
+                Param("count", "int", default=10, min=1,
+                      label="Ranked options in stats"),
+                Param("field_options", "int", default=3, min=1,
+                      label="Plans with per-face assignment fields"),
+            ],
+            run=run_setup_verdict,
+        ),
         AnalysisDef(
             id="precompute",
             label="Precompute tool fields",
@@ -88,6 +199,8 @@ PROCESS = ProcessDef(
                       label="Holder cylinders radius:start,..."),
                 Param("sweep", "number_list", default=[], unit="mm",
                       label="Extra stickout sweep values"),
+                Param("wall_tollerance", "number", default=1.0, unit="deg",
+                      min=0, label="Wall angle tolerance (side-milled)"),
                 Param("pixel", "number", default=1e-1, unit="mm", min=0,
                       label="Height map pixel size"),
                 Param("engine", "select", default="zmap", options=["zmap", "voxel"],

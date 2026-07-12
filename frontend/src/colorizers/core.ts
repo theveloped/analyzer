@@ -20,6 +20,35 @@ export const COL = {
   overhang: [0.72, 0.42, 0.55] as RGB,
 };
 
+// --- bitmask helpers for membership/assignment fields ---
+
+/** Washed-out version of a category color, for non-selected stripes. */
+export function fade(color: RGB): RGB {
+  return [color[0] * 0.45 + 0.55, color[1] * 0.45 + 0.55, color[2] * 0.45 + 0.55];
+}
+
+export function popcount(x: number): number {
+  let n = 0;
+  while (x) { n += x & 1; x >>>= 1; }
+  return n;
+}
+
+export function nthSetBit(x: number, n: number): number {
+  for (let bit = 0; bit < 32; bit++) {
+    if ((x >>> bit) & 1) {
+      if (n === 0) return bit;
+      n--;
+    }
+  }
+  return 0;
+}
+
+export function nextSetBit(x: number, after: number): number {
+  for (let bit = after + 1; bit < 32; bit++) if ((x >>> bit) & 1) return bit;
+  for (let bit = 0; bit <= after; bit++) if ((x >>> bit) & 1) return bit;
+  return after;
+}
+
 // compact turbo-like ramp for scalar fields
 export function rampColor(t: number): RGB {
   t = Math.min(1, Math.max(0, t));

@@ -2,6 +2,7 @@
 // thresholds. Every change repaints client-side from cached fields.
 
 import { useStore } from '../../state/store';
+import { SetupsControls } from './setups';
 import { cncSources } from './sources';
 
 const EMPTY: Record<string, any> = {};
@@ -16,6 +17,9 @@ export function CncControls() {
   const sources = manifest ? cncSources(manifest) : [];
   const source = sources[params.source] ?? sources[0] ?? null;
   const showScale = modeId === 'gap' || modeId === 'stickout';
+
+  // the setups mode works on the setups result, not the tool-field caches
+  if (modeId === 'setups') return <SetupsControls />;
 
   return (
     <>
