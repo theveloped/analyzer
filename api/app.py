@@ -15,8 +15,9 @@ import processes
 from api import fields as fields_api
 from api import manifest as manifest_api
 from api import parts as parts_api
+from api import ejector as ejector_api
 from api.jobs import JobManager, PartBusyError
-from api.schemas import JobRequest
+from api.schemas import EjectorSimRequest, JobRequest
 import pipeline
 
 FRONTEND_DIST = os.path.join(
@@ -151,6 +152,35 @@ def create_app(root=".", preload=None):
         with open(path, "w") as f:
             json_module.dump(body, f)
         return {"ok": True}
+
+    @app.post("/api/parts/{part_id}/ejector/simulate")
+    def ejector_simulate(part_id: str, body: EjectorSimRequest):
+        """Synchronous ejector-pin solve over cached arrays.
+
+        Runs inline (no job queue): the compute is scipy over stored npz
+        arrays only — the job worker serializes meshlib, which this never
+        touches.
+        """
+        import re
+
+        part = part_or_404(part_id)
+        if not re.fullmatch(r"[0-9a-f]{12}", body.result_hash):
+            raise HTTPException(status_code=404, detail="unknown result")
+        if not 1 <= len(body.pins) <= 64:
+            raise HTTPException(
+                status_code=400,
+                detail="between 1 and 64 pins (the viewer paints the "
+                       "sticking field itself when there are none)")
+        try:
+            return ejector_api.simulate(
+                os.path.join(root, part["id"]), body.result_hash,
+                [{"point": pin.point, "diameter": pin.diameter}
+                 for pin in body.pins],
+                E=body.E, allowable_pressure=body.allowable_pressure)
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error))
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
 
     @app.get("/api/parts/{part_id}/results/{process_id}/{analysis_id}/{result_hash}/{key}")
     def get_result_field(request: Request, part_id: str, process_id: str,

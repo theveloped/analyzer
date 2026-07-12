@@ -18,6 +18,7 @@ import tempfile
 
 import numpy as np
 from meshlib import mrmeshpy as mm
+from meshlib import mrmeshnumpy as mn
 
 import pipeline
 from analysis import get_mesh_data, subdivide_mesh
@@ -61,6 +62,28 @@ def main():
         print(f"  [{status}] {name}: {detail}")
         if not ok:
             failures.append(f"{name}: {detail}")
+
+    # --- mesh stage: auto subdivide bounds edge lengths everywhere -------
+    print("=== mesh_part auto subdivide ===")
+    with tempfile.TemporaryDirectory() as tmp:
+        cube = mm.makeCube(mm.Vector3f(20, 20, 20), mm.Vector3f(0, 0, 0))
+        stl = os.path.join(tmp, "cube.stl")
+        mm.saveMesh(cube, stl)
+
+        target = pipeline.auto_subdivide(np.linalg.norm([20, 20, 20]))
+        pipeline.mesh_part(stl, os.path.join(tmp, "auto"))
+        verts, faces = pipeline.load_mesh_arrays(os.path.join(tmp, "auto"))
+        tri = verts[faces.astype(np.int64)]
+        edge_max = float(np.linalg.norm(
+            tri - np.roll(tri, -1, axis=1), axis=2).max())
+        check("auto subdivide bounds every edge (flats included)",
+              edge_max <= target * 1.001,
+              f"max edge {edge_max:.3f} mm vs auto target {target:.2f} mm")
+
+        pipeline.mesh_part(stl, os.path.join(tmp, "off"), subdivide=0)
+        _, faces_off = pipeline.load_mesh_arrays(os.path.join(tmp, "off"))
+        check("subdivide 0 disables refinement",
+              len(faces_off) == 12, f"{len(faces_off)} faces")
 
     # --- flat plate ------------------------------------------------------
     print("=== plate 20 x 20 x 2 ===")
@@ -180,7 +203,8 @@ def main():
 
         from api.fields import result_field_bytes
         from processes.base import params_hash
-        result_hash = params_hash(params)
+        from processes.injection_molding import skeleton_cache_params
+        result_hash = params_hash(skeleton_cache_params(params))
         for name, entry in by_id.items():
             data, dtype = result_field_bytes(
                 workdir, "injection_molding", "wall_skeleton", result_hash, name)
@@ -188,6 +212,46 @@ def main():
             check(f"served bytes for {name}",
                   dtype == "<" + entry["dtype"] and len(data) == expected,
                   f"{dtype} {len(data)} bytes")
+
+    # --- STEP mesh: non-manifold vertex splitting must not break the ----
+    # per-vertex contract or hang the inscribed-sphere correction
+    step = os.path.join(os.path.dirname(__file__), "tests", "Aligator.STEP")
+    if os.path.exists(step):
+        print("=== STEP part (welded, non-manifold) ===")
+        from processes.base import apply_defaults
+        from processes.prep import PROCESS as PREP
+        from processes.injection_molding import PROCESS as INJ
+        with tempfile.TemporaryDirectory() as tmp:
+            wd = os.path.join(tmp, "Aligator")
+            os.makedirs(wd)
+            import shutil
+            shutil.copy(step, wd)
+            PREP.analysis("mesh").run(
+                wd, apply_defaults(PREP.analysis("mesh"), {}), None)
+            verts, faces = pipeline.load_mesh_arrays(wd)
+
+            # meshlib splits non-manifold verts, so the rebuilt mesh has more
+            # vertices than the on-disk array — the field must still align
+            mesh = mn.meshFromFacesVerts(faces.astype(np.int64), verts)
+            check("STEP mesh is non-manifold (splits verts)",
+                  mesh.topology.vertSize() > len(verts),
+                  f"vertSize {mesh.topology.vertSize()} vs disk {len(verts)}")
+
+            result = INJ.analysis("wall_skeleton").run(
+                wd, apply_defaults(INJ.analysis("wall_skeleton"), {}), None)
+            from processes.base import load_result_arrays
+            from processes.injection_molding import skeleton_cache_params
+            skel = load_result_arrays(
+                wd, "injection_molding", "wall_skeleton",
+                skeleton_cache_params(apply_defaults(
+                    INJ.analysis("wall_skeleton"), {})))
+            check("thickness field aligns to disk vertices",
+                  len(skel["thickness"]) == len(verts),
+                  f"{len(skel['thickness'])} vs {len(verts)}")
+            check("skeleton completes on STEP (no findInSphere hang)",
+                  result.stats["cluster_nodes"] > 0,
+                  f"{result.stats['cluster_nodes']} clusters, "
+                  f"{result.stats['penetrating_dropped']} penetrating dropped")
 
     print()
     if failures:

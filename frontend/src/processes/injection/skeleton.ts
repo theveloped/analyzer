@@ -25,6 +25,18 @@ export function skeletonResults(ctx: ViewCtx): ResultEntry[] {
     (r) => r.process === 'injection_molding' && r.analysis === 'wall_skeleton');
 }
 
+/** Warning line when the analysis mesh is under-resolved for the walls it
+ * measures (the wall_skeleton mesh-spec gate; sprue/ejection results embed
+ * the same spec in their own stats). */
+export function meshSpecNote(stats: Record<string, any> | undefined): string {
+  const spec = stats?.mesh;
+  if (!spec || spec.status === 'ok') return '';
+  return `\nanalysis mesh is ${spec.status} for the measured walls `
+    + `(p95 edge ${spec.p95_edge_mm.toFixed(2)} mm vs `
+    + `${spec.median_thickness_mm.toFixed(2)} mm median thickness) — `
+    + `re-mesh with a smaller subdivide`;
+}
+
 function fieldDesc(ctx: ViewCtx, result: ResultEntry, name: string): FieldDescriptor {
   const id = result.fields.find((f) => f.endsWith(`.${name}`));
   const desc = id && ctx.manifest.fields.find((f) => f.id === id);

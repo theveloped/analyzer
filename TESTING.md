@@ -37,7 +37,13 @@ python main.py mesh part.stl --heal --tollerance 0.15
 
 `--subdivide` splits edges without moving anything (planar faces stay planar,
 walls stay exactly 90°); face size is the reporting resolution, since results
-are per-face masks over per-vertex fields.
+are per-face masks over per-vertex fields. When left unset the mesh stage
+picks an automatic target from the part size (0.5% of the bounding-box
+diagonal, clamped to 0.3–2 mm), so every analysis mesh has bounded,
+well-spaced vertices even on large flat faces — a curvature-driven
+tessellation alone leaves those nearly empty, which starves the
+vertex-anchored thickness/skeleton analyses. Pass `--subdivide 0` to store
+the input tessellation untouched.
 
 Stage 2 — accessibility per direction. `--axes` prepends exact ±X/±Y/±Z as
 indices 0..5 (so +Z is index 4). `--relax` is important for endmill work:
@@ -175,6 +181,73 @@ In the UI: injection molding tab → Compute "Wall thickness" / "Wall gaps /
 clearance" → the thickness and gaps heatmap view modes, with min-threshold
 and heatmap-max inputs recomputed live; clicking a face prints both maps'
 values at its three vertices.
+
+## Wall skeleton, fill flow & sprue proposals
+
+The rolling-sphere centers form a medial skeleton graph (`wall_skeleton`,
+validated by `test_skeleton.py` against analytic plate/rib midplanes). The
+"Skeleton & fill flow" view runs a client-side Dijkstra over
+`length / r^4` edge resistances from a clicked gate.
+
+Two cleanup passes keep the clustered graph structural: curvature-artifact
+nodes (at convex rounded rims the inscribed sphere measures the fillet
+radius, not the wall) are **absorbed** into the wall they hug (their
+spheres overlap a much larger neighbor's — genuinely thin webs/hinges
+extend away and survive), and edges spanning far beyond their endpoint
+spheres (degenerate sliver triangles that would tether whole regions
+through one phantom bridge) are **pruned**. Every skeleton result also
+carries a **mesh spec** — p95 mesh edge vs the median measured wall
+thickness, status ok/marginal/coarse — and downstream analyses surface a
+warning when the shared analysis mesh is under-resolved for its walls.
+
+`sprue_proposals` ranks injection-gate locations automatically over that
+same flow model: surface candidates (grid-decimated, one per skeleton
+node) pass hard filters (min gate thickness; slide/undercut/forbidden-side
+faces when a `mold_orientation` result exists — skipped gracefully
+otherwise), then a multi-source Dijkstra scores each on p95/max fill
+resistance, unreached volume, overpack exposure, thick-region packing
+access through wide channels, and weld-line/air-trap indicators. Scores
+are p5–p95 normalized and weight-combined; every proposal carries its
+subscores and human-readable pros/cons.
+
+```bash
+python test_skeleton.py   # analytic midplanes + result serving round-trip
+python test_sprue.py      # plate → center gate, thick boss → packing access,
+                          # T-part → junction balance, hard filters, round-trip
+```
+
+In the UI: injection molding tab → Compute "Sprue / gate proposals" → the
+"Sprue proposals" view: ranked markers on the part (white = best), a
+clickable proposal list with the pros/cons explanation, per-proposal fill
+painting with a weld-front overlay, an all-candidates score heatmap
+toggle, and "open in fill-flow mode" to carry the gate into the
+interactive view.
+
+## Ejector pins (sticking model + stiffness solve)
+
+`ejection_sticking` estimates how the part grips the mold after shrinkage:
+per-face draft angle vs the pull axis (from the mold orientation when
+present, +Z otherwise), a grip mask (draft below a threshold, restricted
+to B/core-reachable faces when orientation data exists), and a release
+traction `p_shrink · area · max(mu·cosθ − sinθ, 0)` per face — stored as a
+per-vertex heatmap and aggregated per skeleton node. Pin layouts are then
+solved interactively by `POST /api/parts/{id}/ejector/simulate`: a 1-DOF
+deflection model along the pull axis over the clustered skeleton (edge
+springs `3·E·I/L³` with `I = (π/4)r⁴`), pins as supports, sticking forces
+as loads — returning the deflection field plus per-pin force, pressure and
+utilization against an allowable. Deflections are indicative (the spring
+constant is uncalibrated); comparisons between layouts are the product.
+
+```bash
+python test_ejector.py   # analytic wall sticking, chain-spring deflection,
+                         # pin-layout comparisons, equilibrium, round-trip
+```
+
+In the UI: injection molding tab → Compute "Ejection sticking" → the
+"Ejector pins" view: sticking-force heatmap (or a draft-angle view via the
+checkbox), click the part to place pins at the selected diameter, click a
+pin to remove it; the deflection heatmap, utilization-colored pin markers
+and the per-pin force/pressure list update after every change.
 
 Catalog math: of the 16 x 13 nose-radius/diameter grid, ~156 combinations are
 valid (rc <= D/2). Per direction that is ~156 tip closings at ~8 s each
