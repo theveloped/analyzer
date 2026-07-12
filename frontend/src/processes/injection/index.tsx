@@ -6,8 +6,8 @@
 import { putOverrides } from '../../api/client';
 import type { FieldDescriptor, Manifest, ResultEntry } from '../../api/types';
 import {
-  brepFacesMode, COL, faceValues, heatmapMode, highlightsMode, percentile,
-  rampColor, regionColor,
+  brepFacesMode, COL, faceValues, fade, heatmapMode, highlightsMode,
+  nextSetBit, nthSetBit, percentile, popcount, rampColor, regionColor,
 } from '../../colorizers/core';
 import type {
   LegendEntry, PaintInfo, ProcessPlugin, RGB, ViewCtx, ViewMode,
@@ -32,32 +32,6 @@ const ARROW_COLORS: Record<string, RGB> = {
   main_a: [0.44, 0.64, 0.86], // side A
   main_b: [0.62, 0.8, 0.58], // side B
 };
-
-function fade(color: RGB): RGB {
-  return [color[0] * 0.45 + 0.55, color[1] * 0.45 + 0.55, color[2] * 0.45 + 0.55];
-}
-
-function popcount(x: number): number {
-  let n = 0;
-  while (x) { n += x & 1; x >>>= 1; }
-  return n;
-}
-
-function nthSetBit(x: number, n: number): number {
-  for (let bit = 0; bit < 32; bit++) {
-    if ((x >>> bit) & 1) {
-      if (n === 0) return bit;
-      n--;
-    }
-  }
-  return 0;
-}
-
-function nextSetBit(x: number, after: number): number {
-  for (let bit = after + 1; bit < 32; bit++) if ((x >>> bit) & 1) return bit;
-  for (let bit = 0; bit <= after; bit++) if ((x >>> bit) & 1) return bit;
-  return after;
-}
 
 function resultsFor(manifest: Manifest, analysis: string) {
   return manifest.results.filter(

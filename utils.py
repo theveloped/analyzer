@@ -1,6 +1,24 @@
+import hashlib
 import os
 import time
 from loguru import logger
+
+
+def file_fingerprint(path, length=12):
+    """Short content hash of a file, or None if it does not exist.
+
+    Used to detect silent desyncs between artifacts keyed by direction
+    index (zcache fields, setup/mold results) and a regenerated
+    directions.npy.
+    """
+    if not os.path.exists(path):
+        return None
+    digest = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:length]
+
 
 def has_valid_extension(path: str, extensions: list[str] = []):
     if not any(path.lower().endswith(extension) for extension in extensions):

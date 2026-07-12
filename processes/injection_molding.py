@@ -72,7 +72,8 @@ def run_gaps(workdir, params, progress):
 
 
 def run_mold_orientation(workdir, params, progress):
-    cache_params = {**params, "schema": MOLD_SCHEMA}
+    cache_params = {**params, "schema": MOLD_SCHEMA,
+                    "directions": pipeline.directions_fingerprint(workdir)}
     cached = load_cached_result(workdir, "injection_molding",
                                 "mold_orientation", cache_params)
     if cached is not None:

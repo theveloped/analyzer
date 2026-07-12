@@ -128,6 +128,7 @@ def _brep_faces_fields(workdir, base_url, face_count):
 
 def _result_entries(workdir, base_url, face_count, vert_count):
     fields, results = [], []
+    current_fingerprint = pipeline.directions_fingerprint(workdir)
     pattern = os.path.join(workdir, RESULTS_DIR, "*", "*", "*.json")
     for json_path in sorted(glob.glob(pattern)):
         if json_path.endswith("_overrides.json"):
@@ -161,13 +162,19 @@ def _result_entries(workdir, base_url, face_count, vert_count):
                 "params": meta,
             })
 
+        stats = payload.get("stats", {})
+        stored_fingerprint = stats.get("directions_fingerprint")
         results.append({
             "process": process_id,
             "analysis": analysis_id,
             "hash": result_hash,
             "params": payload.get("params", {}),
-            "stats": payload.get("stats", {}),
+            "stats": stats,
             "fields": field_ids,
+            # direction indices in the result no longer match the current
+            # direction set — the result is stale, re-run the analysis
+            "stale": bool(stored_fingerprint
+                          and stored_fingerprint != current_fingerprint),
             "overrides_url": f"{base_url}/results/{process_id}/{analysis_id}/{result_hash}/overrides",
         })
     return fields, results

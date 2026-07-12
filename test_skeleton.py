@@ -18,6 +18,7 @@ import tempfile
 
 import numpy as np
 from meshlib import mrmeshpy as mm
+from meshlib import mrmeshnumpy as mn
 
 import pipeline
 from analysis import get_mesh_data, subdivide_mesh
@@ -211,6 +212,46 @@ def main():
             check(f"served bytes for {name}",
                   dtype == "<" + entry["dtype"] and len(data) == expected,
                   f"{dtype} {len(data)} bytes")
+
+    # --- STEP mesh: non-manifold vertex splitting must not break the ----
+    # per-vertex contract or hang the inscribed-sphere correction
+    step = os.path.join(os.path.dirname(__file__), "tests", "Aligator.STEP")
+    if os.path.exists(step):
+        print("=== STEP part (welded, non-manifold) ===")
+        from processes.base import apply_defaults
+        from processes.prep import PROCESS as PREP
+        from processes.injection_molding import PROCESS as INJ
+        with tempfile.TemporaryDirectory() as tmp:
+            wd = os.path.join(tmp, "Aligator")
+            os.makedirs(wd)
+            import shutil
+            shutil.copy(step, wd)
+            PREP.analysis("mesh").run(
+                wd, apply_defaults(PREP.analysis("mesh"), {}), None)
+            verts, faces = pipeline.load_mesh_arrays(wd)
+
+            # meshlib splits non-manifold verts, so the rebuilt mesh has more
+            # vertices than the on-disk array — the field must still align
+            mesh = mn.meshFromFacesVerts(faces.astype(np.int64), verts)
+            check("STEP mesh is non-manifold (splits verts)",
+                  mesh.topology.vertSize() > len(verts),
+                  f"vertSize {mesh.topology.vertSize()} vs disk {len(verts)}")
+
+            result = INJ.analysis("wall_skeleton").run(
+                wd, apply_defaults(INJ.analysis("wall_skeleton"), {}), None)
+            from processes.base import load_result_arrays
+            from processes.injection_molding import skeleton_cache_params
+            skel = load_result_arrays(
+                wd, "injection_molding", "wall_skeleton",
+                skeleton_cache_params(apply_defaults(
+                    INJ.analysis("wall_skeleton"), {})))
+            check("thickness field aligns to disk vertices",
+                  len(skel["thickness"]) == len(verts),
+                  f"{len(skel['thickness'])} vs {len(verts)}")
+            check("skeleton completes on STEP (no findInSphere hang)",
+                  result.stats["cluster_nodes"] > 0,
+                  f"{result.stats['cluster_nodes']} clusters, "
+                  f"{result.stats['penetrating_dropped']} penetrating dropped")
 
     print()
     if failures:

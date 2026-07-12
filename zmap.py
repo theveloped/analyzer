@@ -31,7 +31,7 @@ from loguru import logger
 from meshlib import mrmeshpy as mm
 from scipy import ndimage
 
-from utils import log_execution_time
+from utils import file_fingerprint, log_execution_time
 
 FREE_SPACE = -1e30  # height of pixels with no material below (tool can plunge)
 
@@ -527,7 +527,7 @@ class DirectionCache:
     compose_unreachable works on either cache.
     """
 
-    VERSION = 4  # rendered border margin + subpixel stickout/clearance sampling
+    VERSION = 5  # + directions fingerprint guards index/vector desyncs
 
     def __init__(self, workdir, direction_index, verts=None, faces=None, pixel=0.1,
                  window=0.3, engine="zmap", scale=10.0):
@@ -545,24 +545,34 @@ class DirectionCache:
         self._mesh = None
         self._undercut_mesh = None
 
-        directions = np.load(os.path.join(workdir, "directions.npy"))
+        directions_path = os.path.join(workdir, "directions.npy")
+        self.directions_fingerprint = file_fingerprint(directions_path)
+        directions = np.load(directions_path)
         self.direction = directions[direction_index]
 
         if os.path.exists(self.path):
             stored = np.load(self.path, allow_pickle=False)
             same_pixel = abs(stored["pixel"][0] - pixel) < 1e-12
             same_version = "version" in stored.files and stored["version"][0] == self.VERSION
-            if same_pixel and same_version:
+            # fields are keyed by direction INDEX: a regenerated
+            # directions.npy renumbers them, so a cache from another
+            # direction set must not be trusted
+            same_dirs = ("dirfp" in stored.files
+                         and stored["dirfp"][0].decode() == self.directions_fingerprint)
+            if same_pixel and same_version and same_dirs:
                 self._fields = {k: stored[k] for k in stored.files}
                 logger.debug(f"Loaded cache {self.path} with {len(self._fields)} arrays")
             else:
-                logger.warning(f"Pixel size or cache version changed, discarding cache {self.path}")
+                logger.warning(
+                    f"Pixel size, cache version or direction set changed, "
+                    f"discarding cache {self.path}")
                 self._fields = {}
 
         if not self._fields:
             self._fields = {
                 "version": np.array([self.VERSION]),
                 "pixel": np.array([pixel]),
+                "dirfp": np.array([self.directions_fingerprint], dtype="S12"),
             }
             if engine == "zmap":
                 # margin covers the whole euclidean_gap window (window_px in
@@ -740,6 +750,44 @@ class DirectionCache:
 def faces_all_verts(faces, vertex_flags):
     """Faces whose three vertices are all flagged (same rule as map_result_faces)."""
     return np.where(vertex_flags[faces].all(axis=1))[0]
+
+
+def tool_face_verdict(cache, faces, angles_deg, *, diameter, corner_radius=0.0,
+                      stickout=None, cylinders=None, tollerance=0.1,
+                      wall_tollerance=1.0):
+    """Per-face machinability verdict for one tool, from cached fields only.
+
+    THE canonical face rule — shared by CLI compose and the tool-aware setup
+    verdict; the viewer's interactive thresholds mirror it client-side:
+
+    - tip: a face is blocked iff all three vertex gaps exceed the threshold.
+      Near-vertical walls (within ``wall_tollerance`` degrees of 90°) are
+      finished by the tool flank, so they use the pixel-noise-proof
+      threshold max(tollerance, 2.5 * pixel) instead of the plain tolerance
+      — reachable walls carry ~1 pixel of height-map quantization noise,
+      unreachable ones sit whole millimetres inside the closed solid.
+    - holder: with ``cylinders`` [(radius, start), ...] and a ``stickout``,
+      a face is additionally blocked iff all three vertices require more
+      stickout than the tool has (tip-aware fields when available).
+
+    ``angles_deg`` is the per-face angle between the outward normal and the
+    cache's approach direction. Returns (machinable bool[F], gap,
+    min_stick); machinable is NOT masked by visibility — callers AND it
+    with the direction's accessibility row.
+    """
+    gap = cache.tip_gap(diameter, corner_radius)
+    wall_threshold = max(tollerance, 2.5 * float(cache.pixel))
+    is_wall = np.abs(np.asarray(angles_deg) - 90.0) <= wall_tollerance
+    threshold = np.where(is_wall, wall_threshold, tollerance)
+
+    blocked = (gap[faces] > threshold[:, None]).all(axis=1)
+
+    min_stick = None
+    if cylinders:
+        min_stick = cache.min_stickout(cylinders, tip=(diameter, corner_radius))
+        if stickout is not None:
+            blocked |= (min_stick[faces] > stickout + tollerance).all(axis=1)
+    return ~blocked, gap, min_stick
 
 
 def compose_unreachable(cache, faces, diameter, corner_radius, tollerance,

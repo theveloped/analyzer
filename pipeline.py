@@ -25,7 +25,7 @@ from analysis import (
     compute_accessibility,
     relax_accessibility,
 )
-from utils import has_valid_extension, ensure_directory
+from utils import ensure_directory, file_fingerprint, has_valid_extension
 
 FINE_MESH_FILE = "fine_mesh.obj"
 FINE_VERTS_FILE = "fine_verts.npy"
@@ -55,6 +55,48 @@ def parse_tips(specs):
     return tips
 
 
+def directions_fingerprint(workdir):
+    """Short content hash of directions.npy (None before prep/directions).
+
+    Every artifact keyed by direction index (zcache fields, setup and mold
+    results) salts this in, so regenerating the direction set invalidates
+    caches instead of silently renumbering them.
+    """
+    return file_fingerprint(os.path.join(workdir, DIRECTIONS_FILE))
+
+
+def parse_tools(entries):
+    """Normalize tool library entries into dicts.
+
+    Accepts dicts {diameter, corner_radius, stickout, holder_radius} or
+    'D[:rc[:stickout[:holder_radius]]]' strings. corner_radius defaults to 0
+    (flat endmill); stickout/holder_radius may be None (no length / holder
+    check for that tool).
+    """
+    tools = []
+    for entry in entries or []:
+        if isinstance(entry, dict):
+            tool = {
+                "diameter": float(entry["diameter"]),
+                "corner_radius": float(entry.get("corner_radius") or 0.0),
+                "stickout": (None if entry.get("stickout") is None
+                             else float(entry["stickout"])),
+                "holder_radius": (None if entry.get("holder_radius") is None
+                                  else float(entry["holder_radius"])),
+            }
+        else:
+            parts = [p.strip() for p in str(entry).split(":")]
+            parts += [""] * (4 - len(parts))
+            tool = {
+                "diameter": float(parts[0]),
+                "corner_radius": float(parts[1] or 0.0),
+                "stickout": float(parts[2]) if parts[2] else None,
+                "holder_radius": float(parts[3]) if parts[3] else None,
+            }
+        tools.append(tool)
+    return tools
+
+
 def parse_holder(spec):
     """Parse a holder stack 'radius:start,radius:start,...' into tuples."""
     if not spec:
@@ -78,6 +120,20 @@ def load_mesh_arrays(workdir):
     verts = np.load(os.path.join(workdir, FINE_VERTS_FILE))
     faces = np.load(os.path.join(workdir, FINE_FACES_FILE))
     return verts, faces
+
+
+def _per_vertex(values, vert_count):
+    """Trim a meshlib per-vertex array to the stored vertex count.
+
+    meshFromFacesVerts splits non-manifold vertices (common on STEP meshes
+    welded along shared BREP edges), so meshlib's per-vertex outputs can be
+    longer than the on-disk fine_verts array. The original vertices are
+    preserved in place at indices [0, vert_count); the appended duplicates
+    are extra copies at those same positions. Trimming realigns any
+    per-vertex field to the stable fine_verts / fine_faces indexing every
+    analysis and the viewer share.
+    """
+    return np.asarray(values)[:vert_count]
 
 
 def auto_subdivide(diagonal):
@@ -274,7 +330,7 @@ def compute_thickness(workdir, *, max_radius=None, inverted=False,
 
     _report(progress, 0.2, "rolling inscribed spheres")
     result = mm.computeInSphereThicknessAtVertices(mesh, settings)
-    values = np.array(result.vec, dtype=np.float32)
+    values = _per_vertex(np.array(result.vec, dtype=np.float32), len(verts))
     _report(progress, 1.0, "thickness field done")
     return values, float(max_radius)
 
@@ -345,8 +401,277 @@ def mold_orientation(workdir, *, max_slides=2, slide_tollerance=2.0, count=10,
         "schema": 2,
         "face_count": int(accessibility.shape[1]),
         "direction_count": int(directions.shape[0]),
+        "directions_fingerprint": directions_fingerprint(workdir),
         "brep": brep_ids is not None,
         "options": options[:count],
+    }
+    return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
+
+
+SETUPS_STATS_SCHEMA = 2  # area-weighted counts + directions fingerprint
+
+
+def _setup_machines(indexed, tilt):
+    machines = [("3-axis", 0.0)]
+    if indexed:
+        machines.append(("3+2", float(tilt)))
+    return machines
+
+
+def _ranked_setup_options(directions, accessibility, weights, *, machines,
+                          max_setups, min_setup_area, count, field_options):
+    """Shared search + report shaping for cnc_setups and setup_verdict.
+
+    Returns (reported, picked): the reported option list (top `count` plus
+    any appended signature-best plans) and the field-option indices into it
+    — the best plan of each distinct (machine, setup count) signature.
+    min_setup_area=None defaults to 0.1% of the total surface area.
+    """
+    import machining
+
+    if min_setup_area is None:
+        min_setup_area = 1e-3 * float(weights.sum())
+    options = machining.setup_search(
+        directions, accessibility, weights=weights, machines=machines,
+        max_setups=max_setups, min_setup_gain=min_setup_area)
+
+    reported = options[:count]
+    picked, signatures = [], set()
+    for index, option in enumerate(options):
+        signature = (option["machine"], len(option["setups"]))
+        if signature in signatures:
+            continue
+        signatures.add(signature)
+        if index >= count:
+            # a signature's best plan ranked past the report cut — append
+            # it so every field option is present in stats["options"]
+            reported.append(option)
+            index = len(reported) - 1
+        picked.append(index)
+        if len(picked) == field_options:
+            break
+
+    for option in options:
+        option.pop("machine_rank", None)
+    return reported, picked
+
+
+def _membership_fields(k, option_index, option, membership, pairs, faces,
+                       brep_ids, arrays, field_meta):
+    """Derive the per-face assignment fields of one option's membership."""
+    import machining
+    import molding
+
+    setup_count = len(option["setups"])
+    region, region_counts = molding.internal_regions(membership, pairs,
+                                                     len(faces))
+    labels, colors = machining.setup_labels_colors(
+        [s["vector"] for s in option["setups"]])
+
+    common = {"kind": "setup_membership", "option": option_index,
+              "machine": option["machine"], "features": setup_count,
+              "labels": labels, "colors": colors,
+              "conflict_color": machining.CATEGORY_COLORS["conflict"],
+              "internal_color": machining.CATEGORY_COLORS["unmachinable"]}
+    arrays[f"membership_{k}"] = membership
+    field_meta[f"membership_{k}"] = {
+        **common, "variant": "membership", "association": "face",
+        "role": "category", "dtype": "u4"}
+    arrays[f"internal_region_{k}"] = region
+    field_meta[f"internal_region_{k}"] = {
+        **common, "variant": "internal_region", "association": "face",
+        "role": "category", "dtype": "u4", "regions": len(region_counts),
+        "region_counts": region_counts}
+
+    if brep_ids is not None:
+        valid = molding.brep_validity(membership, brep_ids, setup_count)
+        arrays[f"brep_valid_{k}"] = valid
+        field_meta[f"brep_valid_{k}"] = {
+            **common, "variant": "brep_valid", "association": "none",
+            "role": "data", "dtype": "u4", "count": int(len(valid))}
+        defaults = machining.setup_defaults(membership, valid, brep_ids)
+        arrays[f"brep_default_{k}"] = defaults
+        field_meta[f"brep_default_{k}"] = {
+            **common, "variant": "brep_default", "association": "none",
+            "role": "data", "dtype": "u1", "count": int(len(defaults))}
+
+
+def cnc_setups(workdir, *, indexed=True, tilt=90.0, max_setups=4,
+               min_setup_area=None, count=10, field_options=3, progress=None):
+    """Search CNC setup combinations and derive per-face assignment fields.
+
+    Machines searched: a plain 3-axis (one direction per setup) and, with
+    ``indexed``, a 3+2 whose setups cover a ``tilt``-degree cone. All counts
+    are area-weighted (mm²); ``min_setup_area`` defaults to 0.1% of the
+    total surface area. Returns {"stats": <JSON-safe>, "arrays": {...},
+    "field_meta": {...}} with membership/region/brep fields for up to
+    `field_options` options — picked as the best of each distinct (machine,
+    setup count) signature, so a single-setup 3+2 plan is explorable next
+    to the 3-axis flips instead of buried under them.
+    stats["field_options"] maps field index k -> index into
+    stats["options"]. The brep fields need brep_faces.npy (STEP-meshed
+    parts); they are skipped otherwise.
+    """
+    import machining
+    import molding
+
+    verts, faces = load_mesh_arrays(workdir)
+    directions = np.load(os.path.join(workdir, DIRECTIONS_FILE))
+    accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))
+    weights = machining.face_areas(verts, faces)
+
+    brep_path = os.path.join(workdir, BREP_FACES_FILE)
+    brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
+
+    _report(progress, 0.1, "searching setup combinations")
+    reported, picked = _ranked_setup_options(
+        directions, accessibility, weights,
+        machines=_setup_machines(indexed, tilt), max_setups=max_setups,
+        min_setup_area=min_setup_area, count=count,
+        field_options=field_options)
+
+    _report(progress, 0.5, "deriving membership fields")
+    pairs, _ = molding.face_adjacency(faces)
+
+    covers = {}
+    arrays, field_meta = {}, {}
+    for k, index in enumerate(picked):
+        option = reported[index]
+        if option["machine"] not in covers:
+            covers[option["machine"]] = machining.machine_cover(
+                directions, accessibility, option["tilt"])
+        cover = covers[option["machine"]]
+        membership = machining.setup_membership(
+            [s["direction"] for s in option["setups"]], cover)
+        _membership_fields(k, index, option, membership, pairs, faces,
+                           brep_ids, arrays, field_meta)
+
+    stats = {
+        "schema": SETUPS_STATS_SCHEMA,
+        "face_count": int(accessibility.shape[1]),
+        "direction_count": int(directions.shape[0]),
+        "total_area": round(float(weights.sum()), 3),
+        "directions_fingerprint": directions_fingerprint(workdir),
+        "brep": brep_ids is not None,
+        "options": reported,
+        "field_options": picked,
+    }
+    return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
+
+
+def setup_verdict(workdir, *, option=0, tools=(), tollerance=0.1,
+                  wall_tollerance=1.0, pixel=0.1, window=0.3, indexed=True,
+                  tilt=90.0, max_setups=4, min_setup_area=None, count=10,
+                  field_options=3, progress=None):
+    """Re-verdict one ranked setup plan with a real tool library.
+
+    The funnel's second stage: the visibility-only search proposes plans
+    cheaply; this recomputes the same ranked list (same parameters ->
+    identical ranking), takes plan ``option`` and rebuilds its per-setup
+    coverage from actual tool reachability — a face counts iff some tool in
+    the library reaches it (tip gap within tolerance, walls side-milled,
+    required stickout within the tool's length) from a direction the setup
+    can use (the primary for 3-axis, every sampled direction inside the
+    tilt cone for 3+2). Fields (gap + tip-aware stickout per direction and
+    tool) come from the zmap DirectionCache, computed lazily and persisted,
+    so repeated verdicts are cheap.
+
+    Faces the visibility search covered but no tool reaches become
+    membership-0 "lost to tooling" regions; the stored result mirrors a
+    setups result (schema, membership/brep fields) with a single option
+    carrying tool-aware counts plus a "verdict" block, so the viewer's
+    setups mode renders it unchanged.
+    """
+    import machining
+    import molding
+    from zmap import DirectionCache, tool_face_verdict
+
+    tools = parse_tools(tools)
+    if not tools:
+        raise ValueError("setup_verdict needs at least one tool")
+
+    verts, faces = load_mesh_arrays(workdir)
+    directions = np.load(os.path.join(workdir, DIRECTIONS_FILE))
+    accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))
+    weights = machining.face_areas(verts, faces)
+    normals = machining.face_unit_normals(verts, faces)
+
+    brep_path = os.path.join(workdir, BREP_FACES_FILE)
+    brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
+
+    _report(progress, 0.02, "ranking setup plans")
+    reported, _ = _ranked_setup_options(
+        directions, accessibility, weights,
+        machines=_setup_machines(indexed, tilt), max_setups=max_setups,
+        min_setup_area=min_setup_area, count=count,
+        field_options=field_options)
+    if not 0 <= option < len(reported):
+        raise ValueError(f"option {option} out of range (0..{len(reported) - 1})")
+    plan = reported[option]
+
+    # per-setup tool coverage: OR over (cone direction x tool) verdicts
+    setup_dirs = [s["direction"] for s in plan["setups"]]
+    cone = machining.cone_members(directions, plan["tilt"])
+    direction_sets = [cone[d] for d in setup_dirs]
+    total_steps = max(sum(len(ds) for ds in direction_sets), 1)
+
+    step = 0
+    rows = []
+    for s, members in enumerate(direction_sets):
+        row = np.zeros(len(faces), dtype=bool)
+        for d in members:
+            _report(progress, 0.05 + 0.85 * step / total_steps,
+                    f"setup {s + 1}: tool fields for direction {d}")
+            step += 1
+            visible = accessibility[d]
+            if not visible.any():
+                continue
+            cache = DirectionCache(workdir, int(d), verts=verts, faces=faces,
+                                   pixel=pixel, window=window, engine="zmap")
+            angles = machining.face_angles_deg(normals, directions[d])
+            for tool in tools:
+                cylinders = ([(tool["holder_radius"], 0.0)]
+                             if tool["holder_radius"] else None)
+                machinable, _, _ = tool_face_verdict(
+                    cache, faces, angles, diameter=tool["diameter"],
+                    corner_radius=tool["corner_radius"],
+                    stickout=tool["stickout"], cylinders=cylinders,
+                    tollerance=tollerance, wall_tollerance=wall_tollerance)
+                row |= machinable & visible
+        rows.append(row)
+
+    _report(progress, 0.92, "deriving membership fields")
+    verdict_option = machining.reweight_option(plan, rows, weights)
+    visible_any = machining.setup_membership(
+        setup_dirs, machining.machine_cover(directions, accessibility,
+                                            plan["tilt"])) > 0
+    membership = machining.membership_from_rows(rows)
+    lost = round(float(weights[visible_any & (membership == 0)].sum()), 3)
+    verdict_option["verdict"] = {
+        "tools": tools,
+        "tollerance": float(tollerance),
+        "wall_tollerance": float(wall_tollerance),
+        "pixel": float(pixel),
+        "base_option": int(option),
+        "base_coverage": plan["coverage"],
+        "lost": lost,
+    }
+
+    pairs, _ = molding.face_adjacency(faces)
+    arrays, field_meta = {}, {}
+    _membership_fields(0, 0, verdict_option, membership, pairs, faces,
+                       brep_ids, arrays, field_meta)
+
+    stats = {
+        "schema": SETUPS_STATS_SCHEMA,
+        "verdict": True,
+        "face_count": int(accessibility.shape[1]),
+        "direction_count": int(directions.shape[0]),
+        "total_area": round(float(weights.sum()), 3),
+        "directions_fingerprint": directions_fingerprint(workdir),
+        "brep": brep_ids is not None,
+        "options": [verdict_option],
+        "field_options": [0],
     }
     return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
 
@@ -375,52 +700,44 @@ def _skeleton_centers(mesh, verts, faces, radii, settings, progress):
     """Inscribed-sphere centers per vertex.
 
     meshlib constrains each sphere's center to the inward normal at the
-    vertex, so centers reconstruct vectorized as p - n*r. That is exact on
-    smooth regions but the normal convention can differ from meshlib's at
-    sharp features, so suspects (center measurably closer to the surface
-    than its radius, or vertices spanning a sharp crease) are recomputed
-    exactly with findInSphere.
+    vertex, so centers reconstruct vectorized as p - n*r — exact on smooth
+    regions. Two suspect classes are handled without meshlib's per-vertex
+    findInSphere (which can hang indefinitely on the degenerate, split
+    topology of welded STEP meshes and cannot be interrupted from Python):
+
+    - penetrating: the reconstructed center sits closer to the surface than
+      its own radius, so the estimate is unreliable — those vertices are
+      dropped (radius -> nan) rather than seeding a bad skeleton node. They
+      are ~1% at most and the clustered graph stays connected.
+    - sharp crease: the averaged normal is a fine medial direction there and
+      the downstream absorption pass folds rim/crease nodes into their wall,
+      so the estimate is kept as-is.
     """
     from meshlib import mrmeshpy as mm
     from scipy.spatial import cKDTree
 
-    normals = mn.toNumpyArray(mm.computePerVertNormals(mesh))
+    normals = _per_vertex(
+        mn.toNumpyArray(mm.computePerVertNormals(mesh)), len(verts))
     centers = verts.astype(np.float64) - normals * radii[:, None]
 
     tri = verts[faces].astype(np.float64)
-    face_normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
-    face_normals /= np.maximum(
-        np.linalg.norm(face_normals, axis=1, keepdims=True), 1e-30)
     edge_lengths = np.linalg.norm(tri - np.roll(tri, -1, axis=1), axis=2)
     mean_edge = float(edge_lengths.mean())
-
-    # sharp-crease flag: worst alignment between a vertex normal and the
-    # normals of its incident faces
-    alignment = np.ones(len(verts))
-    spread = (face_normals[:, None, :] * normals[faces]).sum(axis=2)
-    for corner in range(3):
-        np.minimum.at(alignment, faces[:, corner], spread[:, corner])
-    sharp = alignment < np.cos(np.radians(30.0))
 
     # penetration flag: a valid center keeps its radius from the surface
     # (vertex samples of it; mean_edge covers sampling slack)
     surface_distance, _ = cKDTree(verts).query(centers, workers=-1)
     tolerance = np.maximum(0.05 * radii, 0.5 * mean_edge)
-    penetrating = surface_distance < radii - tolerance
+    penetrating = (surface_distance < radii - tolerance) & np.isfinite(radii)
 
-    suspects = np.where((sharp | penetrating) & np.isfinite(radii))[0]
-    if len(suspects) > 0.2 * len(verts):
+    radii = radii.copy()
+    radii[penetrating] = np.nan
+    dropped = int(penetrating.sum())
+    if dropped > 0.1 * len(verts):
         logger.warning(
-            f"{len(suspects)}/{len(verts)} suspect sphere centers; "
-            "normal convention mismatch? correcting all of them")
-    for step, vert in enumerate(suspects):
-        if step % 4096 == 0:
-            _report(progress, 0.3 + 0.3 * step / len(suspects),
-                    f"correcting sphere centers ({step}/{len(suspects)})")
-        sphere = mm.findInSphere(mesh, mm.VertId(int(vert)), settings)
-        centers[vert] = (sphere.center.x, sphere.center.y, sphere.center.z)
-        radii[vert] = sphere.radius
-    return centers, radii, len(suspects)
+            f"{dropped}/{len(verts)} penetrating sphere centers dropped; "
+            "mesh may be under-resolved or degenerate")
+    return centers, radii, dropped
 
 
 def _cluster_nodes(nodes, radii, cluster_factor):
@@ -546,8 +863,9 @@ def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
 
     _report(progress, 0.05, "inscribed sphere thickness")
     settings = _in_sphere_settings(max_radius)
-    thickness = np.array(
-        mm.computeInSphereThicknessAtVertices(mesh, settings).vec)
+    thickness = _per_vertex(
+        np.array(mm.computeInSphereThicknessAtVertices(mesh, settings).vec),
+        vert_count)
     radii = thickness / 2.0
 
     _report(progress, 0.3, "sphere centers")
@@ -675,7 +993,7 @@ def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
         "mesh": mesh_spec,
         "mean_thickness": float(finite.mean()) if len(finite) else None,
         "min_thickness": float(finite.min()) if len(finite) else None,
-        "corrected": int(corrected),
+        "penetrating_dropped": int(corrected),
         "dropped": int(vert_count - node_count),
     }
     logger.info(
@@ -1125,9 +1443,14 @@ def precompute_fields(workdir, *, directions, pixel=1e-1, tips=(), clearances=()
 
 def compose_tool(workdir, direction, *, pixel=1e-1, tollerance=1e-1, diameter=2.0,
                  corner_radius=0.0, stickout=None, cylinders=None, sweep=(),
-                 engine="zmap", window=0.3, progress=None):
-    """Evaluate a full tool assembly from precomputed fields."""
-    from zmap import DirectionCache, compose_unreachable
+                 wall_tollerance=1.0, engine="zmap", window=0.3, progress=None):
+    """Evaluate a full tool assembly from precomputed fields.
+
+    Uses the canonical per-face rule (zmap.tool_face_verdict), including the
+    side-milled treatment of near-vertical walls the viewer applies.
+    """
+    import machining
+    from zmap import DirectionCache, tool_face_verdict
 
     verts, faces = load_mesh_arrays(workdir)
     accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))
@@ -1135,27 +1458,32 @@ def compose_tool(workdir, direction, *, pixel=1e-1, tollerance=1e-1, diameter=2.
     _report(progress, 0.1, "composing tool verdict")
     cache = DirectionCache(workdir, direction, verts=verts, faces=faces,
                            pixel=pixel, window=window, engine=engine)
-    unreachable_faces, gap, min_stick = compose_unreachable(
-        cache, faces, diameter, corner_radius, tollerance,
-        stickout=stickout, cylinders=cylinders,
-    )
+    angles = machining.face_angles_deg(machining.face_unit_normals(verts, faces),
+                                       cache.direction)
+    machinable, _, min_stick = tool_face_verdict(
+        cache, faces, angles, diameter=diameter, corner_radius=corner_radius,
+        stickout=stickout, cylinders=cylinders, tollerance=tollerance,
+        wall_tollerance=wall_tollerance)
 
     # Keep only the faces that are accessible
-    unreachable_faces = unreachable_faces[accessibility[direction, unreachable_faces]]
+    unreachable_faces = np.flatnonzero(~machinable & accessibility[direction])
 
     accessible_count = int(accessibility[direction].sum())
     logger.info(f"Tool D={diameter} rc={corner_radius} stickout={stickout} cannot reach {len(unreachable_faces)} of {accessible_count} accessible faces")
 
-    # A stickout sweep is free: threshold the cached per-vertex field
+    # A stickout sweep is free: re-threshold the cached per-vertex fields
     sweep_results = []
     if sweep and min_stick is not None:
         for sweep_stickout in sweep:
-            blocked = (gap > tollerance) | (min_stick > sweep_stickout + tollerance)
-            swept = np.where(blocked[faces].all(axis=1))[0]
-            swept = swept[accessibility[direction, swept]]
-            logger.info(f"  stickout {sweep_stickout:8.2f}: {len(swept)} unreachable faces")
+            swept_ok, _, _ = tool_face_verdict(
+                cache, faces, angles, diameter=diameter,
+                corner_radius=corner_radius, stickout=sweep_stickout,
+                cylinders=cylinders, tollerance=tollerance,
+                wall_tollerance=wall_tollerance)
+            swept = int((~swept_ok & accessibility[direction]).sum())
+            logger.info(f"  stickout {sweep_stickout:8.2f}: {swept} unreachable faces")
             sweep_results.append({"stickout": float(sweep_stickout),
-                                  "unreachable": int(len(swept))})
+                                  "unreachable": swept})
 
     unreachable_faces = unreachable_faces.tolist()
     write_highlights(workdir, unreachable_faces)
