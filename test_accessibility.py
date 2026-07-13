@@ -10,6 +10,7 @@ slot 3 wide x 3 deep). From +Z:
 
 Run from the repo root: python test_accessibility.py
 """
+import os
 import sys
 
 import numpy as np
@@ -56,6 +57,79 @@ def build_regions(verts, faces):
     }
 
 
+def write_step(path, shape):
+    from OCP.STEPControl import STEPControl_StepModelType, STEPControl_Writer
+
+    writer = STEPControl_Writer()
+    writer.Transfer(shape, STEPControl_StepModelType.STEPControl_AsIs)
+    writer.Write(path)
+    return path
+
+
+def wall_angles(workdir, kind, direction):
+    """Angles (deg) between the stored normals of `kind`-type BREP faces and
+    `direction` — exact BREP normals via pipeline.load_face_normals."""
+    import json
+    import pipeline
+
+    brep_ids = np.load(os.path.join(workdir, "brep_faces.npy"))
+    with open(os.path.join(workdir, "brep_meta.json")) as f:
+        types = json.load(f)["surface_types"]
+    normals = pipeline.load_face_normals(workdir).astype(np.float64)
+    wall = np.isin(brep_ids, [i for i, t in enumerate(types) if t == kind])
+    dots = normals[wall] @ np.asarray(direction, dtype=np.float64)
+    return np.degrees(np.arccos(np.clip(dots, -1, 1))), wall
+
+
+def fixture_brep_curved(check):
+    """Curved STEP faces classify by their exact surface normal: a vertical
+    cylinder wall is exactly 90 deg (uniformly accessible from +-Z) and a
+    drafted cone wall sits exactly at 90 - draft — the facet normals the
+    coarse tessellation froze into the mesh are off by degrees."""
+    import tempfile
+
+    import pipeline
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone, BRepPrimAPI_MakeCylinder
+
+    z = [0.0, 0.0, 1.0]
+    with tempfile.TemporaryDirectory() as tmp:
+        path = write_step(os.path.join(tmp, "cylinder.stp"),
+                          BRepPrimAPI_MakeCylinder(6.0, 20.0).Shape())
+        wd = os.path.join(tmp, "cyl")
+        os.makedirs(wd)
+        pipeline.mesh_part(path, wd, resolution=0.5)
+
+        angles, wall = wall_angles(wd, "cylinder", z)
+        check("cylinder wall exactly 90 deg",
+              float(np.abs(angles - 90.0).max()) < 1e-3,
+              f"max |angle-90| = {np.abs(angles - 90.0).max():.2e} deg "
+              f"over {int(wall.sum())} faces")
+
+        pipeline.compute_directions(wd, count=2, axes=True)
+        access = np.load(os.path.join(wd, "accessibility.npy"))
+        up, down = access[4][wall], access[5][wall]
+        check("cylinder wall uniformly visible from +-Z",
+              bool(up.all() and down.all()),
+              f"+Z {up.mean() * 100:.1f}%  -Z {down.mean() * 100:.1f}%")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # base R=8 at z=0, top R=6 at z=20 -> draft atan(0.1), outward
+        # normals tilt up: angle to +Z is exactly 90 - draft
+        draft = np.degrees(np.arctan((8.0 - 6.0) / 20.0))
+        path = write_step(os.path.join(tmp, "cone.stp"),
+                          BRepPrimAPI_MakeCone(8.0, 6.0, 20.0).Shape())
+        wd = os.path.join(tmp, "cone")
+        os.makedirs(wd)
+        pipeline.mesh_part(path, wd, resolution=0.5)
+
+        angles, wall = wall_angles(wd, "cone", z)
+        check("cone wall exactly at 90 - draft",
+              float(np.abs(angles - (90.0 - draft)).max()) < 1e-3,
+              f"draft {draft:.3f} deg, max err "
+              f"{np.abs(angles - (90.0 - draft)).max():.2e} deg "
+              f"over {int(wall.sum())} faces")
+
+
 def main():
     failures = []
     part = make_part()
@@ -86,6 +160,9 @@ def main():
     check("pocket walls uniform", frac in (0.0, 1.0),
           f"accessible {frac * 100:5.1f}%  faces {int(walls.sum())}")
     check("pocket walls accessible", frac == 1.0, "")
+
+    print("=== exact BREP normals on curved STEP faces ===")
+    fixture_brep_curved(check)
 
     print("ALL CHECKS PASSED" if not failures else "FAILURES:\n  " + "\n  ".join(failures))
     return 1 if failures else 0

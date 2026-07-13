@@ -180,14 +180,15 @@ def sample_unity_vector_pairs(n):
 
 @log_execution_time
 def compute_accessibility(mesh, directions, face_count, *, tolerance_deg=0.1,
-                          pixel=None):
+                          pixel=None, normals=None):
     """Per-direction face accessibility via our own visibility test.
 
     A face is accessible iff it faces the direction within `tolerance_deg`
     (near-vertical walls are deterministically front-facing — no speckle)
     and no material shadows it per a rendered height map (zmap engine).
     `pixel` is the height-map resolution; None derives it from the part's
-    bounding box diagonal.
+    bounding box diagonal. ``normals`` overrides the facet normals (pass
+    exact BREP surface normals for STEP parts).
     """
     from zmap import face_visibility
 
@@ -203,6 +204,6 @@ def compute_accessibility(mesh, directions, face_count, *, tolerance_deg=0.1,
     for i in range(dir_count):
         accessibility[i, :] = face_visibility(
             mesh, verts, faces, directions[i],
-            tolerance_deg=tolerance_deg, pixel=pixel)
+            tolerance_deg=tolerance_deg, pixel=pixel, normals=normals)
 
     return accessibility

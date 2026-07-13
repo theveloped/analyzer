@@ -87,10 +87,14 @@ def fixture_brep(check):
             n_brep += 1
             explorer.Next()
 
-        verts, faces, ids, types = brep.mesh_step(path, deflection=0.5)
+        verts, faces, ids, types, params = brep.mesh_step(path, deflection=0.5)
         check("brep face count matches TopExp",
               len(types) == n_brep and len(np.unique(ids)) == n_brep,
               f"{len(np.unique(ids))} ids / {n_brep} BREP faces")
+        check("planar faces carry analytic params",
+              len(params) == n_brep and all(
+                  p is not None and p["type"] == "plane"
+                  for p, t in zip(params, types) if t == "plane"), "")
         check("welded mesh is conformal (watertight)",
               bool(np.all(edge_counts(faces.astype(np.int64)) == 2)), "")
 
@@ -117,10 +121,26 @@ def fixture_brep(check):
               and int(id_pairs.max()) < n_brep,
               f"{len(segments)} segments")
 
+        # exact normals: stored eagerly, and equal to the facet normals on
+        # this all-planar part (sign-vote regression guard)
+        import json as json_module
+        meta = json_module.load(
+            open(os.path.join(workdir, "brep_meta.json")))
+        stored = pipeline.load_face_normals(workdir)
+        wv, wf = pipeline.load_mesh_arrays(workdir)
+        tri = wv[wf]
+        facet = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        facet /= np.maximum(np.linalg.norm(facet, axis=1, keepdims=True), 1e-30)
+        check("exact normals stored and match facets on planes",
+              "surface_params" in meta
+              and stored.shape == facet.shape
+              and float(np.abs(stored - facet).max()) < 1e-5,
+              f"max |exact - facet| = {np.abs(stored - facet).max():.2e}")
+
     # real STEP: id count matches OCC's face count
     shape = brep.load_step_shape("tests/testpart_42.stp")
     n = sum(1 for _ in brep.iter_faces(shape))
-    _, _, ids, types = brep.mesh_step("tests/testpart_42.stp", deflection=0.5)
+    _, _, ids, types, _ = brep.mesh_step("tests/testpart_42.stp", deflection=0.5)
     check("testpart_42.stp face count", len(types) == n, f"{len(types)} / {n}")
 
 

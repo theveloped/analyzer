@@ -67,13 +67,55 @@ def mesh_step(path, *, deflection=0.5, angular_deflection=0.5):
                       angular_deflection=angular_deflection)
 
 
+def _xyz(v):
+    return [float(v.X()), float(v.Y()), float(v.Z())]
+
+
+def _surface_params(surf):
+    """JSON-safe analytic parameters of a BREP face surface, or None.
+
+    Only the five analytic quadrics are captured — enough to evaluate the
+    exact surface normal at any point, at any subdivision level. The cone is
+    normalized at extraction (apex + axis it opens along, alpha >= 0) so the
+    downstream formula is unconditional.
+    """
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    kind = surf.GetType()
+    if kind == GeomAbs_SurfaceType.GeomAbs_Plane:
+        return {"type": "plane",
+                "normal": _xyz(surf.Plane().Axis().Direction())}
+    if kind == GeomAbs_SurfaceType.GeomAbs_Cylinder:
+        axis = surf.Cylinder().Axis()
+        return {"type": "cylinder", "point": _xyz(axis.Location()),
+                "axis": _xyz(axis.Direction())}
+    if kind == GeomAbs_SurfaceType.GeomAbs_Cone:
+        cone = surf.Cone()
+        axis = _xyz(cone.Axis().Direction())
+        alpha = float(cone.SemiAngle())
+        if alpha < 0:
+            axis = [-c for c in axis]
+            alpha = -alpha
+        return {"type": "cone", "apex": _xyz(cone.Apex()), "axis": axis,
+                "alpha": alpha}
+    if kind == GeomAbs_SurfaceType.GeomAbs_Sphere:
+        return {"type": "sphere", "center": _xyz(surf.Sphere().Location())}
+    if kind == GeomAbs_SurfaceType.GeomAbs_Torus:
+        torus = surf.Torus()
+        return {"type": "torus", "center": _xyz(torus.Location()),
+                "axis": _xyz(torus.Axis().Direction()),
+                "major_radius": float(torus.MajorRadius())}
+    return None
+
+
 @log_execution_time
 def mesh_shape(shape, *, deflection=0.5, angular_deflection=0.5):
     """Tessellate a BREP shape keeping per-triangle face provenance.
 
     Returns (verts float64[V,3], faces int32[F,3], face_ids int32[F],
-    surface_types list[str] per BREP face). The mesh is conformal: vertices
-    along shared BREP edges are welded into single entries.
+    surface_types list[str] per BREP face, surface_params list per BREP
+    face). The mesh is conformal: vertices along shared BREP edges are
+    welded into single entries.
     """
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface
@@ -88,12 +130,15 @@ def mesh_shape(shape, *, deflection=0.5, angular_deflection=0.5):
     all_triangles = []
     face_ids = []
     surface_types = []
+    surface_params = []
     offset = 0
 
     for face_index, face in enumerate(iter_faces(shape)):
+        adaptor = BRepAdaptor_Surface(face)
         surface_types.append(
-            SURFACE_TYPES[min(int(BRepAdaptor_Surface(face).GetType()),
+            SURFACE_TYPES[min(int(adaptor.GetType()),
                               len(SURFACE_TYPES) - 1)])
+        surface_params.append(_surface_params(adaptor))
 
         location = TopLoc_Location()
         triangulation = BRep_Tool.Triangulation_s(face, location)
@@ -145,7 +190,91 @@ def mesh_shape(shape, *, deflection=0.5, angular_deflection=0.5):
 
     logger.info(f"Tessellated {len(surface_types)} BREP faces into "
                 f"{len(faces)} triangles / {len(verts)} welded vertices")
-    return verts, faces, ids, surface_types
+    return verts, faces, ids, surface_types, surface_params
+
+
+def analytic_face_normals(verts, faces, face_ids, surface_params,
+                          facet_normals):
+    """Exact per-triangle surface normals on analytic BREP faces.
+
+    Facet normals on curved faces are frozen at the coarse tessellation's
+    chord planes (midpoint subdivision moves nothing), carrying an angular
+    error of ±theta/2 that no affordable deflection removes. This evaluates
+    each analytic surface's true normal at the triangle centroids instead —
+    exact at any subdivision level. The sign is chosen once per BREP face by
+    an area-weighted vote against the facet normals (REVERSED faces and hole
+    walls come out outward without trusting individual sliver triangles).
+    Non-analytic faces and degenerate evaluations keep their facet normals.
+    """
+    verts = np.asarray(verts, dtype=np.float64)
+    faces = np.asarray(faces)
+    normals = np.array(facet_normals, dtype=np.float64, copy=True)
+
+    tri = verts[faces]
+    centroids = tri.mean(axis=1)
+    areas = np.linalg.norm(
+        np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+
+    def unit(v):
+        v = np.asarray(v, dtype=np.float64)
+        return v / np.linalg.norm(v)
+
+    for fid, params in enumerate(surface_params):
+        if not params:
+            continue
+        idx = np.flatnonzero(face_ids == fid)
+        if not idx.size:
+            continue
+        c = centroids[idx]
+        kind = params["type"]
+
+        if kind == "plane":
+            candidate = np.tile(unit(params["normal"]), (len(idx), 1))
+        elif kind == "cylinder":
+            axis = unit(params["axis"])
+            v = c - np.asarray(params["point"], dtype=np.float64)
+            candidate = v - np.outer(v @ axis, axis)
+        elif kind == "cone":
+            axis = unit(params["axis"])
+            alpha = float(params["alpha"])
+            v = c - np.asarray(params["apex"], dtype=np.float64)
+            radial = v - np.outer(v @ axis, axis)
+            r = np.linalg.norm(radial, axis=1, keepdims=True)
+            candidate = (np.cos(alpha) * radial / np.maximum(r, 1e-30)
+                         - np.sin(alpha) * axis)
+            candidate[r[:, 0] < 1e-9] = 0.0  # apex: keep facet normal
+        elif kind == "sphere":
+            candidate = c - np.asarray(params["center"], dtype=np.float64)
+        elif kind == "torus":
+            axis = unit(params["axis"])
+            center = np.asarray(params["center"], dtype=np.float64)
+            v = c - center
+            inplane = v - np.outer(v @ axis, axis)
+            ilen = np.linalg.norm(inplane, axis=1, keepdims=True)
+            ring = center + params["major_radius"] * (
+                inplane / np.maximum(ilen, 1e-30))
+            candidate = c - ring
+            candidate[ilen[:, 0] < 1e-9] = 0.0  # on the axis: keep facet
+        else:
+            continue
+
+        length = np.linalg.norm(candidate, axis=1, keepdims=True)
+        valid = length[:, 0] > 1e-9
+        if not valid.any():
+            continue
+        candidate = candidate / np.maximum(length, 1e-30)
+
+        # one sign per BREP face: area-weighted agreement with the facets
+        vote = float(np.sum(
+            areas[idx[valid]]
+            * np.einsum("ij,ij->i", candidate[valid], normals[idx[valid]])))
+        if abs(vote) < 1e-12:
+            continue  # ambiguous — keep facet normals for this face
+        if vote < 0:
+            candidate = -candidate
+        normals[idx[valid]] = candidate[valid]
+
+    return normals
 
 
 @log_execution_time

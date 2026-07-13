@@ -11,8 +11,6 @@ import numpy as np
 import pipeline
 from processes.base import RESULTS_DIR
 
-NORMALS_FILE = "normals.npy"
-
 
 def mesh_bytes(workdir, which):
     """Serve verts/faces/normals as raw arrays. Returns (bytes, dtype)."""
@@ -28,24 +26,10 @@ def mesh_bytes(workdir, which):
 
 
 def face_normals(workdir):
-    """Unit face normals, memo-cached next to the mesh arrays.
-
-    The angle to any approach direction is then a client-side dot product
-    (surface classification, wall detection).
-    """
-    normals_path = os.path.join(workdir, NORMALS_FILE)
-    faces_path = os.path.join(workdir, pipeline.FINE_FACES_FILE)
-    if os.path.exists(normals_path) and (
-            os.path.getmtime(normals_path) >= os.path.getmtime(faces_path)):
-        return np.load(normals_path)
-
-    verts, faces = pipeline.load_mesh_arrays(workdir)
-    tri = verts[faces]
-    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
-    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
-    normals = (normals / np.maximum(lengths, 1e-30)).astype("<f4")
-    np.save(normals_path, normals)
-    return normals
+    """Unit face normals for client-side classification (exact BREP surface
+    normals for STEP parts, facet normals otherwise)."""
+    return np.ascontiguousarray(pipeline.load_face_normals(workdir),
+                                dtype="<f4")
 
 
 def zcache_field_bytes(workdir, file_stem, key):

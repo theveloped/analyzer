@@ -31,6 +31,7 @@ from utils import (ensure_directory, file_fingerprint, files_fingerprint,
 FINE_MESH_FILE = "fine_mesh.obj"
 FINE_VERTS_FILE = "fine_verts.npy"
 FINE_FACES_FILE = "fine_faces.npy"
+NORMALS_FILE = "normals.npy"
 MESH_META_FILE = "mesh_meta.json"
 DIRECTIONS_FILE = "directions.npy"
 DIRECTIONS_META_FILE = "directions_meta.json"
@@ -138,6 +139,39 @@ def load_mesh_arrays(workdir):
     return verts, faces
 
 
+def _facet_normals(verts, faces):
+    """Per-face unit normals from the triangle cross products."""
+    tri = np.asarray(verts)[faces]
+    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    return (normals / np.maximum(lengths, 1e-30)).astype("<f4")
+
+
+def load_face_normals(workdir):
+    """Per-face unit normals for classification (facing/wall/draft tests).
+
+    mesh_part stores exact BREP surface normals for STEP parts (analytic
+    faces; facet fallback elsewhere) as normals.npy — served here when fresh.
+    Legacy/STL workdirs get facet cross-product normals, computed lazily and
+    cached in the same file.
+    """
+    faces_path = os.path.join(workdir, FINE_FACES_FILE)
+    normals_path = os.path.join(workdir, NORMALS_FILE)
+    if (os.path.exists(normals_path)
+            and os.path.getmtime(normals_path) >= os.path.getmtime(faces_path)):
+        stored = np.load(normals_path)
+        faces = np.load(faces_path, mmap_mode="r")
+        face_count = int(faces.shape[0])
+        del faces  # release the Windows file handle promptly
+        if stored.shape == (face_count, 3):
+            return stored
+
+    verts, faces = load_mesh_arrays(workdir)
+    normals = _facet_normals(verts, faces)
+    np.save(normals_path, normals)
+    return normals
+
+
 def _per_vertex(values, vert_count):
     """Trim a meshlib per-vertex array to the stored vertex count.
 
@@ -227,7 +261,7 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
                     f"{deflection:.3f} mm, subdivide {subdivide:.2f} mm")
 
         _report(progress, 0.0, "tessellating BREP")
-        verts, faces, brep_ids, surface_types = brep.mesh_shape(
+        verts, faces, brep_ids, surface_types, surface_params = brep.mesh_shape(
             shape, deflection=deflection)
 
         if subdivide:
@@ -291,7 +325,8 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
         np.save(os.path.join(workdir, BREP_FACES_FILE), brep_ids)
         with open(os.path.join(workdir, BREP_META_FILE), "w") as f:
             json.dump({"face_count": len(surface_types),
-                       "surface_types": surface_types}, f)
+                       "surface_types": surface_types,
+                       "surface_params": surface_params}, f)
         counts["brep_faces"] = len(surface_types)
 
         # BREP edge geometry: mesh edges between different BREP faces,
@@ -307,6 +342,16 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
         np.save(os.path.join(workdir, BREP_EDGES_FILE), segments)
         np.save(os.path.join(workdir, BREP_EDGE_PAIRS_FILE), id_pairs)
         counts["brep_edge_segments"] = int(len(segments))
+
+        # exact surface normals on analytic BREP faces (facet fallback for
+        # bspline etc.) — classification uses these, geometry stays facet.
+        # Written LAST so the normals cache is fresh by the mtime rule.
+        _report(progress, 0.95, "computing exact surface normals")
+        normals = brep.analytic_face_normals(
+            verts, faces, brep_ids, surface_params,
+            _facet_normals(verts, faces))
+        np.save(os.path.join(workdir, NORMALS_FILE),
+                normals.astype("<f4"))
 
     return {"workdir": workdir, "counts": counts}
 
@@ -346,7 +391,8 @@ def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
     face_count = len(faces)
     _report(progress, 0.1, f"accessibility for {directions.shape[0]} directions")
     accessibility = compute_accessibility(mesh, directions, face_count,
-                                          tolerance_deg=tollerance, pixel=pixel)
+                                          tolerance_deg=tollerance, pixel=pixel,
+                                          normals=load_face_normals(workdir))
 
     directions_path = os.path.join(workdir, DIRECTIONS_FILE)
     accessibility_path = os.path.join(workdir, ACCESSIBILITY_FILE)
@@ -673,7 +719,7 @@ def setup_verdict(workdir, *, option=0, tools=(), tollerance=0.1,
     directions = np.load(os.path.join(workdir, DIRECTIONS_FILE))
     accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))
     weights = machining.face_areas(verts, faces)
-    normals = machining.face_unit_normals(verts, faces)
+    normals = load_face_normals(workdir)
 
     brep_path = os.path.join(workdir, BREP_FACES_FILE)
     brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
@@ -1383,7 +1429,8 @@ def ejection_sticking(workdir, *, skeleton, skeleton_hash, mesh_spec=None,
     vert_node = np.asarray(skeleton["cluster_vert_node"])
 
     _report(progress, 0.1, "face geometry")
-    normals, areas = ejection.face_geometry(verts, faces)
+    _, areas = ejection.face_geometry(verts, faces)
+    normals = load_face_normals(workdir)
 
     # pull axis + B-side scope from the newest mold orientation, if any
     mold_hash, mold_payload, mold_arrays = _latest_mold_orientation(workdir)
@@ -1543,7 +1590,7 @@ def compose_tool(workdir, direction, *, pixel=None, tollerance=1e-1, diameter=2.
     _report(progress, 0.1, "composing tool verdict")
     cache = DirectionCache(workdir, direction, verts=verts, faces=faces,
                            pixel=pixel, window=window)
-    angles = machining.face_angles_deg(machining.face_unit_normals(verts, faces),
+    angles = machining.face_angles_deg(load_face_normals(workdir),
                                        cache.direction)
     machinable, _, min_stick = tool_face_verdict(
         cache, faces, angles, diameter=diameter, corner_radius=corner_radius,

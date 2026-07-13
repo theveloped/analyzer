@@ -160,7 +160,7 @@ def _bracket_corners(fx, fy, shape):
 
 @log_execution_time
 def face_visibility(mesh, verts, faces, direction, *, tolerance_deg=0.1, pixel=0.1,
-                    margin=2):
+                    margin=2, normals=None):
     """Per-face visibility along an approach direction. Returns (F,) bool.
 
     Replaces meshlib's undercut verdict, whose hard front/back-facing test
@@ -176,6 +176,10 @@ def face_visibility(mesh, verts, faces, direction, *, tolerance_deg=0.1, pixel=0
       rise above the face itself. The bracket-corner min makes the sample
       subpixel-stable on walls sitting exactly on pixel boundaries.
 
+    ``normals`` overrides the facet cross-product normals — pass exact BREP
+    surface normals so curved faces classify by their true angle rather than
+    the coarse tessellation's chord planes.
+
     Conservative limits: cavities narrower than ~1 pixel may not resolve,
     and overhangs closer than 1.5*pixel above a face go undetected.
     """
@@ -184,8 +188,12 @@ def face_visibility(mesh, verts, faces, direction, *, tolerance_deg=0.1, pixel=0
 
     tri = verts[faces]
     centroids = tri.mean(axis=1)
-    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
-    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-30)
+    if normals is None:
+        normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True),
+                              1e-30)
+    else:
+        normals = np.asarray(normals, dtype=np.float64)
 
     ndotd = normals @ d
     facing = ndotd >= -np.sin(np.radians(tolerance_deg))
