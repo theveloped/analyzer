@@ -64,6 +64,17 @@ export function cncSources(manifest: Manifest): CncSource[] {
     if (tip) tip.stickouts.push({ radius: p.radius, field });
   }
 
+  // directions with accessibility but no tool fields still get a (bare)
+  // source, so the access/class views work right after prep/directions
+  const covered = new Set([...sources.values()].map((s) => s.direction));
+  for (const direction of access.keys()) {
+    if (covered.has(direction)) continue;
+    sources.set(`${direction}|zmap`, {
+      key: `${direction}|zmap`, direction, engine: 'zmap', pixel: null,
+      tips: [], clearances: [], accessibility: null,
+    });
+  }
+
   const list = [...sources.values()];
   for (const source of list) {
     source.tips.sort((a, b) => a.diameter - b.diameter || a.corner_radius - b.corner_radius);
@@ -71,7 +82,11 @@ export function cncSources(manifest: Manifest): CncSource[] {
     for (const tip of source.tips) tip.stickouts.sort((a, b) => a.radius - b.radius);
     source.accessibility = access.get(source.direction) ?? null;
   }
-  list.sort((a, b) => a.direction - b.direction || a.engine.localeCompare(b.engine));
+  // tool-field sources first: params.source defaults to 0 and the default
+  // (unified) mode needs tips, so bare accessibility sources go last
+  const hasFields = (s: CncSource) => (s.tips.length + s.clearances.length > 0 ? 1 : 0);
+  list.sort((a, b) => hasFields(b) - hasFields(a)
+    || a.direction - b.direction || a.engine.localeCompare(b.engine));
   return list;
 }
 

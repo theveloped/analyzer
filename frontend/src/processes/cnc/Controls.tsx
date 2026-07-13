@@ -30,7 +30,12 @@ export function CncControls() {
       >
         {sources.map((s, i) => {
           const d = manifest!.directions[s.direction]?.map((x) => x.toFixed(2)).join(', ');
-          return <option key={s.key} value={i}>{`dir ${s.direction} [${d}] — ${s.engine}`}</option>;
+          const bare = !s.tips.length && !s.clearances.length;
+          return (
+            <option key={s.key} value={i}>
+              {`dir ${s.direction} [${d}] — ${bare ? 'accessibility only' : s.engine}`}
+            </option>
+          );
         })}
         {!sources.length && <option value={0}>no cached fields</option>}
       </select>

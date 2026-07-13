@@ -67,7 +67,7 @@ export function requireSource(ctx: ViewCtx): CncSource {
   const source = currentSource(ctx.manifest, ctx.params);
   if (!source) {
     throw new Error(
-      'no cached tool fields — run cnc/precompute below (or python main.py precompute)');
+      'no directions computed — run prep/directions below (then cnc/precompute for tool fields)');
   }
   return source;
 }
