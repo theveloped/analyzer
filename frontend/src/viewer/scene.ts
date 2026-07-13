@@ -30,10 +30,24 @@ export class Scene3D {
     this.scene.background = new THREE.Color(0x21262c);
     this.camera = new THREE.PerspectiveCamera(
       50, container.clientWidth / container.clientHeight, 0.1, 5000);
+    // Z is up for CAD parts — must be set BEFORE constructing OrbitControls,
+    // which captures its orbit basis from camera.up at construction time
+    // (setting it later leaves the controls tumbling around +Y)
+    this.camera.up.set(0, 0, 1);
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     container.appendChild(this.renderer.domElement);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.15;
+    this.controls.zoomToCursor = true; // wheel zooms toward the cursor
+    this.controls.screenSpacePanning = true;
+    // CAD muscle memory (NX / SolidWorks): middle-drag orbits, right-drag pans
+    this.controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.ROTATE,
+      RIGHT: THREE.MOUSE.PAN,
+    };
 
     this.scene.add(this.overlay);
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.0));
@@ -47,10 +61,12 @@ export class Scene3D {
     window.addEventListener('resize', this.onResize);
     this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown);
     this.renderer.domElement.addEventListener('pointerup', this.onPointerUp);
+    this.renderer.domElement.addEventListener('dblclick', this.onDoubleClick);
 
     const animate = () => {
       if (this.disposed) return;
       requestAnimationFrame(animate);
+      this.controls.update(); // damping needs a per-frame update
       this.renderer.render(this.scene, this.camera);
     };
     animate();
@@ -67,20 +83,39 @@ export class Scene3D {
     this.downAt = [e.clientX, e.clientY];
   };
 
-  private onPointerUp = (e: PointerEvent) => {
-    // a drag is orbiting, not picking
-    if (!this.mesh || !this.downAt
-      || Math.hypot(e.clientX - this.downAt[0], e.clientY - this.downAt[1]) > 4) return;
+  private hitUnderCursor(e: MouseEvent) {
+    if (!this.mesh) return null;
     const rect = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(
       ((e.clientX - rect.left) / rect.width) * 2 - 1,
       -((e.clientY - rect.top) / rect.height) * 2 + 1,
     );
     this.raycaster.setFromCamera(ndc, this.camera);
-    const hit = this.raycaster.intersectObject(this.mesh)[0];
+    return this.raycaster.intersectObject(this.mesh)[0] ?? null;
+  }
+
+  private onPointerUp = (e: PointerEvent) => {
+    // a drag is orbiting, not picking
+    if (!this.downAt
+      || Math.hypot(e.clientX - this.downAt[0], e.clientY - this.downAt[1]) > 4) return;
+    const hit = this.hitUnderCursor(e);
     if (hit && hit.faceIndex != null && this.onPick) {
       this.onPick(hit.faceIndex, [hit.point.x, hit.point.y, hit.point.z]);
     }
+  };
+
+  /** Double-click re-centers the orbit pivot: on the clicked surface point
+   * (rotate-about-point, like NX/SolidWorks), or back on the part's bounding
+   * box center when clicking empty space. */
+  private onDoubleClick = (e: MouseEvent) => {
+    if (!this.mesh) return;
+    const hit = this.hitUnderCursor(e);
+    const target = hit
+      ? hit.point.clone()
+      : new THREE.Box3().setFromObject(this.mesh)
+        .getCenter(new THREE.Vector3());
+    this.controls.target.copy(target);
+    this.controls.update();
   };
 
   /** Build the un-indexed geometry from raw vertex/index arrays. */
