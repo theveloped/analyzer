@@ -50,9 +50,26 @@ def iter_faces(shape):
         explorer.Next()
 
 
-@log_execution_time
+def shape_diagonal(shape):
+    """Bounding-box diagonal of a BREP shape, before any tessellation."""
+    from OCP.Bnd import Bnd_Box
+    from OCP.BRepBndLib import BRepBndLib
+
+    box = Bnd_Box()
+    BRepBndLib.Add_s(shape, box)
+    xmin, ymin, zmin, xmax, ymax, zmax = box.Get()
+    return float(np.linalg.norm([xmax - xmin, ymax - ymin, zmax - zmin]))
+
+
 def mesh_step(path, *, deflection=0.5, angular_deflection=0.5):
-    """Tessellate a STEP file keeping per-triangle BREP face provenance.
+    """Tessellate a STEP file keeping per-triangle BREP face provenance."""
+    return mesh_shape(load_step_shape(path), deflection=deflection,
+                      angular_deflection=angular_deflection)
+
+
+@log_execution_time
+def mesh_shape(shape, *, deflection=0.5, angular_deflection=0.5):
+    """Tessellate a BREP shape keeping per-triangle face provenance.
 
     Returns (verts float64[V,3], faces int32[F,3], face_ids int32[F],
     surface_types list[str] per BREP face). The mesh is conformal: vertices
@@ -64,7 +81,6 @@ def mesh_step(path, *, deflection=0.5, angular_deflection=0.5):
     from OCP.TopAbs import TopAbs_Orientation
     from OCP.TopLoc import TopLoc_Location
 
-    shape = load_step_shape(path)
     BRepMesh_IncrementalMesh(shape, float(deflection), False,
                              float(angular_deflection), True)
 
@@ -107,7 +123,7 @@ def mesh_step(path, *, deflection=0.5, angular_deflection=0.5):
         offset += n_nodes
 
     if not all_points:
-        raise ValueError(f"STEP file produced no triangulation: {path}")
+        raise ValueError("BREP shape produced no triangulation")
 
     points = np.vstack(all_points)
     triangles = np.vstack(all_triangles)

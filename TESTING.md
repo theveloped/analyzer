@@ -141,8 +141,11 @@ against a running server (`node smoke.mjs` inside `frontend/`, with
 ## Mold orientation, face assignment & parting lines
 
 STEP parts mesh through the BREP (exact triangle→face mapping, shared
-vertices along BREP edges); `--deflection` controls the base tessellation
-and `--subdivide` the analysis resolution as before:
+vertices along BREP edges). `--resolution` is the single analysis-resolution
+knob: curved faces tessellate at a `resolution/8` sag budget (their true
+shape at analysis scale), all edges refine to `resolution`, and later stages
+default their zmap pixel to `resolution/5` (from `mesh_meta.json`).
+`--deflection` / `--subdivide` / `--pixel` remain expert overrides:
 
 ```bash
 python main.py mesh tests/testpart_42.stp -o testpart_42 --subdivide 1.0

@@ -44,9 +44,10 @@ if __name__ == "__main__":
     parser_mesh.add_argument("input", help="path of the input .stl/.step file", type=PathType(type='file', dash_ok=True, exists=True))
     parser_mesh.add_argument("-o", "--output", help="path of the output dir", type=PathType(type='dir', dash_ok=True))
     parser_mesh.add_argument("--tollerance", help="voxel tollerance", type=float, default=1e-1)
-    parser_mesh.add_argument("--deflection", help="BREP tessellation deflection for STEP input (mm)", type=float, default=0.5)
+    parser_mesh.add_argument("--resolution", help="analysis resolution in mm - drives deflection, subdivide and downstream pixel defaults (default: auto from part size)", type=float, default=None)
+    parser_mesh.add_argument("--deflection", help="override: BREP tessellation deflection for STEP input in mm (default: resolution/8)", type=float, default=None)
     parser_mesh.add_argument("--heal", help="heal the mesh before storing (voxel remesh - for dirty STLs, NOT for clean STEP)", action="store_true")
-    parser_mesh.add_argument("--subdivide", help="max edge length: refine without changing the shape (default: auto from part size, 0 disables)", type=float, default=None)
+    parser_mesh.add_argument("--subdivide", help="override: max edge length, refines without changing the shape (default: resolution, 0 disables)", type=float, default=None)
     parser_mesh.add_argument("--offset", help="offset the mesh before storing", type=float, default=None)
     parser_mesh.add_argument("--serve", help="serve results in browser", action="store_true")
     
@@ -65,7 +66,7 @@ if __name__ == "__main__":
     parser_directions.add_argument("--count", help="number of directions determin", type=int, default=64)
     parser_directions.add_argument("--axes", help="prepend the six principal +/-X/Y/Z directions", action="store_true")
     parser_directions.add_argument("--tollerance", help="angular relaxation of the visibility test in degrees (near-vertical walls within it count as facing)", type=float, default=0.1)
-    parser_directions.add_argument("--pixel", help="visibility height map pixel size (default: auto from bounding box)", type=float, default=None)
+    parser_directions.add_argument("--pixel", help="visibility height map pixel size (default: resolution/5)", type=float, default=None)
     parser_directions.add_argument("--relax", help="relax the winning directions", action="store_true")
     parser_directions.add_argument("--relax_tollerance", help="angle tollerance of slides in degrees", type=float, default=1.0)
     parser_directions.add_argument("--relax_samples", help="the number of additional sampels used in relaxation", type=int, default=4)
@@ -97,7 +98,7 @@ if __name__ == "__main__":
     parser_verdict.add_argument("--tools", help="tools as D[:rc[:stickout[:holder_radius]]] (default: builtin flat+ball library)", nargs="*", type=str, default=None)
     parser_verdict.add_argument("--tollerance", help="gap threshold to flag a vertex", type=float, default=1e-1)
     parser_verdict.add_argument("--wall_tollerance", help="wall angle tolerance in degrees (side-milled)", type=float, default=1.0)
-    parser_verdict.add_argument("--pixel", help="height map pixel size", type=float, default=1e-1)
+    parser_verdict.add_argument("--pixel", help="height map pixel size (default: resolution/5)", type=float, default=None)
     parser_verdict.add_argument("--no_indexed", help="skip the indexed 5-axis (3+2) machine", action="store_true")
     parser_verdict.add_argument("--tilt", help="3+2 head tilt cone half-angle in degrees", type=float, default=90.0)
     parser_verdict.add_argument("--max_setups", help="maximum setups per option", type=int, default=4)
@@ -134,7 +135,7 @@ if __name__ == "__main__":
     parser_precompute = subparsers.add_parser("precompute", help="cache height maps and per-radius tool fields for fast composition")
     parser_precompute.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
     parser_precompute.add_argument("--directions", help="indices of approach directions to precompute", nargs="+", type=int, required=True)
-    parser_precompute.add_argument("--pixel", help="height map pixel size", type=float, default=1e-1)
+    parser_precompute.add_argument("--pixel", help="height map pixel size (default: resolution/5)", type=float, default=None)
     parser_precompute.add_argument("--tips", help="tool tips as diameter:corner_radius (0 = flat, D/2 = ball)", nargs="*", type=str, default=[])
     parser_precompute.add_argument("--clearances", help="cylinder radii for holder/shank clearance fields", nargs="*", type=float, default=[])
     parser_precompute.add_argument("--engine", help="field computation engine", choices=["zmap", "voxel"], default="zmap")
@@ -144,7 +145,7 @@ if __name__ == "__main__":
     parser_compose = subparsers.add_parser("compose", help="evaluate a full tool assembly from precomputed fields")
     parser_compose.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
     parser_compose.add_argument("direction", help="index of the approach direction", type=int)
-    parser_compose.add_argument("--pixel", help="height map pixel size", type=float, default=1e-1)
+    parser_compose.add_argument("--pixel", help="height map pixel size (default: resolution/5)", type=float, default=None)
     parser_compose.add_argument("--tollerance", help="gap threshold to flag a vertex", type=float, default=1e-1)
     parser_compose.add_argument("--diameter", help="tool diameter", type=float, default=2.0)
     parser_compose.add_argument("--corner_radius", help="tip corner radius: 0 = flat endmill, diameter/2 = ball nose", type=float, default=0.0)
@@ -186,8 +187,9 @@ if __name__ == "__main__":
         logger.debug(f"Meshing file: {args.input}")
 
         result = mesh_part(args.input, args.output, heal=args.heal,
-                           subdivide=args.subdivide, offset=args.offset,
-                           tollerance=args.tollerance, deflection=args.deflection)
+                           resolution=args.resolution, subdivide=args.subdivide,
+                           offset=args.offset, tollerance=args.tollerance,
+                           deflection=args.deflection)
 
         if args.serve:
             serve_workdir(result["workdir"])
