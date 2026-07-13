@@ -20,7 +20,7 @@ await page.waitForFunction(
 
 const modeSelect = page.locator('.panel > select').nth(0);
 const report = [];
-for (const mode of ['unified', 'access', 'class', 'gap', 'stickout', 'diff', 'highlights']) {
+for (const mode of ['unified', 'access', 'class', 'gap', 'stickout', 'highlights']) {
   await modeSelect.selectOption(mode);
   await page.waitForTimeout(700);
   const stats = await page.locator('.stats').textContent().catch(() => '');

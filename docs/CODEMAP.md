@@ -7,16 +7,15 @@ and this document disagree, the code wins — update this file in the same commi
 
 | File | Role | Key entry points |
 |---|---|---|
-| `main.py` | argparse CLI, one subcommand per stage; thin wrappers over `pipeline.py` | `mesh`, `directions`, `options`, `thickness`, `tool`, `length`, `endmill`, `precompute`, `compose`, `serve`, `view` |
+| `main.py` | argparse CLI, one subcommand per stage; thin wrappers over `pipeline.py` | `mesh`, `directions`, `options`, `thickness`, `setups`, `verdict`, `precompute`, `compose`, `serve`, `view` |
 | `pipeline.py` | The shared orchestration layer used by both CLI and API jobs. All workdir I/O funnels through here | `mesh_part`, `compute_directions`, `mold_orientation`, `compute_thickness`, `wall_skeleton`, `precompute_fields`, `compose_tool`, `write_highlights`, `load_mesh_arrays`, `parse_tips`, `parse_holder` |
-| `analysis.py` | meshlib geometry primitives: healing, offsets, booleans, undercuts, accessibility | `load_mesh`, `heal_mesh`, `single_offset`, `double_offset`, `inplane_double_offset` (scale trick), `endmill_closing`, `fix_undercuts`, `sample_unity_vector_pairs`, `compute_accessibility`, `map_result_faces` |
+| `analysis.py` | meshlib geometry primitives: loading, healing, subdivision, direction sampling, accessibility | `load_mesh`, `heal_mesh`, `offset_mesh`, `subdivide_mesh`, `sample_unity_vector_pairs`, `compute_accessibility` |
 | `zmap.py` | 2D height-map (Z-map) engine: renders depth maps, grayscale closings, Euclidean gaps, clearance fields; owns the per-direction cache | `render_heightmap`, `face_visibility`, `close_heightmap`, `euclidean_gap`, `clearance_heightmap`, `tip_aware_min_stickout`, `DirectionCache`, `compose_unreachable` |
 | `molding.py` | Mold orientation search & face assignment (pure numpy over accessibility rows) | `mold_orientation_search`, `membership_field`, `internal_regions`, `brep_validity`, `brep_defaults`, `face_adjacency` |
 | `brep.py` | BREP-aware STEP meshing via OCCT (OCP bindings): per-face tessellation, welding, conformal subdivision | `mesh_step`, `subdivide_tagged` |
 | `processes/` | Backend analysis registry (see below) | `processes.base`, one module per process |
 | `api/` | FastAPI server (see routes below) | `api.app.create_app`, `serve_app` |
 | `utils.py`, `pathtypes.py` | Small helpers: dirs, timing decorator, argparse `PathType` | |
-| `benchmark_engines.py` | zmap-vs-voxel engine benchmark/cross-check on a mold-like part | run directly |
 | `inside_test.py`, `toolart.py`, `drawer.py`, `tooltest.py` | Standalone sandboxes/sketches, NOT wired into the pipeline | |
 
 Root `test_*.py` are self-checking scripts (synthetic parts with analytic
@@ -43,7 +42,7 @@ folder and re-uploads dedupe; the human name stays in `part.json`.
 | `accessibility.npy` | directions | bool `(D,F)` — face f visible from direction d |
 | `directions_meta.json` | directions | mesh fingerprint + pixel the accessibility was computed at; a re-meshed workdir flags `directions_stale` in the manifest |
 | `highlights.json` | any CLI check | flat list of flagged face indices; replayed by the viewer's "Last CLI highlights" mode |
-| `zcache/dir_<idx 04d>.npz` | precompute/compose (zmap engine) | see next section; voxel engine writes `dir_<idx>_voxel.npz` |
+| `zcache/dir_<idx 04d>.npz` | precompute/compose | see next section |
 | `results/<process>/<analysis>/<hash>.json[.npz]` | registry analyses | generic results, `<hash>` = `params_hash(params)` (sha1[:12] of canonical JSON); runners salt in schema, `directions` and `mesh` fingerprints so stale results orphan instead of misindexing |
 | `results/<process>/<analysis>/<hash>_overrides.json` | viewer via API | user face-assignment overrides for a mold result |
 | `part.json` | API upload/registration | part metadata (gitignored) |

@@ -515,35 +515,24 @@ class DirectionCache:
     """
     Cached per-vertex fields for one approach direction: any number of tip
     gap fields and clearance fields, persisted as an .npz so repeated tool
-    queries never touch geometry again.
-
-    Two interchangeable engines fill the fields:
-    - "zmap" (default): 2D grayscale morphology on a rendered height map;
-      gaps are windowed Euclidean distances to the machined solid
-    - "voxel": 3D voxel closings on the undercut-fixed mesh (analysis.py);
-      gaps are mesh projection distances
-
-    Both produce per-vertex float fields with identical semantics, so
-    compose_unreachable works on either cache.
+    queries never touch geometry again. Fields come from 2D grayscale
+    morphology on a rendered height map; gaps are windowed Euclidean
+    distances to the machined solid.
     """
 
     VERSION = 6  # + mesh fingerprint guards re-meshed workdirs
 
     def __init__(self, workdir, direction_index, verts=None, faces=None, pixel=0.1,
-                 window=0.3, engine="zmap", scale=10.0):
-        suffix = "" if engine == "zmap" else f"_{engine}"
-        self.path = os.path.join(workdir, "zcache", f"dir_{direction_index:04d}{suffix}.npz")
+                 window=0.3):
+        self.path = os.path.join(workdir, "zcache", f"dir_{direction_index:04d}.npz")
         self.direction_index = direction_index
         self.verts = verts
         self.faces = faces
         self.pixel = pixel
         self.window = window  # gap accuracy window: gaps up to this are Euclidean-exact
-        self.engine = engine
-        self.scale = scale  # anisotropy stretch factor for voxel in-plane offsets
         self._fields = {}
         self._maps = {}  # in-memory full-resolution maps (not persisted)
         self._mesh = None
-        self._undercut_mesh = None
 
         directions_path = os.path.join(workdir, "directions.npy")
         self.directions_fingerprint = file_fingerprint(directions_path)
@@ -581,35 +570,33 @@ class DirectionCache:
                 "dirfp": np.array([self.directions_fingerprint], dtype="S12"),
                 "meshfp": np.array([self.mesh_fingerprint], dtype="S12"),
             }
-            if engine == "zmap":
-                # margin covers the whole euclidean_gap window (window_px in
-                # tip_gap) plus one pixel, so border-wall vertices see real
-                # exterior air instead of clamping into the last material column
-                margin = max(2, int(np.ceil(window / pixel))) + 1
-                heights, frame = render_heightmap(self._get_mesh(), self.direction, pixel,
-                                                  margin=margin)
-                self._fields.update({
-                    "heights": heights,
-                    "origin": frame["origin"],
-                    "x_axis": frame["x_axis"],
-                    "y_axis": frame["y_axis"],
-                    "direction": frame["direction"],
-                })
+            # margin covers the whole euclidean_gap window (window_px in
+            # tip_gap) plus one pixel, so border-wall vertices see real
+            # exterior air instead of clamping into the last material column
+            margin = max(2, int(np.ceil(window / pixel))) + 1
+            heights, frame = render_heightmap(self._get_mesh(), self.direction, pixel,
+                                              margin=margin)
+            self._fields.update({
+                "heights": heights,
+                "origin": frame["origin"],
+                "x_axis": frame["x_axis"],
+                "y_axis": frame["y_axis"],
+                "direction": frame["direction"],
+            })
             self._save()
 
-        if engine == "zmap":
-            self.frame = {
-                "origin": self._fields["origin"],
-                "x_axis": self._fields["x_axis"],
-                "y_axis": self._fields["y_axis"],
-                "direction": self._fields["direction"],
-                "pixel": self._fields["pixel"][0],
-            }
-            self.heights = self._fields["heights"]
-            if verts is not None:
-                self._fx, self._fy, self._vheight = project_vertices_float(verts, self.frame)
-                self._ix = np.floor(self._fx).astype(int)
-                self._iy = np.floor(self._fy).astype(int)
+        self.frame = {
+            "origin": self._fields["origin"],
+            "x_axis": self._fields["x_axis"],
+            "y_axis": self._fields["y_axis"],
+            "direction": self._fields["direction"],
+            "pixel": self._fields["pixel"][0],
+        }
+        self.heights = self._fields["heights"]
+        if verts is not None:
+            self._fx, self._fy, self._vheight = project_vertices_float(verts, self.frame)
+            self._ix = np.floor(self._fx).astype(int)
+            self._iy = np.floor(self._fy).astype(int)
 
     def _save(self):
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
@@ -622,13 +609,6 @@ class DirectionCache:
             from meshlib import mrmeshnumpy as mn
             self._mesh = mn.meshFromFacesVerts(self.faces, self.verts)
         return self._mesh
-
-    def _get_undercut_mesh(self):
-        if self._undercut_mesh is None:
-            from analysis import fix_undercuts
-            d = self.direction
-            self._undercut_mesh = fix_undercuts(self._get_mesh(), d[0], d[1], d[2], tollerance=self.pixel)
-        return self._undercut_mesh
 
     def _vertex_samples(self):
         if not hasattr(self, "_ix"):
@@ -643,21 +623,12 @@ class DirectionCache:
         """
         key = _tip_key(diameter, corner_radius)
         if key not in self._fields:
-            logger.debug(f"Computing tip field {key} for direction {self.direction_index} ({self.engine})")
-            if self.engine == "zmap":
-                pixel = self.frame["pixel"]
-                closed = close_heightmap(self.heights, diameter, corner_radius, pixel)
-                self._vertex_samples()  # ensure projections exist
-                window_px = max(2, int(np.ceil(self.window / pixel)))
-                gap = euclidean_gap(closed, self._fx, self._fy, self._vheight, pixel, window_px)
-            else:
-                from analysis import endmill_closing, get_distance
-                closed_mesh = endmill_closing(
-                    self._get_undercut_mesh(), self.direction, diameter, corner_radius,
-                    self.pixel, scale=self.scale,
-                )
-                distances = get_distance(self._get_mesh(), closed_mesh)
-                gap = np.abs(np.asarray(distances))
+            logger.debug(f"Computing tip field {key} for direction {self.direction_index}")
+            pixel = self.frame["pixel"]
+            closed = close_heightmap(self.heights, diameter, corner_radius, pixel)
+            self._vertex_samples()  # ensure projections exist
+            window_px = max(2, int(np.ceil(self.window / pixel)))
+            gap = euclidean_gap(closed, self._fx, self._fy, self._vheight, pixel, window_px)
             self._fields[key] = gap.astype(np.float32)
             self._save()
         return self._fields[key]
@@ -678,13 +649,11 @@ class DirectionCache:
         """
         Per-vertex minimal stickout (from the tool tip) for one holder
         cylinder of `radius`, coupled with the tip geometry of
-        (diameter, corner_radius) - see tip_aware_min_stickout. zmap engine
-        only; computed once per (tip, radius) and cached.
+        (diameter, corner_radius) - see tip_aware_min_stickout. Computed
+        once per (tip, radius) and cached.
         """
         key = _sreq_key(diameter, corner_radius, radius)
         if key not in self._fields:
-            if self.engine != "zmap":
-                raise NotImplementedError("tip-aware stickout fields need the zmap engine")
             logger.debug(f"Computing stickout field {key} for direction {self.direction_index}")
             pixel = self.frame["pixel"]
             self._vertex_samples()  # ensure projections exist
@@ -705,25 +674,11 @@ class DirectionCache:
         """
         key = _clear_key(radius)
         if key not in self._fields:
-            logger.debug(f"Computing clearance field {key} for direction {self.direction_index} ({self.engine})")
-            if self.engine == "zmap":
-                dilated = self._clearance_map(radius)
-                self._vertex_samples()  # ensure projections exist
-                ix4, iy4 = _bracket_corners(self._fx, self._fy, dilated.shape)
-                clear = dilated[iy4, ix4].min(axis=0) - self._vheight
-            else:
-                # grow the undercut-fixed mesh in-plane by the cylinder
-                # radius (3D, exact), then read the grown volume's top
-                # surface: its height above a vertex is the clearance
-                from meshlib import mrmeshpy as mm_
-                from analysis import scale_along_axis, single_offset
-                work = mm_.copyMesh(self._get_undercut_mesh())
-                scale_along_axis(work, self.direction, self.scale)
-                work = single_offset(work, radius, self.pixel, decimate=False)
-                scale_along_axis(work, self.direction, 1.0 / self.scale)
-                grown_heights, frame = render_heightmap(work, self.direction, self.pixel)
-                ix, iy, vheight = project_vertices(self.verts, frame)
-                clear = sample_map(grown_heights, ix, iy) - vheight
+            logger.debug(f"Computing clearance field {key} for direction {self.direction_index}")
+            dilated = self._clearance_map(radius)
+            self._vertex_samples()  # ensure projections exist
+            ix4, iy4 = _bracket_corners(self._fx, self._fy, dilated.shape)
+            clear = dilated[iy4, ix4].min(axis=0) - self._vheight
             self._fields[key] = clear.astype(np.float32)
             self._save()
         return self._fields[key]
@@ -742,7 +697,7 @@ class DirectionCache:
         """
         stickout = None
         for radius, start in cylinders:
-            if tip is not None and self.engine == "zmap":
+            if tip is not None:
                 required = self.tip_min_stickout(tip[0], tip[1], radius) - start
             else:
                 required = self.clearance(radius) - start
@@ -755,7 +710,7 @@ class DirectionCache:
 # ---------------------------------------------------------------------------
 
 def faces_all_verts(faces, vertex_flags):
-    """Faces whose three vertices are all flagged (same rule as map_result_faces)."""
+    """Faces whose three vertices are all flagged."""
     return np.where(vertex_flags[faces].all(axis=1))[0]
 
 

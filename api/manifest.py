@@ -29,7 +29,8 @@ def _json_safe(obj):
         return [_json_safe(v) for v in obj]
     return obj
 
-# same key scheme DirectionCache uses in <workdir>/zcache/dir_<idx>[_engine].npz
+# same key scheme DirectionCache uses in <workdir>/zcache/dir_<idx>.npz;
+# the optional suffix group matches (and skips) legacy voxel-engine caches
 CACHE_FILE_RE = re.compile(r"^dir_(\d+)(?:_([a-z]+))?\.npz$")
 TIP_KEY_RE = re.compile(r"^tip_([0-9.eE+-]+)_([0-9.eE+-]+)$")
 CLEAR_KEY_RE = re.compile(r"^clear_([0-9.eE+-]+)$")
@@ -47,11 +48,10 @@ def _zcache_fields(workdir, base_url, vert_count):
     cache_files = sorted(os.listdir(cache_dir)) if os.path.isdir(cache_dir) else []
     for name in cache_files:
         match = CACHE_FILE_RE.match(name)
-        if not match:
+        if not match or match.group(2):
             continue
         stem = name[:-len(".npz")]
         dir_index = int(match.group(1))
-        engine = match.group(2) or "zmap"
 
         with np.load(os.path.join(cache_dir, name), allow_pickle=False) as stored:
             pixel = float(stored["pixel"][0]) if "pixel" in stored.files else None
@@ -72,7 +72,7 @@ def _zcache_fields(workdir, base_url, vert_count):
                           "radius": _num(sreq.group(3))}
             else:
                 continue
-            params.update({"direction": dir_index, "engine": engine, "pixel": pixel})
+            params.update({"direction": dir_index, "pixel": pixel})
             fields.append({
                 "id": f"{stem}.{key}",
                 "association": "vertex",

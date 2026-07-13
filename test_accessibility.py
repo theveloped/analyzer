@@ -1,24 +1,37 @@
 """Analytic checks of the visibility-based accessibility computation.
 
-Reuses the synthetic pocket + slot part from test_endmill (20x20x10 block,
-top at z=0, pocket 8x8x5, slot 3 wide x 3 deep). From +Z:
+Synthetic pocket + slot part (20x20x10 block, top at z=0, pocket 8x8x5,
+slot 3 wide x 3 deep). From +Z:
 - top face, pocket floor and slot floor are fully visible
 - the pocket's vertical walls classify UNIFORMLY accessible — the speckle
-  regression this module exists for (meshlib's undercut verdict flips on
+  regression this module exists for (a hard front/back verdict flips on
   tangent faces; our visibility test must not)
 - the part's bottom face is back-facing and inaccessible
-- away from tangency (>5 deg), the verdict agrees with the legacy meshlib
-  undercut path
 
 Run from the repo root: python test_accessibility.py
 """
 import sys
 
 import numpy as np
+from meshlib import mrmeshpy as mm
 
-from analysis import (compute_accessibility, compute_accessibility_meshlib,
-                      get_mesh_data)
-from test_endmill import make_part
+from analysis import compute_accessibility, get_mesh_data
+
+
+def make_part():
+    block = mm.makeCube(mm.Vector3f(20, 20, 10), mm.Vector3f(-10, -10, -10))
+    pocket = mm.makeCube(mm.Vector3f(8, 8, 6), mm.Vector3f(-4, -4, -5))
+    part = mm.boolean(block, pocket, mm.BooleanOperation.DifferenceAB).mesh
+    slot = mm.makeCube(mm.Vector3f(3, 22, 4), mm.Vector3f(5, -11, -3))
+    part = mm.boolean(part, slot, mm.BooleanOperation.DifferenceAB).mesh
+
+    # refine so faces are small enough to localize results
+    subdiv = mm.SubdivideSettings()
+    subdiv.maxEdgeLen = 0.8
+    subdiv.maxEdgeSplits = 10_000_000
+    subdiv.maxDeviationAfterFlip = 0.0
+    mm.subdivideMesh(part, subdiv)
+    return part
 
 
 def build_regions(verts, faces):
@@ -73,23 +86,6 @@ def main():
     check("pocket walls uniform", frac in (0.0, 1.0),
           f"accessible {frac * 100:5.1f}%  faces {int(walls.sum())}")
     check("pocket walls accessible", frac == 1.0, "")
-
-    # A/B sanity: away from tangency both methods agree
-    legacy = compute_accessibility_meshlib(part, directions, len(faces))[0]
-    centroids = verts[faces].mean(axis=1)
-    tri = verts[faces]
-    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
-    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-30)
-    angles = np.degrees(np.arccos(np.clip(normals @ directions[0], -1, 1)))
-    off_tangent = np.abs(angles - 90.0) > 5.0
-    agree = (access[off_tangent] == legacy[off_tangent]).mean()
-    check("agrees with meshlib off-tangent", agree > 0.999,
-          f"agreement {agree * 100:6.2f}% over {int(off_tangent.sum())} faces")
-
-    # and the legacy path really does speckle on the walls (documents why
-    # this module exists; if meshlib ever fixes it this check tells us)
-    legacy_frac = legacy[walls].mean()
-    print(f"  [info] legacy meshlib wall verdict: {legacy_frac * 100:5.1f}% accessible")
 
     print("ALL CHECKS PASSED" if not failures else "FAILURES:\n  " + "\n  ".join(failures))
     return 1 if failures else 0

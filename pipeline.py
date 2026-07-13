@@ -18,12 +18,12 @@ from meshlib import mrmeshnumpy as mn
 
 from analysis import (
     load_mesh,
+    heal_mesh,
     save_mesh,
     get_mesh_data,
     subdivide_mesh,
     sample_unity_vector_pairs,
     compute_accessibility,
-    relax_accessibility,
 )
 from utils import (ensure_directory, file_fingerprint, files_fingerprint,
                    has_valid_extension)
@@ -190,22 +190,22 @@ def resolve_pixel(workdir, pixel, fallback=1e-1):
 
 
 def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
-              subdivide=None, offset=None, tollerance=1e-1, deflection=None,
-              progress=None):
+              subdivide=None, deflection=None, progress=None):
     """Canonicalize an input STL/STEP into a part working directory.
 
     Writes fine_mesh.obj + fine_verts.npy + fine_faces.npy (the stable face
     indexing every later stage refers to). STEP input tessellates through
     the BREP (brep.mesh_shape) so every fine face carries its source BREP
-    face id (brep_faces.npy) — heal/offset destroy the surfaces and fall
-    back to the anonymous meshlib path, as does STL input.
+    face id (brep_faces.npy) — healing destroys the surfaces and falls back
+    to the anonymous meshlib path, as does STL input.
 
     ``resolution`` is the single analysis-resolution knob: it defaults the
     subdivide edge target (= resolution), the BREP tessellation sag
     (= resolution / 8, so curved faces carry their true shape at analysis
-    scale while planes stay coarse) and, via mesh_meta.json, the zmap pixel
-    of every later stage (= resolution / 5). ``subdivide``/``deflection``
-    remain expert overrides. Returns the workdir and counts.
+    scale while planes stay coarse), the heal voxel size (= resolution / 5)
+    and, via mesh_meta.json, the zmap pixel of every later stage
+    (= resolution / 5). ``subdivide``/``deflection`` remain expert
+    overrides. Returns the workdir and counts.
     """
     has_valid_extension(input_path, MESH_EXTENSIONS)
 
@@ -213,7 +213,7 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
     brep_ids = None
     surface_types = None
 
-    if is_step and not heal and offset is None:
+    if is_step and not heal:
         import brep
 
         shape = brep.load_step_shape(input_path)
@@ -239,7 +239,7 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
         mesh = mn.meshFromFacesVerts(faces, verts)
     else:
         _report(progress, 0.0, "loading mesh")
-        mesh = load_mesh(input_path, heal=heal, offset=offset, tollerance=tollerance)
+        mesh = load_mesh(input_path)
 
         deflection = None  # no BREP tessellation on this path
         if resolution is None:
@@ -249,6 +249,9 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
             subdivide = resolution
         logger.info(f"resolution {resolution:.2f} mm -> subdivide "
                     f"{subdivide:.2f} mm")
+        if heal:
+            _report(progress, 0.2, "healing (voxel remesh)")
+            mesh = heal_mesh(mesh, resolution / 5.0)
         if subdivide:
             _report(progress, 0.5, "subdividing mesh")
             mesh = subdivide_mesh(mesh, subdivide)
@@ -309,8 +312,7 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
 
 
 def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
-                       pixel=None, relax=False, relax_tollerance=1.0,
-                       relax_samples=4, progress=None):
+                       pixel=None, progress=None):
     """Sample approach directions and compute the accessibility matrix.
 
     ``tollerance`` is the angular relaxation (degrees) of the visibility
@@ -345,15 +347,6 @@ def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
     _report(progress, 0.1, f"accessibility for {directions.shape[0]} directions")
     accessibility = compute_accessibility(mesh, directions, face_count,
                                           tolerance_deg=tollerance, pixel=pixel)
-
-    if relax:
-        for direction_index in range(directions.shape[0]):
-            _report(progress, 0.5 + 0.5 * direction_index / directions.shape[0],
-                    f"relaxing direction {direction_index}")
-            relaxed = relax_accessibility(
-                mesh, accessibility[direction_index, :], directions[direction_index],
-                tolerance_degrees=relax_tollerance, n=relax_samples)
-            accessibility[direction_index, :] = relaxed
 
     directions_path = os.path.join(workdir, DIRECTIONS_FILE)
     accessibility_path = os.path.join(workdir, ACCESSIBILITY_FILE)
@@ -713,7 +706,7 @@ def setup_verdict(workdir, *, option=0, tools=(), tollerance=0.1,
             if not visible.any():
                 continue
             cache = DirectionCache(workdir, int(d), verts=verts, faces=faces,
-                                   pixel=pixel, window=window, engine="zmap")
+                                   pixel=pixel, window=window)
             angles = machining.face_angles_deg(normals, directions[d])
             for tool in tools:
                 cylinders = ([(tool["holder_radius"], 0.0)]
@@ -1495,7 +1488,7 @@ def highlight_union(workdir, include=(), exclude=()):
 
 
 def precompute_fields(workdir, *, directions, pixel=None, tips=(), clearances=(),
-                      engine="zmap", window=0.3, progress=None):
+                      window=0.3, progress=None):
     """Cache height maps and per-tip/per-clearance fields for directions.
 
     ``pixel`` None = resolution/5 from mesh_meta (legacy fallback 0.1 mm).
@@ -1513,29 +1506,27 @@ def precompute_fields(workdir, *, directions, pixel=None, tips=(), clearances=()
         _report(progress, step / max(len(directions), 1),
                 f"direction {direction_index}")
         cache = DirectionCache(workdir, direction_index, verts=verts, faces=faces,
-                               pixel=pixel, window=window, engine=engine)
+                               pixel=pixel, window=window)
         for diameter, corner_radius in tips:
             cache.tip_gap(diameter, corner_radius)
         for radius in clearances:
             cache.clearance(radius)
-        if engine == "zmap":
-            # tip-aware holder stickout fields per (tip, cylinder radius)
-            for diameter, corner_radius in tips:
-                for radius in clearances:
-                    cache.tip_min_stickout(diameter, corner_radius, radius)
+        # tip-aware holder stickout fields per (tip, cylinder radius)
+        for diameter, corner_radius in tips:
+            for radius in clearances:
+                cache.tip_min_stickout(diameter, corner_radius, radius)
         computed.append(int(direction_index))
 
     return {
         "directions": computed,
         "tips": [list(tip) for tip in tips],
         "clearances": [float(r) for r in clearances],
-        "engine": engine,
     }
 
 
 def compose_tool(workdir, direction, *, pixel=None, tollerance=1e-1, diameter=2.0,
                  corner_radius=0.0, stickout=None, cylinders=None, sweep=(),
-                 wall_tollerance=1.0, engine="zmap", window=0.3, progress=None):
+                 wall_tollerance=1.0, window=0.3, progress=None):
     """Evaluate a full tool assembly from precomputed fields.
 
     Uses the canonical per-face rule (zmap.tool_face_verdict), including the
@@ -1551,7 +1542,7 @@ def compose_tool(workdir, direction, *, pixel=None, tollerance=1e-1, diameter=2.
 
     _report(progress, 0.1, "composing tool verdict")
     cache = DirectionCache(workdir, direction, verts=verts, faces=faces,
-                           pixel=pixel, window=window, engine=engine)
+                           pixel=pixel, window=window)
     angles = machining.face_angles_deg(machining.face_unit_normals(verts, faces),
                                        cache.direction)
     machinable, _, min_stick = tool_face_verdict(

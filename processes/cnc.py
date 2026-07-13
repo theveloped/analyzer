@@ -81,7 +81,7 @@ def run_precompute(workdir, params, progress):
         workdir, directions=[int(i) for i in params["directions"]],
         pixel=params["pixel"], tips=_tips(params),
         clearances=[float(r) for r in params["clearances"] or []],
-        engine=params["engine"], window=params["window"], progress=progress)
+        window=params["window"], progress=progress)
     return AnalysisResult(stats=result)
 
 
@@ -97,7 +97,7 @@ def run_compose(workdir, params, progress):
         corner_radius=params["corner_radius"], stickout=params["stickout"],
         cylinders=cylinders, sweep=params["sweep"] or [],
         wall_tollerance=params["wall_tollerance"],
-        engine=params["engine"], window=params["window"], progress=progress)
+        window=params["window"], progress=progress)
     stats = {key: result[key] for key in ("unreachable", "accessible", "sweep")}
     return AnalysisResult(stats=stats)
 
@@ -175,8 +175,6 @@ PROCESS = ProcessDef(
                       label="Tool tips (diameter : corner radius)"),
                 Param("clearances", "number_list", default=[], unit="mm",
                       label="Holder/shank clearance radii"),
-                Param("engine", "select", default="zmap", options=["zmap", "voxel"],
-                      label="Field engine"),
                 Param("window", "number", default=0.3, unit="mm", min=0,
                       label="Exact gap window"),
             ],
@@ -205,8 +203,6 @@ PROCESS = ProcessDef(
                       min=0, label="Wall angle tolerance (side-milled)"),
                 Param("pixel", "number", default=None, unit="mm", min=0,
                       label="Height map pixel (blank = resolution/5)"),
-                Param("engine", "select", default="zmap", options=["zmap", "voxel"],
-                      label="Field engine"),
                 Param("window", "number", default=0.3, unit="mm", min=0,
                       label="Exact gap window"),
             ],

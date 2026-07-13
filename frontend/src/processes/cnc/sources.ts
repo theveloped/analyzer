@@ -1,6 +1,6 @@
-// Group the manifest's flat field list back into per-(direction, engine)
-// "sources" — the working unit of the CNC views: one direction cache with
-// its tip gap fields, clearance fields and tip-aware stickout fields.
+// Group the manifest's flat field list back into per-direction "sources" —
+// the working unit of the CNC views: one direction cache with its tip gap
+// fields, clearance fields and tip-aware stickout fields.
 
 import type { FieldDescriptor, Manifest } from '../../api/types';
 
@@ -14,7 +14,6 @@ export interface TipEntry {
 export interface CncSource {
   key: string;
   direction: number;
-  engine: string;
   pixel: number | null;
   tips: TipEntry[];
   clearances: { radius: number; field: FieldDescriptor }[];
@@ -22,7 +21,7 @@ export interface CncSource {
 }
 
 export function cncSources(manifest: Manifest): CncSource[] {
-  const sources = new Map<string, CncSource>();
+  const sources = new Map<number, CncSource>();
   const access = new Map<number, FieldDescriptor>();
 
   for (const field of manifest.fields) {
@@ -32,19 +31,17 @@ export function cncSources(manifest: Manifest): CncSource[] {
       continue;
     }
     if (!['tip_gap', 'clearance', 'min_stickout'].includes(p.kind)) continue;
-    const key = `${p.direction}|${p.engine}`;
-    if (!sources.has(key)) {
-      sources.set(key, {
-        key,
+    if (!sources.has(p.direction)) {
+      sources.set(p.direction, {
+        key: `dir${p.direction}`,
         direction: p.direction,
-        engine: p.engine,
         pixel: p.pixel ?? null,
         tips: [],
         clearances: [],
         accessibility: null,
       });
     }
-    const source = sources.get(key)!;
+    const source = sources.get(p.direction)!;
     if (p.kind === 'tip_gap') {
       source.tips.push({
         diameter: p.diameter, corner_radius: p.corner_radius, field, stickouts: [],
@@ -58,19 +55,17 @@ export function cncSources(manifest: Manifest): CncSource[] {
   for (const field of manifest.fields) {
     const p = field.params;
     if (p.kind !== 'min_stickout') continue;
-    const source = sources.get(`${p.direction}|${p.engine}`);
-    const tip = source?.tips.find(
+    const tip = sources.get(p.direction)?.tips.find(
       (t) => t.diameter === p.diameter && t.corner_radius === p.corner_radius);
     if (tip) tip.stickouts.push({ radius: p.radius, field });
   }
 
   // directions with accessibility but no tool fields still get a (bare)
   // source, so the access/class views work right after prep/directions
-  const covered = new Set([...sources.values()].map((s) => s.direction));
   for (const direction of access.keys()) {
-    if (covered.has(direction)) continue;
-    sources.set(`${direction}|zmap`, {
-      key: `${direction}|zmap`, direction, engine: 'zmap', pixel: null,
+    if (sources.has(direction)) continue;
+    sources.set(direction, {
+      key: `dir${direction}`, direction, pixel: null,
       tips: [], clearances: [], accessibility: null,
     });
   }
@@ -85,8 +80,7 @@ export function cncSources(manifest: Manifest): CncSource[] {
   // tool-field sources first: params.source defaults to 0 and the default
   // (unified) mode needs tips, so bare accessibility sources go last
   const hasFields = (s: CncSource) => (s.tips.length + s.clearances.length > 0 ? 1 : 0);
-  list.sort((a, b) => hasFields(b) - hasFields(a)
-    || a.direction - b.direction || a.engine.localeCompare(b.engine));
+  list.sort((a, b) => hasFields(b) - hasFields(a) || a.direction - b.direction);
   return list;
 }
 
@@ -98,13 +92,6 @@ export function currentSource(manifest: Manifest, params: Record<string, any>): 
 export function currentTip(source: CncSource | null, params: Record<string, any>): TipEntry | null {
   if (!source || !source.tips.length) return null;
   return source.tips[params.tip] ?? source.tips[0];
-}
-
-/** The matching cache of the other engine, for diff mode. */
-export function siblingSource(manifest: Manifest, source: CncSource): CncSource | null {
-  const other = source.engine === 'zmap' ? 'voxel' : 'zmap';
-  return cncSources(manifest).find(
-    (s) => s.direction === source.direction && s.engine === other) ?? null;
 }
 
 export function holderCylinders(text: string): { radius: number; start: number }[] {

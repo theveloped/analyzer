@@ -1,11 +1,10 @@
 """Validation of the height-map (Z-map) engine against known geometry.
 
-Reuses the synthetic part from test_endmill.py (pocket + narrow slot) and
-checks, for a D=4 tool from +Z:
+Synthetic part (20x20x10 block, top at z=0, pocket 8x8x5, slot 3 wide x 3
+deep); checks, for a D=4 tool from +Z:
 
-- the same per-region expectations as the 3D voxel engine (ball flags pocket
-  floor edges, flat reaches them, everyone flags the slot and the vertical
-  pocket corners)
+- per-region expectations by tip type (ball flags pocket floor edges, flat
+  reaches them, everyone flags the slot and the vertical pocket corners)
 - gap magnitudes against theory: ball leaves r*(sqrt(2)-1) = 0.83 at the
   floor edge, bull rc=0.5 leaves 0.21, flat leaves ~0
 - holder clearance: a cylinder of radius 6 above the tool needs stickout >= 5
@@ -21,12 +20,96 @@ import tempfile
 import time
 
 import numpy as np
+from meshlib import mrmeshpy as mm
 
-from test_endmill import CASES, EXPECTATIONS, build_regions, prepare_workdir
+from analysis import compute_accessibility, get_mesh_data
 from zmap import DirectionCache, compose_unreachable
 
 REPO = os.path.dirname(os.path.abspath(__file__))
 PIXEL = 0.05
+
+
+def make_part():
+    block = mm.makeCube(mm.Vector3f(20, 20, 10), mm.Vector3f(-10, -10, -10))
+    pocket = mm.makeCube(mm.Vector3f(8, 8, 6), mm.Vector3f(-4, -4, -5))
+    part = mm.boolean(block, pocket, mm.BooleanOperation.DifferenceAB).mesh
+    slot = mm.makeCube(mm.Vector3f(3, 22, 4), mm.Vector3f(5, -11, -3))
+    part = mm.boolean(part, slot, mm.BooleanOperation.DifferenceAB).mesh
+
+    # refine so faces are small enough to localize results
+    subdiv = mm.SubdivideSettings()
+    subdiv.maxEdgeLen = 0.8
+    subdiv.maxEdgeSplits = 10_000_000
+    subdiv.maxDeviationAfterFlip = 0.0
+    mm.subdivideMesh(part, subdiv)
+    return part
+
+
+def prepare_workdir(workdir):
+    part = make_part()
+    verts, faces = get_mesh_data(part)
+    np.save(os.path.join(workdir, "fine_verts.npy"), verts)
+    np.save(os.path.join(workdir, "fine_faces.npy"), faces)
+
+    directions = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]])
+    np.save(os.path.join(workdir, "directions.npy"), directions)
+
+    # the visibility test's angular tolerance makes exactly-vertical walls
+    # deterministically front-facing — no cone relaxation needed
+    accessibility = compute_accessibility(part, directions, len(faces))
+    np.save(os.path.join(workdir, "accessibility.npy"), accessibility)
+
+    return verts, faces
+
+
+def build_regions(verts, faces):
+    centroids = verts[faces].mean(axis=1)
+    return {
+        # midpoints of the pocket floor/wall edges, away from the corners
+        "pocket floor edge": np.where(
+            (np.abs(centroids[:, 2] + 5.0) < 0.4)
+            & (np.abs(np.abs(centroids[:, 1]) - 4.0) < 0.4)
+            & (np.abs(centroids[:, 0]) < 2.0)
+        )[0],
+        "pocket floor center": np.where(
+            (np.abs(centroids[:, 2] + 5.0) < 0.1)
+            & (np.abs(centroids[:, 0]) < 2.0)
+            & (np.abs(centroids[:, 1]) < 2.0)
+        )[0],
+        # vertical corner edge of the pocket at mid height
+        "pocket vertical corner": np.where(
+            (np.abs(centroids[:, 0] + 4.0) < 0.5)
+            & (np.abs(centroids[:, 1] + 4.0) < 0.5)
+            & (centroids[:, 2] > -4.0)
+            & (centroids[:, 2] < -1.0)
+        )[0],
+        "slot floor": np.where(
+            (np.abs(centroids[:, 2] + 3.0) < 0.1)
+            & (centroids[:, 0] > 5.5)
+            & (centroids[:, 0] < 7.5)
+            & (np.abs(centroids[:, 1]) < 8.0)
+        )[0],
+        "top face": np.where(
+            (np.abs(centroids[:, 2]) < 0.1)
+            & (centroids[:, 0] < 4.5)
+            & (centroids[:, 0] > -9.0)
+            & (np.abs(centroids[:, 1]) > 5.0)
+        )[0],
+    }
+
+
+# tool tip type -> corner radius, region -> should be flagged
+# (the bull corner radius is chosen so its fillet band is wider than a face)
+CASES = {
+    "ball": 2.0,
+    "bull": 1.0,
+    "flat": 0.0,
+}
+EXPECTATIONS = {
+    "ball": {"pocket floor edge": True, "pocket floor center": False, "pocket vertical corner": True, "slot floor": True, "top face": False},
+    "bull": {"pocket floor edge": True, "pocket floor center": False, "pocket vertical corner": True, "slot floor": True, "top face": False},
+    "flat": {"pocket floor edge": False, "pocket floor center": False, "pocket vertical corner": True, "slot floor": True, "top face": False},
+}
 
 
 def nearest_vertex(verts, point):

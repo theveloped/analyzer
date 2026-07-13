@@ -8,7 +8,7 @@ import type { PaintInfo, ViewMode } from '../../registry/types';
 import {
   accessKeep, faceAccess, requireSource, vertexGap, vertexMinStickout,
 } from './compose';
-import { currentTip, holderCylinders, siblingSource, wallThreshold } from './sources';
+import { currentTip, holderCylinders, wallThreshold } from './sources';
 
 const num = (value: any) => {
   const parsed = parseFloat(value);
@@ -188,47 +188,6 @@ export const stickoutMode: ViewMode = {
       stats: minStick.approx
         ? '⚠ vertex-centred approximation (no sreq fields for this tip — re-run precompute)'
         : 'tip-aware stickout (holder at feasible axis positions)',
-    };
-  },
-};
-
-export const diffMode: ViewMode = {
-  id: 'diff',
-  label: 'Engine diff (zmap vs voxel)',
-  async paint(ctx): Promise<PaintInfo> {
-    const source = requireSource(ctx);
-    const tip = currentTip(source, ctx.params);
-    const other = siblingSource(ctx.manifest, source);
-    const otherTip = other?.tips.find(
-      (t) => tip && t.diameter === tip.diameter && t.corner_radius === tip.corner_radius);
-    if (!tip || !other || !otherTip) {
-      throw new Error(
-        'diff needs the same tip cached for both engines (precompute engine zmap and voxel)');
-    }
-    const tol = num(ctx.params.tolerance) || 0;
-    const rule = ctx.params.rule;
-    const gapA = await vertexGap(ctx, source, tip);
-    const gapB = await ctx.getField(otherTip.field) as Float32Array;
-    const keep = await accessKeep(ctx, source);
-    let nBoth = 0, nA = 0, nB = 0;
-    ctx.paintFaces((f) => {
-      if (keep && !keep(f)) return COL.inaccess;
-      const a = faceBlocked(ctx, f, (v) => gapA[v] > tol, rule);
-      const b = faceBlocked(ctx, f, (v) => gapB[v] > tol, rule);
-      if (a && b) { nBoth++; return COL.both; }
-      if (a) { nA++; return COL.zmapOnly; }
-      if (b) { nB++; return COL.voxelOnly; }
-      return COL.ok;
-    });
-    return {
-      legend: [
-        { color: COL.both, label: 'blocked in both engines' },
-        { color: COL.zmapOnly, label: `${source.engine} only` },
-        { color: COL.voxelOnly, label: `${other.engine} only` },
-        { color: COL.ok, label: 'reachable in both' },
-        { color: COL.inaccess, label: 'inaccessible (greyed)' },
-      ],
-      stats: `both ${nBoth} · ${source.engine} only ${nA} · ${other.engine} only ${nB}`,
     };
   },
 };
