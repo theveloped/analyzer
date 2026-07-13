@@ -31,7 +31,7 @@ from loguru import logger
 from meshlib import mrmeshpy as mm
 from scipy import ndimage
 
-from utils import file_fingerprint, log_execution_time
+from utils import file_fingerprint, files_fingerprint, log_execution_time
 
 FREE_SPACE = -1e30  # height of pixels with no material below (tool can plunge)
 
@@ -527,7 +527,7 @@ class DirectionCache:
     compose_unreachable works on either cache.
     """
 
-    VERSION = 5  # + directions fingerprint guards index/vector desyncs
+    VERSION = 6  # + mesh fingerprint guards re-meshed workdirs
 
     def __init__(self, workdir, direction_index, verts=None, faces=None, pixel=0.1,
                  window=0.3, engine="zmap", scale=10.0):
@@ -547,6 +547,9 @@ class DirectionCache:
 
         directions_path = os.path.join(workdir, "directions.npy")
         self.directions_fingerprint = file_fingerprint(directions_path)
+        self.mesh_fingerprint = files_fingerprint(
+            [os.path.join(workdir, "fine_verts.npy"),
+             os.path.join(workdir, "fine_faces.npy")]) or ""
         directions = np.load(directions_path)
         self.direction = directions[direction_index]
 
@@ -554,18 +557,21 @@ class DirectionCache:
             stored = np.load(self.path, allow_pickle=False)
             same_pixel = abs(stored["pixel"][0] - pixel) < 1e-12
             same_version = "version" in stored.files and stored["version"][0] == self.VERSION
-            # fields are keyed by direction INDEX: a regenerated
-            # directions.npy renumbers them, so a cache from another
-            # direction set must not be trusted
+            # fields are keyed by direction INDEX over the fine mesh: a
+            # regenerated directions.npy renumbers them and a re-meshed
+            # workdir re-indexes the vertices, so a cache from another
+            # direction set or mesh must not be trusted
             same_dirs = ("dirfp" in stored.files
                          and stored["dirfp"][0].decode() == self.directions_fingerprint)
-            if same_pixel and same_version and same_dirs:
+            same_mesh = ("meshfp" in stored.files
+                         and stored["meshfp"][0].decode() == self.mesh_fingerprint)
+            if same_pixel and same_version and same_dirs and same_mesh:
                 self._fields = {k: stored[k] for k in stored.files}
                 logger.debug(f"Loaded cache {self.path} with {len(self._fields)} arrays")
             else:
                 logger.warning(
-                    f"Pixel size, cache version or direction set changed, "
-                    f"discarding cache {self.path}")
+                    f"Pixel size, cache version, direction set or mesh "
+                    f"changed, discarding cache {self.path}")
                 self._fields = {}
 
         if not self._fields:
@@ -573,6 +579,7 @@ class DirectionCache:
                 "version": np.array([self.VERSION]),
                 "pixel": np.array([pixel]),
                 "dirfp": np.array([self.directions_fingerprint], dtype="S12"),
+                "meshfp": np.array([self.mesh_fingerprint], dtype="S12"),
             }
             if engine == "zmap":
                 # margin covers the whole euclidean_gap window (window_px in

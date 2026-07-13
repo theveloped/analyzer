@@ -81,7 +81,7 @@ def create_app(root=".", preload=None):
     @app.get("/api/parts/{part_id}/mesh/{which}")
     def get_mesh(request: Request, part_id: str, which: str):
         part = part_or_404(part_id)
-        workdir = os.path.join(root, part["id"])
+        workdir = parts_api.workdir_for(root, part["id"])
         try:
             data, _ = fields_api.mesh_bytes(workdir, which)
         except FileNotFoundError:
@@ -92,7 +92,7 @@ def create_app(root=".", preload=None):
     @app.get("/api/parts/{part_id}/fields/{file_stem}/{key}")
     def get_field(request: Request, part_id: str, file_stem: str, key: str):
         part = part_or_404(part_id)
-        workdir = os.path.join(root, part["id"])
+        workdir = parts_api.workdir_for(root, part["id"])
         try:
             if file_stem == "accessibility":
                 data, _ = fields_api.accessibility_bytes(workdir, int(key))
@@ -122,7 +122,8 @@ def create_app(root=".", preload=None):
                 and re.fullmatch(r"[a-z0-9_]+", process_id)
                 and re.fullmatch(r"[a-z0-9_]+", analysis_id)):
             raise HTTPException(status_code=404, detail="unknown result")
-        base = os.path.join(root, part["id"], "results", process_id, analysis_id)
+        base = os.path.join(parts_api.workdir_for(root, part["id"]),
+                            "results", process_id, analysis_id)
         if not os.path.exists(os.path.join(base, f"{result_hash}.json")):
             raise HTTPException(status_code=404, detail="unknown result")
         return os.path.join(base, f"{result_hash}_overrides.json")
@@ -173,7 +174,7 @@ def create_app(root=".", preload=None):
                        "sticking field itself when there are none)")
         try:
             return ejector_api.simulate(
-                os.path.join(root, part["id"]), body.result_hash,
+                parts_api.workdir_for(root, part["id"]), body.result_hash,
                 [{"point": pin.point, "diameter": pin.diameter}
                  for pin in body.pins],
                 E=body.E, allowable_pressure=body.allowable_pressure)
@@ -186,7 +187,7 @@ def create_app(root=".", preload=None):
     def get_result_field(request: Request, part_id: str, process_id: str,
                          analysis_id: str, result_hash: str, key: str):
         part = part_or_404(part_id)
-        workdir = os.path.join(root, part["id"])
+        workdir = parts_api.workdir_for(root, part["id"])
         try:
             data, _ = fields_api.result_field_bytes(
                 workdir, process_id, analysis_id, result_hash, key)
@@ -199,7 +200,8 @@ def create_app(root=".", preload=None):
     @app.get("/api/parts/{part_id}/highlights")
     def get_highlights(part_id: str):
         part = part_or_404(part_id)
-        path = os.path.join(root, part["id"], pipeline.HIGHLIGHT_FILE)
+        path = os.path.join(parts_api.workdir_for(root, part["id"]),
+                            pipeline.HIGHLIGHT_FILE)
         if not os.path.exists(path):
             raise HTTPException(status_code=404, detail="no highlights")
         return FileResponse(path, media_type="application/json")

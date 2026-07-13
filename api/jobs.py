@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 import processes
+from api import parts as parts_api
 from processes.base import apply_defaults
 
 
@@ -95,7 +96,7 @@ class JobManager:
             job_id = self._queue.get()
             job = self._jobs[job_id]
             job.status = "running"
-            workdir = os.path.join(self.root, job.part_id)
+            workdir = parts_api.workdir_for(self.root, job.part_id)
 
             def report(fraction, message, job=job):
                 job.progress = max(0.0, min(float(fraction), 1.0))

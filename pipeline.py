@@ -25,13 +25,15 @@ from analysis import (
     compute_accessibility,
     relax_accessibility,
 )
-from utils import ensure_directory, file_fingerprint, has_valid_extension
+from utils import (ensure_directory, file_fingerprint, files_fingerprint,
+                   has_valid_extension)
 
 FINE_MESH_FILE = "fine_mesh.obj"
 FINE_VERTS_FILE = "fine_verts.npy"
 FINE_FACES_FILE = "fine_faces.npy"
 MESH_META_FILE = "mesh_meta.json"
 DIRECTIONS_FILE = "directions.npy"
+DIRECTIONS_META_FILE = "directions_meta.json"
 ACCESSIBILITY_FILE = "accessibility.npy"
 BREP_FACES_FILE = "brep_faces.npy"
 BREP_META_FILE = "brep_meta.json"
@@ -64,6 +66,19 @@ def directions_fingerprint(workdir):
     caches instead of silently renumbering them.
     """
     return file_fingerprint(os.path.join(workdir, DIRECTIONS_FILE))
+
+
+def mesh_fingerprint(workdir):
+    """Short content hash of fine_verts + fine_faces (None before prep/mesh).
+
+    Every stored result and zcache field is expressed over this mesh's
+    face/vertex indexing; salting the fingerprint into cache keys keeps a
+    re-meshed workdir from silently serving misaligned artifacts. Both
+    files matter: an offset re-mesh moves only the vertices, a re-index
+    only the faces.
+    """
+    return files_fingerprint([os.path.join(workdir, FINE_VERTS_FILE),
+                              os.path.join(workdir, FINE_FACES_FILE)])
 
 
 def parse_tools(entries):
@@ -348,6 +363,12 @@ def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
 
     logger.debug(f"Storing accessibility at: {accessibility_path}")
     np.save(accessibility_path, accessibility)
+
+    # which mesh the accessibility rows index — the manifest flags the
+    # directions stale when the workdir is re-meshed afterwards
+    with open(os.path.join(workdir, DIRECTIONS_META_FILE), "w") as f:
+        json.dump({"mesh_fingerprint": mesh_fingerprint(workdir),
+                   "pixel": None if pixel is None else float(pixel)}, f)
 
     return {
         "directions": int(directions.shape[0]),
@@ -1092,8 +1113,10 @@ def _latest_mold_orientation(workdir):
         return None, None, None
     result_hash = os.path.splitext(os.path.basename(best[1]))[0]
     npz_path = best[1][:-len(".json")] + ".npz"
-    arrays = (np.load(npz_path, allow_pickle=False)
-              if os.path.exists(npz_path) else None)
+    arrays = None
+    if os.path.exists(npz_path):
+        with np.load(npz_path, allow_pickle=False) as stored:
+            arrays = {name: stored[name] for name in stored.files}
     return result_hash, best[2], arrays
 
 

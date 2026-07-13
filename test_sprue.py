@@ -71,7 +71,8 @@ def nearest_candidate(result_arrays, target):
 
 def load_arrays(workdir, params):
     from processes.base import load_result_arrays
-    cache_params = {**params, "schema": SPRUE_SCHEMA}
+    cache_params = {**params, "schema": SPRUE_SCHEMA,
+                    "mesh": pipeline.mesh_fingerprint(workdir)}
     return load_result_arrays(workdir, "injection_molding",
                               "sprue_proposals", cache_params)
 
@@ -239,7 +240,7 @@ def main():
               f"{len(result.fields)} fields")
         check("skeleton hash binds the sub-run",
               result.stats["skeleton_hash"]
-              == params_hash(skeleton_cache_params(params)),
+              == params_hash(skeleton_cache_params(workdir, params)),
               result.stats["skeleton_hash"])
 
         from api.manifest import build_manifest
@@ -271,7 +272,8 @@ def main():
               str(by_id["candidate_subscores"]["params"]["metrics"]))
 
         from api.fields import result_field_bytes
-        result_hash = params_hash({**params, "schema": SPRUE_SCHEMA})
+        result_hash = params_hash({**params, "schema": SPRUE_SCHEMA,
+                                   "mesh": pipeline.mesh_fingerprint(workdir)})
         for name in ("candidate_points", "proposal_index", "best_fill",
                      "weld_edges_best"):
             entry = by_id[name]

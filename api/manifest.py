@@ -53,10 +53,11 @@ def _zcache_fields(workdir, base_url, vert_count):
         dir_index = int(match.group(1))
         engine = match.group(2) or "zmap"
 
-        stored = np.load(os.path.join(cache_dir, name), allow_pickle=False)
-        pixel = float(stored["pixel"][0]) if "pixel" in stored.files else None
+        with np.load(os.path.join(cache_dir, name), allow_pickle=False) as stored:
+            pixel = float(stored["pixel"][0]) if "pixel" in stored.files else None
+            keys = list(stored.files)
 
-        for key in stored.files:
+        for key in keys:
             tip = TIP_KEY_RE.match(key)
             clear = CLEAR_KEY_RE.match(key)
             sreq = SREQ_KEY_RE.match(key)
@@ -89,7 +90,10 @@ def _accessibility_fields(workdir, base_url, face_count):
     path = os.path.join(workdir, pipeline.ACCESSIBILITY_FILE)
     if not os.path.exists(path):
         return []
-    direction_count = int(np.load(path, mmap_mode="r").shape[0])
+    stored = np.load(path, mmap_mode="r")
+    if stored.shape[1] != face_count:
+        return []  # workdir was re-meshed after directions — masks misaligned
+    direction_count = int(stored.shape[0])
     return [{
         "id": f"accessibility.{index}",
         "association": "face",
@@ -142,6 +146,7 @@ def _brep_faces_fields(workdir, base_url, face_count):
 def _result_entries(workdir, base_url, face_count, vert_count):
     fields, results = [], []
     current_fingerprint = pipeline.directions_fingerprint(workdir)
+    current_mesh = pipeline.mesh_fingerprint(workdir)
     pattern = os.path.join(workdir, RESULTS_DIR, "*", "*", "*.json")
     for json_path in sorted(glob.glob(pattern)):
         if json_path.endswith("_overrides.json"):
@@ -177,6 +182,7 @@ def _result_entries(workdir, base_url, face_count, vert_count):
 
         stats = payload.get("stats", {})
         stored_fingerprint = stats.get("directions_fingerprint")
+        stored_mesh = payload.get("params", {}).get("mesh")
         results.append({
             "process": process_id,
             "analysis": analysis_id,
@@ -184,17 +190,19 @@ def _result_entries(workdir, base_url, face_count, vert_count):
             "params": payload.get("params", {}),
             "stats": _json_safe(stats),
             "fields": field_ids,
-            # direction indices in the result no longer match the current
-            # direction set — the result is stale, re-run the analysis
-            "stale": bool(stored_fingerprint
-                          and stored_fingerprint != current_fingerprint),
+            # direction indices or face/vertex indexing in the result no
+            # longer match the workdir — the result is stale, re-run it
+            "stale": bool((stored_fingerprint
+                           and stored_fingerprint != current_fingerprint)
+                          or (stored_mesh and stored_mesh != current_mesh)),
             "overrides_url": f"{base_url}/results/{process_id}/{analysis_id}/{result_hash}/overrides",
         })
     return fields, results
 
 
 def build_manifest(root, part):
-    workdir = os.path.join(root, part["id"])
+    from api.parts import workdir_for
+    workdir = workdir_for(root, part["id"])
     base_url = f"/api/parts/{part['id']}"
     counts = part.get("counts") or {}
     vert_count = counts.get("verts")
@@ -204,6 +212,7 @@ def build_manifest(root, part):
         "part": part,
         "mesh": None,
         "directions": [],
+        "directions_stale": False,
         "fields": [],
         "results": [],
         "highlights_url": None,
@@ -223,6 +232,12 @@ def build_manifest(root, part):
     if os.path.exists(directions_path):
         directions = np.load(directions_path)
         manifest["directions"] = [[float(c) for c in d] for d in directions]
+        meta_path = os.path.join(workdir, pipeline.DIRECTIONS_META_FILE)
+        if os.path.exists(meta_path):
+            with open(meta_path) as f:
+                stored_mesh = json.load(f).get("mesh_fingerprint")
+            manifest["directions_stale"] = bool(
+                stored_mesh and stored_mesh != pipeline.mesh_fingerprint(workdir))
 
     manifest["fields"] = (
         _zcache_fields(workdir, base_url, vert_count)

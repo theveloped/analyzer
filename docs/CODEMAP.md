@@ -25,8 +25,10 @@ expectations), run as `python test_x.py` — see AGENTS.md.
 ## Per-part working directory (the cache everything shares)
 
 Created by `main.py mesh <input> -o <workdir>` (or UI upload). All later stages and
-the viewer read/write here; the parent directory of a workdir is the "parts root"
-the server scans for the part picker.
+the viewer read/write here. The server scans the parts root for legacy workdirs
+plus `parts/` for uploads: an uploaded file's part id is `sha1(bytes)[:12]` and its
+workdir `<root>/parts/<id>` (gitignored), so the same STEP always lands in the same
+folder and re-uploads dedupe; the human name stays in `part.json`.
 
 | File | Written by | Contents |
 |---|---|---|
@@ -39,17 +41,19 @@ the server scans for the part picker.
 | `brep_meta.json` | mesh (STEP only) | per-BREP-face surface types etc. |
 | `directions.npy` | directions | float `(D,3)`, laid out as antipodal pairs `[d0,-d0,d1,-d1,...]`; `--axes` prepends ±X/±Y/±Z as indices 0–5 (+Z = 4) |
 | `accessibility.npy` | directions | bool `(D,F)` — face f visible from direction d |
+| `directions_meta.json` | directions | mesh fingerprint + pixel the accessibility was computed at; a re-meshed workdir flags `directions_stale` in the manifest |
 | `highlights.json` | any CLI check | flat list of flagged face indices; replayed by the viewer's "Last CLI highlights" mode |
 | `zcache/dir_<idx 04d>.npz` | precompute/compose (zmap engine) | see next section; voxel engine writes `dir_<idx>_voxel.npz` |
-| `results/<process>/<analysis>/<hash>.json[.npz]` | registry analyses | generic results, `<hash>` = `params_hash(params)` (sha1[:12] of canonical JSON) |
+| `results/<process>/<analysis>/<hash>.json[.npz]` | registry analyses | generic results, `<hash>` = `params_hash(params)` (sha1[:12] of canonical JSON); runners salt in schema, `directions` and `mesh` fingerprints so stale results orphan instead of misindexing |
 | `results/<process>/<analysis>/<hash>_overrides.json` | viewer via API | user face-assignment overrides for a mold result |
 | `part.json` | API upload/registration | part metadata (gitignored) |
 
 ## `zcache/dir_*.npz` field keys (DirectionCache, zmap.py)
 
 Always present: `version` (must equal `DirectionCache.VERSION`, else the cache is
-discarded), `pixel`. zmap engine also stores the rendered frame: `heights`,
-`origin`, `x_axis`, `y_axis`, `direction`.
+discarded), `pixel`, `dirfp`/`meshfp` (directions.npy and fine mesh fingerprints —
+a mismatch discards the cache). zmap engine also stores the rendered frame:
+`heights`, `origin`, `x_axis`, `y_axis`, `direction`.
 
 Per-tool fields, all per-vertex float arrays over `fine_verts.npy` (formatted with
 `%.6g`):
@@ -90,7 +94,7 @@ Binary endpoints stream raw typed arrays with ETag caching (`fields.py`).
 GET  /api/config                     server config
 GET  /api/processes                  registry (processes, analyses, param schemas)
 GET  /api/parts                      part list (parts root scan)
-POST /api/parts                      upload STEP/STL → new workdir
+POST /api/parts                      upload STEP/STL → content-addressed workdir parts/<sha1[:12]> (idempotent)
 GET  /api/parts/{id}                 part info
 GET  /api/parts/{id}/manifest        all available fields/results for the part
 GET  /api/parts/{id}/mesh/{which}    raw arrays: verts f4, faces u4, normals f4 (un-indexed contract: face f → vertices 3f..3f+2)

@@ -74,7 +74,9 @@ def main():
         check("cache round-trip (no recompute)",
               second.stats == first.stats and not calls,
               f"progress calls on 2nd run: {len(calls)}")
-        stored = load_result_arrays(workdir, "injection_molding", "thickness", merged)
+        stored = load_result_arrays(
+            workdir, "injection_molding", "thickness",
+            {**merged, "mesh": pipeline.mesh_fingerprint(workdir)})
         check("stored f4 field of length verts",
               stored is not None and stored["thickness"].dtype == np.float32
               and stored["thickness"].shape == (len(verts),), "")

@@ -53,10 +53,10 @@ def zcache_field_bytes(workdir, file_stem, key):
     path = os.path.join(workdir, "zcache", f"{file_stem}.npz")
     if not os.path.exists(path):
         raise FileNotFoundError(path)
-    stored = np.load(path, allow_pickle=False)
-    if key not in stored.files:
-        raise FileNotFoundError(key)
-    return np.ascontiguousarray(stored[key], dtype="<f4").tobytes(), "<f4"
+    with np.load(path, allow_pickle=False) as stored:
+        if key not in stored.files:
+            raise FileNotFoundError(key)
+        return np.ascontiguousarray(stored[key], dtype="<f4").tobytes(), "<f4"
 
 
 def brep_faces_bytes(workdir):
@@ -99,10 +99,10 @@ def result_field_bytes(workdir, process_id, analysis_id, params_hash, key):
                         f"{params_hash}.npz")
     if not os.path.exists(path):
         raise FileNotFoundError(path)
-    stored = np.load(path, allow_pickle=False)
-    if key not in stored.files:
-        raise FileNotFoundError(key)
-    array = stored[key]
+    with np.load(path, allow_pickle=False) as stored:
+        if key not in stored.files:
+            raise FileNotFoundError(key)
+        array = stored[key]
     if array.dtype in (np.uint8, np.bool_):
         return np.ascontiguousarray(array, dtype="<u1").tobytes(), "<u1"
     if array.dtype in (np.uint32, np.int32, np.uint64, np.int64):
