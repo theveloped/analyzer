@@ -3,9 +3,19 @@ import type { FieldDescriptor, Manifest } from '../api/types';
 
 export type RGB = readonly [number, number, number];
 
+/** Camera focus for one legend entry: where its faces live and from which
+ * side to look at them. */
+export interface LegendFocus {
+  center: [number, number, number];
+  direction: [number, number, number];
+  radius: number;
+}
+
 export interface LegendEntry {
   color: RGB;
   label: string;
+  /** When set, clicking the legend row flies the camera to these faces. */
+  focus?: LegendFocus;
 }
 
 export interface PaintInfo {
@@ -25,8 +35,11 @@ export interface ViewCtx {
   highlights: number[] | null;
   getField(desc: FieldDescriptor): Promise<Float32Array | Uint8Array | Uint32Array>;
   paintFaces(colorOf: (f: number) => RGB): void;
-  /** Overlay line segments (flattened endpoint pairs, N*2*3 floats). */
-  setLines(positions: Float32Array, color?: RGB): void;
+  /** Per-corner colors (k in 0..2) — smooth vertex-interpolated fields. */
+  paintCorners(colorOf: (f: number, k: number) => RGB): void;
+  /** Overlay line segments (flattened endpoint pairs, N*2*3 floats).
+   * depthTest true = on-surface lines (isolines); false = through-visible. */
+  setLines(positions: Float32Array, color?: RGB, depthTest?: boolean): void;
   /** Overlay direction arrows pointing at the part. */
   setArrows(arrows: { direction: number[]; color: RGB }[]): void;
   /** Show a graph overlay (skeleton). Keyed: same key skips the rebuild. */

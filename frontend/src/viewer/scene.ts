@@ -173,15 +173,51 @@ export class Scene3D {
     this.colorAttr.needsUpdate = true;
   }
 
-  /** Overlay line segments given as flattened endpoint pairs (N*2*3). */
-  setLines(positions: Float32Array, color: RGB = [1.0, 0.85, 0.2]) {
+  /** Per-corner colors: the GPU interpolates them across each face, so a
+   * per-vertex scalar field renders as a smooth gradient. */
+  paintCorners(colorOf: (f: number, k: number) => RGB) {
+    if (!this.colorAttr) return;
+    for (let f = 0; f < this.faceCount; f++) {
+      for (let k = 0; k < 3; k++) {
+        const [r, g, b] = colorOf(f, k);
+        this.colorAttr.setXYZ(3 * f + k, r, g, b);
+      }
+    }
+    this.colorAttr.needsUpdate = true;
+  }
+
+  /** Fly the camera to look at a region from along `direction`, at a
+   * distance suiting the region (but never so close the part vanishes). */
+  flyTo(center: [number, number, number], direction: [number, number, number],
+        radius: number) {
+    if (!this.mesh) return;
+    const c = new THREE.Vector3(...center);
+    const dir = new THREE.Vector3(...direction);
+    if (dir.lengthSq() < 1e-9) {
+      dir.copy(this.camera.position).sub(this.controls.target);
+      if (dir.lengthSq() < 1e-9) dir.set(0, 0, 1);
+    }
+    dir.normalize();
+    const partSize = new THREE.Box3().setFromObject(this.mesh)
+      .getSize(new THREE.Vector3()).length();
+    const dist = Math.max(radius * 3, partSize * 0.12);
+    this.camera.position.copy(c).addScaledVector(dir, dist);
+    this.controls.target.copy(c);
+    this.controls.update();
+  }
+
+  /** Overlay line segments given as flattened endpoint pairs (N*2*3).
+   * depthTest true keeps them on the visible surface (e.g. isolines);
+   * false (default) draws them through the part (e.g. parting lines). */
+  setLines(positions: Float32Array, color: RGB = [1.0, 0.85, 0.2],
+           depthTest = false) {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     const material = new THREE.LineBasicMaterial({
-      color: new THREE.Color(...color), depthTest: false,
+      color: new THREE.Color(...color), depthTest, depthWrite: false,
     });
     const lines = new THREE.LineSegments(geometry, material);
-    lines.renderOrder = 1; // draw over the mesh
+    lines.renderOrder = depthTest ? 0 : 1; // through-lines draw over the mesh
     this.overlay.add(lines);
   }
 

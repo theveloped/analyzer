@@ -3,7 +3,9 @@
 // factories (mask / highlights) any plugin can reuse.
 
 import type { FieldDescriptor } from '../api/types';
-import type { LegendEntry, RGB, ViewCtx, ViewMode } from '../registry/types';
+import type {
+  LegendEntry, LegendFocus, RGB, ViewCtx, ViewMode,
+} from '../registry/types';
 
 export const COL = {
   ok: [0.87, 0.9, 0.92] as RGB,
@@ -87,6 +89,189 @@ export function faceValues(
     out[f] = (field[ctx.faces[3 * f]] + field[ctx.faces[3 * f + 1]] + field[ctx.faces[3 * f + 2]]) / 3;
   }
   return out;
+}
+
+/**
+ * Marching-triangles isolines of a per-vertex scalar field: for every face
+ * each crossing level contributes one segment (linear interpolation on the
+ * edges). `lift` pushes the segments off the surface along the face normal
+ * so depth-tested lines never z-fight with the mesh. Returns flattened
+ * endpoint pairs for ViewCtx.setLines.
+ */
+export function isolineSegments(
+  ctx: ViewCtx, field: Float32Array, levels: number[], lift = 0,
+): Float32Array {
+  const { verts, faces, normals } = ctx;
+  const segments: number[] = [];
+  for (let f = 0; f < ctx.faceCount; f++) {
+    const a = faces[3 * f];
+    const b = faces[3 * f + 1];
+    const c = faces[3 * f + 2];
+    const va = field[a];
+    const vb = field[b];
+    const vc = field[c];
+    if (isNaN(va) || isNaN(vb) || isNaN(vc)) continue;
+    const lo = Math.min(va, vb, vc);
+    const hi = Math.max(va, vb, vc);
+    const lx = lift * normals[3 * f];
+    const ly = lift * normals[3 * f + 1];
+    const lz = lift * normals[3 * f + 2];
+    for (const level of levels) {
+      if (level <= lo || level > hi) continue;
+      const points: number[] = [];
+      const cross = (i: number, j: number, vi: number, vj: number) => {
+        if ((vi < level) === (vj < level)) return;
+        const t = (level - vi) / (vj - vi);
+        points.push(
+          verts[3 * i] + t * (verts[3 * j] - verts[3 * i]) + lx,
+          verts[3 * i + 1] + t * (verts[3 * j + 1] - verts[3 * i + 1]) + ly,
+          verts[3 * i + 2] + t * (verts[3 * j + 2] - verts[3 * i + 2]) + lz,
+        );
+      };
+      cross(a, b, va, vb);
+      cross(b, c, vb, vc);
+      cross(c, a, vc, va);
+      if (points.length === 6) segments.push(...points);
+    }
+  }
+  return new Float32Array(segments);
+}
+
+/**
+ * NaN-aware Laplacian smoothing of a per-vertex field over the mesh edges —
+ * takes the node-quantized fill times to a continuous field so gradients
+ * and isolines read cleanly. NaN vertices stay NaN and are ignored as
+ * neighbors.
+ */
+export function smoothVertexField(
+  ctx: ViewCtx, field: Float32Array, iterations = 2,
+): Float32Array {
+  const { faces } = ctx;
+  let current = field;
+  for (let it = 0; it < iterations; it++) {
+    const sum = new Float32Array(field.length);
+    const count = new Int32Array(field.length);
+    const edge = (i: number, j: number) => {
+      const vi = current[i];
+      const vj = current[j];
+      if (isNaN(vi) || isNaN(vj)) return;
+      sum[i] += vj;
+      count[i]++;
+      sum[j] += vi;
+      count[j]++;
+    };
+    for (let f = 0; f < ctx.faceCount; f++) {
+      const a = faces[3 * f];
+      const b = faces[3 * f + 1];
+      const c = faces[3 * f + 2];
+      edge(a, b);
+      edge(b, c);
+      edge(c, a);
+    }
+    const next = new Float32Array(field.length);
+    for (let v = 0; v < field.length; v++) {
+      next[v] = count[v]
+        ? (current[v] + sum[v] / count[v]) / 2
+        : current[v];
+    }
+    current = next;
+  }
+  return current;
+}
+
+/**
+ * Accumulates per-group face statistics into LegendFocus entries: bounding
+ * box center to aim at, area-weighted mean normal to look from, half the
+ * bbox diagonal as the size. One `add(key, f)` call per painted face.
+ */
+export class FocusTracker {
+  private groups = new Map<string, {
+    n: number; nx: number; ny: number; nz: number;
+    min: [number, number, number]; max: [number, number, number];
+  }>();
+
+  constructor(private ctx: ViewCtx) {}
+
+  add(key: string, f: number) {
+    let g = this.groups.get(key);
+    if (!g) {
+      g = {
+        n: 0, nx: 0, ny: 0, nz: 0,
+        min: [Infinity, Infinity, Infinity],
+        max: [-Infinity, -Infinity, -Infinity],
+      };
+      this.groups.set(key, g);
+    }
+    const { verts, faces, normals } = this.ctx;
+    g.n++;
+    g.nx += normals[3 * f];
+    g.ny += normals[3 * f + 1];
+    g.nz += normals[3 * f + 2];
+    for (let k = 0; k < 3; k++) {
+      const v = faces[3 * f + k];
+      for (let axis = 0; axis < 3; axis++) {
+        const value = verts[3 * v + axis];
+        if (value < g.min[axis]) g.min[axis] = value;
+        if (value > g.max[axis]) g.max[axis] = value;
+      }
+    }
+  }
+
+  count(key: string): number {
+    return this.groups.get(key)?.n ?? 0;
+  }
+
+  focus(key: string): LegendFocus | undefined {
+    const g = this.groups.get(key);
+    if (!g || !g.n) return undefined;
+    const dx = g.max[0] - g.min[0];
+    const dy = g.max[1] - g.min[1];
+    const dz = g.max[2] - g.min[2];
+    return {
+      center: [(g.min[0] + g.max[0]) / 2, (g.min[1] + g.max[1]) / 2,
+               (g.min[2] + g.max[2]) / 2],
+      direction: [g.nx / g.n, g.ny / g.n, g.nz / g.n],
+      radius: Math.sqrt(dx * dx + dy * dy + dz * dz) / 2,
+    };
+  }
+
+  /** All group keys with the given prefix, e.g. one per undercut region. */
+  keys(prefix: string): string[] {
+    return [...this.groups.keys()].filter((k) => k.startsWith(prefix));
+  }
+
+  /** Merged focus over several groups (e.g. all tiny speck regions). */
+  merged(keys: string[]): LegendFocus | undefined {
+    let out: LegendFocus | undefined;
+    let n = 0;
+    const min = [Infinity, Infinity, Infinity];
+    const max = [-Infinity, -Infinity, -Infinity];
+    const normal = [0, 0, 0];
+    for (const key of keys) {
+      const g = this.groups.get(key);
+      if (!g) continue;
+      n += g.n;
+      normal[0] += g.nx;
+      normal[1] += g.ny;
+      normal[2] += g.nz;
+      for (let axis = 0; axis < 3; axis++) {
+        min[axis] = Math.min(min[axis], g.min[axis]);
+        max[axis] = Math.max(max[axis], g.max[axis]);
+      }
+    }
+    if (n) {
+      const dx = max[0] - min[0];
+      const dy = max[1] - min[1];
+      const dz = max[2] - min[2];
+      out = {
+        center: [(min[0] + max[0]) / 2, (min[1] + max[1]) / 2,
+                 (min[2] + max[2]) / 2],
+        direction: [normal[0] / n, normal[1] / n, normal[2] / n],
+        radius: Math.sqrt(dx * dx + dy * dy + dz * dz) / 2,
+      };
+    }
+    return out;
+  }
 }
 
 /**
