@@ -202,7 +202,8 @@ def fixture_side_hole_brep(check):
 
         result = pipeline.mold_orientation(workdir, max_slides=2, count=10,
                                            field_options=3)
-        check("stats carry schema 2", result["stats"]["schema"] == 2
+        check("stats carry current schema",
+              result["stats"]["schema"] == MOLD_SCHEMA
               and result["stats"]["brep"], "")
 
         options = result["stats"]["options"]

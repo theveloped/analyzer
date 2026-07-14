@@ -18,9 +18,9 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             params_hash, store_result)
 
 ASSIGNMENT_OPTIONS = 3  # options that get per-face assignment fields
-MOLD_SCHEMA = 2  # result schema version, salted into the cache key
+MOLD_SCHEMA = 3  # result schema version, salted into the cache key
 SPRUE_SCHEMA = 2  # sprue_proposals schema version, salted into the cache key
-SKELETON_SCHEMA = 3  # wall_skeleton schema (3: absorption + mesh spec)
+SKELETON_SCHEMA = 4  # wall_skeleton schema (4: sphere centers on exact normals)
 EJECTION_SCHEMA = 2  # ejection_sticking schema version, cache salt
 
 SKELETON_PARAMS = ("max_radius", "min_radius", "cluster_factor",
@@ -76,6 +76,7 @@ def run_gaps(workdir, params, progress):
 def run_mold_orientation(workdir, params, progress):
     cache_params = {**params, "schema": MOLD_SCHEMA,
                     "directions": pipeline.directions_fingerprint(workdir),
+                    "accessibility": pipeline.accessibility_fingerprint(workdir),
                     "mesh": pipeline.mesh_fingerprint(workdir)}
     cached = load_cached_result(workdir, "injection_molding",
                                 "mold_orientation", cache_params)

@@ -58,14 +58,6 @@ def face_areas(verts, faces):
     return 0.5 * np.linalg.norm(cross, axis=1)
 
 
-def face_unit_normals(verts, faces):
-    """float64[F, 3] unit face normals."""
-    tri = verts[faces].astype(np.float64)
-    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
-    normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True), 1e-30)
-    return normals
-
-
 def face_angles_deg(normals, direction):
     """float64[F] angle between each face normal and an approach direction:
     0 = floor seen straight on, 90 = vertical wall, > 90 = overhang."""

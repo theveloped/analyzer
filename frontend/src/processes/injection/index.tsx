@@ -29,6 +29,9 @@ import {
 const CONFLICT_FEATURE = 254;
 const INTERNAL_FEATURE = 255;
 
+// keep in sync with MOLD_SCHEMA in processes/injection_molding.py
+const MOLD_SCHEMA = 3;
+
 const ARROW_COLORS: Record<string, RGB> = {
   main_a: [0.44, 0.64, 0.86], // side A
   main_b: [0.62, 0.8, 0.58], // side B
@@ -37,7 +40,7 @@ const ARROW_COLORS: Record<string, RGB> = {
 function resultsFor(manifest: Manifest, analysis: string) {
   return manifest.results.filter(
     (r) => r.process === 'injection_molding' && r.analysis === analysis
-      && (analysis !== 'mold_orientation' || r.stats.schema === 2));
+      && (analysis !== 'mold_orientation' || r.stats.schema === MOLD_SCHEMA));
 }
 
 /** Latest stored result's field descriptor for one npz member. */

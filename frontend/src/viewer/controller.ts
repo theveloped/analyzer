@@ -108,7 +108,7 @@ export async function selectPart(partId: string) {
     verts = vertArr;
     faces = faceIdx;
     normals = faceNormals;
-    scene?.setMesh(vertArr, faceIdx);
+    scene?.setMesh(vertArr, faceIdx, faceNormals);
     scene?.frame(firstDirection(manifest));
     useStore.getState().set({ meshReady: true, highlights, stats: '' });
   } catch (err) {

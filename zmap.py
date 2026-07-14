@@ -35,6 +35,24 @@ from utils import file_fingerprint, files_fingerprint, log_execution_time
 
 FREE_SPACE = -1e30  # height of pixels with no material below (tool can plunge)
 
+_RAW_SCRATCH = None  # process-lifetime scratch path for distance-map dumps
+
+
+def _raw_scratch_path():
+    """One reusable .raw scratch file for the DistanceMapSave round trip —
+    an analysis renders a map per direction, and per-call temp files cost
+    100+ create/delete cycles (plus antivirus rescans) per run."""
+    global _RAW_SCRATCH
+    if _RAW_SCRATCH is None:
+        import atexit
+
+        fd, path = tempfile.mkstemp(suffix=".raw", prefix="zmap_")
+        os.close(fd)
+        atexit.register(
+            lambda: os.path.exists(path) and os.remove(path))
+        _RAW_SCRATCH = path
+    return _RAW_SCRATCH
+
 
 # ---------------------------------------------------------------------------
 # depth map rendering
@@ -65,16 +83,24 @@ def render_heightmap(mesh, direction, pixel, margin=0):
     params = mm.MeshToDistanceMapParams(look, mm.Vector2f(pixel, pixel), mesh, True)
     dmap = mm.computeDistanceMap(mesh, params)
 
-    # extract values through the raw dump (fastest binding available)
-    with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as tmp:
-        raw_path = tmp.name
-    try:
+    # extract values through the raw dump (fastest binding available; the
+    # bindings expose no in-memory DistanceMap -> numpy path)
+    def read_raw(raw_path):
         mm.DistanceMapSave.toRAW(dmap, raw_path)
         with open(raw_path, "rb") as f:
-            res_x, res_y = np.fromfile(f, dtype=np.int64, count=2)
-            values = np.fromfile(f, dtype=np.float32).reshape(res_y, res_x)
-    finally:
-        os.remove(raw_path)
+            rx, ry = np.fromfile(f, dtype=np.int64, count=2)
+            return np.fromfile(f, dtype=np.float32).reshape(ry, rx)
+
+    try:
+        values = read_raw(_raw_scratch_path())
+    except (OSError, RuntimeError):  # scratch locked (AV scan) — fall back
+        with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as tmp:
+            raw_path = tmp.name
+        try:
+            values = read_raw(raw_path)
+        finally:
+            os.remove(raw_path)
+    res_y, res_x = values.shape
 
     org = np.array([params.orgPoint.x, params.orgPoint.y, params.orgPoint.z])
     x_range = np.array([params.xRange.x, params.xRange.y, params.xRange.z])
@@ -160,7 +186,7 @@ def _bracket_corners(fx, fy, shape):
 
 @log_execution_time
 def face_visibility(mesh, verts, faces, direction, *, tolerance_deg=0.1, pixel=0.1,
-                    margin=2, normals=None):
+                    margin=2, normals=None, chord_error=0.0, centroids=None):
     """Per-face visibility along an approach direction. Returns (F,) bool.
 
     Replaces meshlib's undercut verdict, whose hard front/back-facing test
@@ -170,44 +196,78 @@ def face_visibility(mesh, verts, faces, direction, *, tolerance_deg=0.1, pixel=0
 
     - it faces the tool within an angular relaxation: n·d >= -sin(tolerance),
       so a wall at exactly 90 deg is deterministically front-facing, and
-    - nothing shadows it per the rendered height map: the column top sampled
-      at the centroid (pushed one pixel outward along the lateral component
-      of the normal, so walls escape their own silhouette column) does not
-      rise above the face itself. The bracket-corner min makes the sample
-      subpixel-stable on walls sitting exactly on pixel boundaries.
+    - some escape corridor is open per the rendered height map. The map
+      samples rays at pixel centers, so an edge-on wall is invisible to its
+      own column — the column reads whatever surface lies at the pixel
+      center instead. No single sample position is right for every wall:
+      the in-place sample is contaminated by a closer surface crossing the
+      pixel center, while a pushed sample can land under a flush ledge that
+      starts sub-pixel outward of the wall. A face is therefore occluded
+      only if EVERY candidate sample — in place, one and two pixels outward
+      along the lateral component of the normal, and one chord_error off
+      the surface along the normal — reads a column top above the face.
+      The bracket-corner min makes each sample subpixel-stable on walls
+      sitting exactly on pixel boundaries.
 
     ``normals`` overrides the facet cross-product normals — pass exact BREP
     surface normals so curved faces classify by their true angle rather than
-    the coarse tessellation's chord planes.
+    the coarse tessellation's chord planes. ``chord_error`` is the mesh's
+    chord/deflection bound: coarse chords of curved faces zigzag around the
+    true surface by up to that much, so one candidate steps off the surface
+    by it (0 on STL/heal meshes, whose facets are the ground truth).
+    ``centroids`` lets a caller looping over directions gather the triangle
+    centroids once instead of per call.
 
-    Conservative limits: cavities narrower than ~1 pixel may not resolve,
-    and overhangs closer than 1.5*pixel above a face go undetected.
+    Conservative limits: cavities narrower than ~2 pixels may not resolve,
+    overhangs closer than 1.5*pixel above a face go undetected, and lips
+    protruding less than ~2 pixels + chord_error past a tangent wall do not
+    occlude it.
     """
     heights, frame = render_heightmap(mesh, direction, pixel, margin=margin)
     d = frame["direction"]
 
-    tri = verts[faces]
-    centroids = tri.mean(axis=1)
-    if normals is None:
-        normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
-        normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True),
-                              1e-30)
-    else:
-        normals = np.asarray(normals, dtype=np.float64)
+    if centroids is None or normals is None:
+        tri = verts[faces]
+        if centroids is None:
+            centroids = tri.mean(axis=1)
+        if normals is None:
+            normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+            normals /= np.maximum(
+                np.linalg.norm(normals, axis=1, keepdims=True), 1e-30)
+    normals = np.asarray(normals, dtype=np.float64)
 
     ndotd = normals @ d
     facing = ndotd >= -np.sin(np.radians(tolerance_deg))
 
-    # walls (|lateral| ~ 1) sample just outside their own material column,
-    # floors (|lateral| ~ 0) sample in place
+    # walls (|lateral| ~ 1) get lateral escape corridors, floors
+    # (|lateral| ~ 0) effectively sample in place
     lateral = normals - ndotd[:, None] * d
-    fx, fy, height = project_vertices_float(centroids + pixel * lateral, frame)
+    offsets = [pixel * lateral,
+               np.zeros_like(lateral),
+               2.0 * pixel * lateral]
+    if chord_error > 0.0:
+        offsets.append(pixel * lateral + chord_error * normals)
 
-    ix4, iy4 = _bracket_corners(fx, fy, heights.shape)
-    top = heights[iy4, ix4].min(axis=0)
-    occluded = top > height + 1.5 * pixel
+    def column_capped(positions):
+        fx, fy, height = project_vertices_float(positions, frame)
+        ix4, iy4 = _bracket_corners(fx, fy, heights.shape)
+        top = heights[iy4, ix4].min(axis=0)
+        return top > height + 1.5 * pixel
 
-    return facing & ~occluded
+    # progressive narrowing over the faces whose verdict can still change:
+    # back-facing faces are invisible regardless, the primary sample settles
+    # most front-facing ones, and each extra corridor only re-examines the
+    # faces every earlier sample called occluded
+    active = np.flatnonzero(facing)
+    for offset in offsets:
+        if not len(active):
+            break
+        capped = column_capped(centroids[active] + offset[active])
+        active = active[capped]
+
+    visible = facing.copy()
+    visible[active] = False
+    return visible
 
 
 def euclidean_gap(closed, fx, fy, height, pixel, window_px):

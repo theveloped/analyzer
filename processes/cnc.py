@@ -21,6 +21,7 @@ DEFAULT_TOOLS = [
 def run_setups(workdir, params, progress):
     cache_params = {**params, "schema": SETUPS_SCHEMA,
                     "directions": pipeline.directions_fingerprint(workdir),
+                    "accessibility": pipeline.accessibility_fingerprint(workdir),
                     "mesh": pipeline.mesh_fingerprint(workdir)}
     cached = load_cached_result(workdir, "cnc", "setups", cache_params)
     if cached is not None:
@@ -41,6 +42,7 @@ def run_setups(workdir, params, progress):
 def run_setup_verdict(workdir, params, progress):
     cache_params = {**params, "schema": SETUPS_SCHEMA, "verdict": 1,
                     "directions": pipeline.directions_fingerprint(workdir),
+                    "accessibility": pipeline.accessibility_fingerprint(workdir),
                     "mesh": pipeline.mesh_fingerprint(workdir)}
     cached = load_cached_result(workdir, "cnc", "setups", cache_params)
     if cached is not None:

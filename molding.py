@@ -54,7 +54,11 @@ def mold_orientation_search(directions, accessibility, *, max_slides=2,
                             slide_tolerance_deg=2.0, min_slide_faces=50):
     """Rank mold orientations: antipodal pair + greedy perpendicular slides.
 
-    Returns the full ranked list of option dicts (JSON-safe).
+    Every pull pair contributes one option per slide count 0..max_slides
+    (the greedy picks are incremental, so the k-slide option is the first
+    k picks). Ranking is purely by coverage — feasible options sit at 1.0
+    and tie-break to fewer slides, so the cheapest feasible mold still
+    wins. Returns the full ranked list of option dicts (JSON-safe).
     """
     face_count = accessibility.shape[1]
     options = []
@@ -64,9 +68,39 @@ def mold_orientation_search(directions, accessibility, *, max_slides=2,
         covered_b = accessibility[i + 1]
         residual = ~(covered_a | covered_b)
 
+        base_counts = {
+            "side_a": int((covered_a & ~covered_b).sum()),
+            "side_b": int((covered_b & ~covered_a).sum()),
+            "either": int((covered_a & covered_b).sum()),
+        }
+
+        def emit(slides, internal):
+            arrows = [
+                {"kind": "main_a",
+                 "direction": [float(c) for c in directions[i]]},
+                {"kind": "main_b",
+                 "direction": [float(c) for c in directions[i + 1]]},
+            ] + [
+                {"kind": "slide", "index": j, "direction": s["vector"]}
+                for j, s in enumerate(slides)
+            ]
+            options.append({
+                "pair": [i, i + 1],
+                "slides": list(slides),
+                "coverage": 1.0 - internal / face_count,
+                "feasible": internal == 0,
+                "counts": {
+                    **base_counts,
+                    "internal": internal,
+                    "slides": [s["marginal"] for s in slides],
+                },
+                "arrows": arrows,
+            })
+
         candidates = perpendicular_candidates(directions[i], directions,
                                               slide_tolerance_deg)
         slides = []
+        emit(slides, int(residual.sum()))
         while residual.any() and len(slides) < max_slides and len(candidates):
             gains = (accessibility[candidates] & residual).sum(axis=1)
             best = int(np.argmax(gains))
@@ -81,33 +115,10 @@ def mold_orientation_search(directions, accessibility, *, max_slides=2,
                 "vector": [float(c) for c in directions[direction_index]],
                 "marginal": marginal,
             })
+            emit(slides, int(residual.sum()))
 
-        internal = int(residual.sum())
-        arrows = [
-            {"kind": "main_a", "direction": [float(c) for c in directions[i]]},
-            {"kind": "main_b", "direction": [float(c) for c in directions[i + 1]]},
-        ] + [
-            {"kind": "slide", "index": j, "direction": s["vector"]}
-            for j, s in enumerate(slides)
-        ]
-        options.append({
-            "pair": [i, i + 1],
-            "slides": slides,
-            "coverage": 1.0 - internal / face_count,
-            "feasible": internal == 0,
-            "counts": {
-                "side_a": int((covered_a & ~covered_b).sum()),
-                "side_b": int((covered_b & ~covered_a).sum()),
-                "either": int((covered_a & covered_b).sum()),
-                "internal": internal,
-                "slides": [s["marginal"] for s in slides],
-            },
-            "arrows": arrows,
-        })
-
-    options.sort(key=lambda o: (not o["feasible"], len(o["slides"]),
-                                -o["coverage"], o["counts"]["either"],
-                                o["pair"][0]))
+    options.sort(key=lambda o: (-o["coverage"], len(o["slides"]),
+                                o["counts"]["either"], o["pair"][0]))
     return options
 
 

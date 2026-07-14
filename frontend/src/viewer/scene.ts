@@ -118,8 +118,12 @@ export class Scene3D {
     this.controls.update();
   };
 
-  /** Build the un-indexed geometry from raw vertex/index arrays. */
-  setMesh(verts: Float32Array, faces: Uint32Array) {
+  /** Build the un-indexed geometry from raw vertex/index arrays.
+   *  `faceNormals` are the per-face exact BREP surface normals (normals.npy);
+   *  each face's normal is repeated for its three un-indexed vertices so
+   *  curved faces shade with the true surface gradient instead of the
+   *  tessellation's chord planes. Facet normals are the fallback. */
+  setMesh(verts: Float32Array, faces: Uint32Array, faceNormals?: Float32Array) {
     this.clearMesh();
     this.faceCount = faces.length / 3;
 
@@ -135,7 +139,19 @@ export class Scene3D {
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color',
       new THREE.BufferAttribute(new Float32Array(faces.length * 3).fill(0.9), 3));
-    geometry.computeVertexNormals();
+    if (faceNormals && faceNormals.length === faces.length) {
+      const normals = new Float32Array(faces.length * 3);
+      for (let f = 0; f < this.faceCount; f++) {
+        for (let corner = 0; corner < 3; corner++) {
+          normals[9 * f + 3 * corner] = faceNormals[3 * f];
+          normals[9 * f + 3 * corner + 1] = faceNormals[3 * f + 1];
+          normals[9 * f + 3 * corner + 2] = faceNormals[3 * f + 2];
+        }
+      }
+      geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    } else {
+      geometry.computeVertexNormals();
+    }
 
     const material = new THREE.MeshPhongMaterial({
       vertexColors: true, specular: 0x111111, shininess: 18,

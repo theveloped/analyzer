@@ -27,16 +27,6 @@ import numpy as np
 import gating
 
 
-def face_geometry(verts, faces):
-    """Unit normals and areas (mm^2) per mesh face."""
-    tri = verts[faces].astype(np.float64)
-    cross = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
-    norm = np.linalg.norm(cross, axis=1)
-    areas = 0.5 * norm
-    normals = cross / np.maximum(norm, 1e-30)[:, None]
-    return normals, areas
-
-
 def _unit(pull):
     pull = np.asarray(pull, dtype=np.float64)
     return pull / max(np.linalg.norm(pull), 1e-30)

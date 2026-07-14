@@ -180,7 +180,7 @@ def sample_unity_vector_pairs(n):
 
 @log_execution_time
 def compute_accessibility(mesh, directions, face_count, *, tolerance_deg=0.1,
-                          pixel=None, normals=None):
+                          pixel=None, normals=None, chord_error=0.0):
     """Per-direction face accessibility via our own visibility test.
 
     A face is accessible iff it faces the direction within `tolerance_deg`
@@ -188,7 +188,8 @@ def compute_accessibility(mesh, directions, face_count, *, tolerance_deg=0.1,
     and no material shadows it per a rendered height map (zmap engine).
     `pixel` is the height-map resolution; None derives it from the part's
     bounding box diagonal. ``normals`` overrides the facet normals (pass
-    exact BREP surface normals for STEP parts).
+    exact BREP surface normals for STEP parts). ``chord_error`` is the
+    mesh's chord/deflection bound (see zmap.face_visibility).
     """
     from zmap import face_visibility
 
@@ -199,11 +200,22 @@ def compute_accessibility(mesh, directions, face_count, *, tolerance_deg=0.1,
         pixel = float(np.clip(diagonal / 1000.0, 0.05, 1.0))
         logger.debug(f"Auto visibility map pixel: {pixel:.3f}")
 
+    # gather the per-direction invariants once — the loop below renders one
+    # height map per direction and everything else is shared
+    tri = verts[faces]
+    centroids = tri.mean(axis=1)
+    if normals is None:
+        normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        normals /= np.maximum(np.linalg.norm(normals, axis=1, keepdims=True),
+                              1e-30)
+    normals = np.asarray(normals, dtype=np.float64)
+
     dir_count = len(directions)
     accessibility = np.ones((dir_count, face_count), dtype=bool)
     for i in range(dir_count):
         accessibility[i, :] = face_visibility(
             mesh, verts, faces, directions[i],
-            tolerance_deg=tolerance_deg, pixel=pixel, normals=normals)
+            tolerance_deg=tolerance_deg, pixel=pixel, normals=normals,
+            chord_error=chord_error, centroids=centroids)
 
     return accessibility

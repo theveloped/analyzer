@@ -232,10 +232,14 @@ def analytic_face_normals(verts, faces, face_ids, surface_params,
     walls come out outward without trusting individual sliver triangles).
     Non-analytic faces (handled by freeform_face_normals while the shape is
     alive) and degenerate evaluations keep their facet normals.
+
+    Returns (normals, exact) — exact is the bool[F] mask of fine faces whose
+    normal was actually replaced by an evaluated surface normal.
     """
     verts = np.asarray(verts, dtype=np.float64)
     faces = np.asarray(faces)
     normals = np.array(facet_normals, dtype=np.float64, copy=True)
+    exact = np.zeros(len(faces), dtype=bool)
 
     tri = verts[faces]
     centroids = tri.mean(axis=1)
@@ -296,8 +300,9 @@ def analytic_face_normals(verts, faces, face_ids, surface_params,
         if sign == 0.0:
             continue  # ambiguous — keep facet normals for this face
         normals[idx[valid]] = sign * candidate[valid]
+        exact[idx[valid]] = True
 
-    return normals
+    return normals, exact
 
 
 @log_execution_time
@@ -318,8 +323,9 @@ def freeform_face_normals(shape, verts, faces, face_ids, surface_params,
     (|dU x dV| ~ 0) and non-C1 evaluations keep their facet normals.
 
     ``normals`` is the analytic_face_normals output; returns an updated
-    copy. The D1 loop is per fine face by necessity (OCP evaluates one
-    parameter at a time) but only runs on the freeform subset.
+    copy plus the bool[F] mask of fine faces it set exactly. The D1 loop is
+    per fine face by necessity (OCP evaluates one parameter at a time) but
+    only runs on the freeform subset.
     """
     from OCP.BRepAdaptor import BRepAdaptor_Surface
     from OCP.gp import gp_Pnt, gp_Vec
@@ -327,12 +333,13 @@ def freeform_face_normals(shape, verts, faces, face_ids, surface_params,
     verts = np.asarray(verts, dtype=np.float64)
     faces = np.asarray(faces)
     normals = np.array(normals, dtype=np.float64, copy=True)
+    exact = np.zeros(len(faces), dtype=bool)
 
     no_params = np.array([params is None for params in surface_params])
     uv_known = np.isfinite(corner_uv).all(axis=(1, 2))  # per coarse facet
     target = no_params[face_ids] & uv_known[parent_facets]
     if not target.any():
-        return normals
+        return normals, exact
 
     idx = np.flatnonzero(target)
     tri = verts[faces[idx]]
@@ -396,11 +403,12 @@ def freeform_face_normals(shape, verts, faces, face_ids, surface_params,
         if sign == 0.0:
             continue  # ambiguous — keep facet normals for this face
         normals[idx[rows]] = sign * candidate[rows]
+        exact[idx[rows]] = True
         updated += rows.size
 
     logger.info(f"Evaluated true normals on {updated} of {len(idx)} fine "
                 f"faces across {int(no_params.sum())} freeform BREP faces")
-    return normals
+    return normals, exact
 
 
 @log_execution_time
@@ -425,8 +433,12 @@ def subdivide_tagged(verts, faces, face_ids, max_edge_len, max_rounds=32):
         corner_edges = np.stack(
             [faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]], axis=1)
         sorted_edges = np.sort(corner_edges.reshape(-1, 2), axis=1)
-        unique_edges, inverse = np.unique(sorted_edges, axis=0,
-                                          return_inverse=True)
+        # pack each sorted pair into one int64 — scalar np.unique is ~10x
+        # faster than axis=0 on the multi-million edge sets of fine rounds
+        keys = (sorted_edges[:, 0] << 32) | sorted_edges[:, 1]
+        unique_keys, inverse = np.unique(keys, return_inverse=True)
+        unique_edges = np.stack(
+            [unique_keys >> 32, unique_keys & 0xFFFFFFFF], axis=1)
         lengths = np.linalg.norm(
             verts[unique_edges[:, 0]] - verts[unique_edges[:, 1]], axis=1)
         split = lengths > max_edge_len

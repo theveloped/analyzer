@@ -17,8 +17,8 @@ directory so expensive steps are cached between runs:
 
 | File | Contents |
 |---|---|
-| `fine_mesh.obj` | The healed, canonical analysis mesh |
-| `fine_verts.npy` / `fine_faces.npy` | Numpy cache of the same mesh (fast reload, stable face indexing) |
+| `fine_verts.npy` / `fine_faces.npy` | The healed, canonical analysis mesh (fast reload, stable face indexing) |
+| `fine_mesh.obj` | Optional OBJ export of the same mesh for external tools (`mesh --obj`; nothing in the pipeline reads it) |
 | `directions.npy` | Sampled candidate tool-approach directions, shape `(D, 3)` |
 | `accessibility.npy` | Boolean matrix, shape `(D, F)` — face `f` visible from direction `d` |
 | `highlights.json` | Face indices flagged by the last CLI run (replayed by the viewer's highlights mode) |
@@ -73,8 +73,11 @@ each pick maximizes newly-covered residual faces and records its **marginal
 contribution**, so redundant slides never appear and every slide's purpose is
 explicit. Faces neither the pair nor any slide reaches are **internal
 undercuts** (inside slides / hand-loads, identified separately). An option is
-**feasible** iff that set is empty; ranking is feasible-first, fewer slides,
-higher coverage.
+**feasible** iff that set is empty. Each pair contributes one option per slide
+count 0..`max_slides` (the greedy prefixes), and the list ranks purely on
+coverage — feasible options sit at 1.0 and tie-break to fewer slides, so the
+cheapest feasible mold still wins while near-feasible options are never buried
+under slideless pulls.
 
 Per top option, assignment is **membership based** (pure numpy over the
 accessibility rows):
