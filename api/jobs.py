@@ -96,20 +96,24 @@ class JobManager:
             job_id = self._queue.get()
             job = self._jobs[job_id]
             job.status = "running"
-            workdir = parts_api.workdir_for(self.root, job.part_id)
 
             def report(fraction, message, job=job):
                 job.progress = max(0.0, min(float(fraction), 1.0))
                 job.message = str(message)
 
+            # BaseException, and everything inside the try: an escaping
+            # exception would kill the only worker thread, leaving this job
+            # "running" forever and the queue permanently wedged (every
+            # submit for the part then 409s with no way to recover)
             try:
+                workdir = parts_api.workdir_for(self.root, job.part_id)
                 analysis = processes.get_analysis(job.process, job.analysis)
                 logger.info(f"Job #{job.id}: {job.process}/{job.analysis} on {job.part_id}")
                 result = analysis.run(workdir, job.params, report)
                 job.result = result.to_dict() if result is not None else None
                 job.progress = 1.0
                 job.status = "done"
-            except Exception as exc:
+            except BaseException as exc:
                 logger.exception(f"Job #{job.id} failed")
                 job.error = f"{type(exc).__name__}: {exc}"
                 job.message = traceback.format_exc(limit=3)
