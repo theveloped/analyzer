@@ -631,7 +631,7 @@ class DirectionCache:
     distances to the machined solid.
     """
 
-    VERSION = 6  # + mesh fingerprint guards re-meshed workdirs
+    VERSION = 7  # + exact-gap window floored at 3 px and guarded in the cache
 
     def __init__(self, workdir, direction_index, verts=None, faces=None, pixel=0.1,
                  window=0.3):
@@ -640,7 +640,12 @@ class DirectionCache:
         self.verts = verts
         self.faces = faces
         self.pixel = pixel
-        self.window = window  # gap accuracy window: gaps up to this are Euclidean-exact
+        # gap accuracy window: gaps up to this are Euclidean-exact. Wall
+        # verdicts threshold at max(tollerance, 2.5 * pixel), so the window
+        # must reach at least 3 px at ANY pixel size — otherwise the band
+        # that decides them falls in the approximate regime and reachable
+        # walls speckle at coarse analysis resolutions
+        self.window = max(window, 3.0 * pixel)
         self._fields = {}
         self._maps = {}  # in-memory full-resolution maps (not persisted)
         self._mesh = None
@@ -665,26 +670,31 @@ class DirectionCache:
                          and stored["dirfp"][0].decode() == self.directions_fingerprint)
             same_mesh = ("meshfp" in stored.files
                          and stored["meshfp"][0].decode() == self.mesh_fingerprint)
-            if same_pixel and same_version and same_dirs and same_mesh:
+            # gap fields depend on the effective window (their exactness
+            # range), so a cache built with another window must not be mixed
+            same_window = ("window" in stored.files
+                           and abs(stored["window"][0] - self.window) < 1e-12)
+            if same_pixel and same_version and same_dirs and same_mesh and same_window:
                 self._fields = {k: stored[k] for k in stored.files}
                 logger.debug(f"Loaded cache {self.path} with {len(self._fields)} arrays")
             else:
                 logger.warning(
-                    f"Pixel size, cache version, direction set or mesh "
-                    f"changed, discarding cache {self.path}")
+                    f"Pixel size, cache version, direction set, mesh or gap "
+                    f"window changed, discarding cache {self.path}")
                 self._fields = {}
 
         if not self._fields:
             self._fields = {
                 "version": np.array([self.VERSION]),
                 "pixel": np.array([pixel]),
+                "window": np.array([self.window]),
                 "dirfp": np.array([self.directions_fingerprint], dtype="S12"),
                 "meshfp": np.array([self.mesh_fingerprint], dtype="S12"),
             }
             # margin covers the whole euclidean_gap window (window_px in
             # tip_gap) plus one pixel, so border-wall vertices see real
             # exterior air instead of clamping into the last material column
-            margin = max(2, int(np.ceil(window / pixel))) + 1
+            margin = max(2, int(np.ceil(self.window / pixel))) + 1
             heights, frame = render_heightmap(self._get_mesh(), self.direction, pixel,
                                               margin=margin)
             self._fields.update({

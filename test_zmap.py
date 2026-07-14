@@ -284,6 +284,29 @@ def main():
         dt = time.time() - t0
         check("cached compose speed", dt < 1.0, f"{dt * 1000:.0f} ms")
 
+        # --- coarse-pixel wall guarantee: the exact-gap window must cover
+        # the wall threshold (2.5 px) at ANY pixel size, so wall verdicts
+        # stay bimodal (reachable ~ 0, blocked whole millimetres) instead of
+        # speckling when the analysis resolution is coarse. This goes last:
+        # the coarse cache overwrites the tempdir's zcache file.
+        print("=== coarse-pixel wall verdicts (pixel 0.25) ===")
+        coarse_pixel = 0.25
+        coarse = DirectionCache(workdir, 0, verts=verts, faces=faces,
+                                pixel=coarse_pixel)
+        check("window floored to cover the wall threshold",
+              coarse.window >= 3.0 * coarse_pixel - 1e-12,
+              f"window {coarse.window:.3f} >= {3.0 * coarse_pixel:.3f}")
+        gap_coarse = coarse.tip_gap(4.0, 0.0)
+        wall_thr = max(0.1, 2.5 * coarse_pixel)
+        wall_gap = gap_coarse[nearest_vertex(verts, (0.0, -4.0, -2.5))]
+        check("coarse: open pocket wall reads reachable",
+              wall_gap <= wall_thr,
+              f"gap {wall_gap:.3f} <= wall threshold {wall_thr:.3f}")
+        slot_gap = gap_coarse[nearest_vertex(verts, (6.5, 0.0, -3.0))]
+        check("coarse: too-narrow slot stays blocked",
+              slot_gap > wall_thr,
+              f"gap {slot_gap:.3f} > wall threshold {wall_thr:.3f}")
+
     print("ALL CHECKS PASSED" if not failures else "FAILURES:\n  " + "\n  ".join(failures))
     return 1 if failures else 0
 
