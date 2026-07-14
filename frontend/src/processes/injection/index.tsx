@@ -6,8 +6,9 @@
 import { putOverrides } from '../../api/client';
 import type { FieldDescriptor, Manifest, ResultEntry } from '../../api/types';
 import {
-  brepFacesMode, COL, faceValues, fade, heatmapMode, highlightsMode,
-  nextSetBit, nthSetBit, percentile, popcount, rampColor, regionColor,
+  brepFacesMode, COL, faceValues, fade, FocusTracker, heatmapMode,
+  highlightsMode, isolineSegments, nextSetBit, nthSetBit, percentile,
+  popcount, rampColor, regionColor, smoothVertexField,
 } from '../../colorizers/core';
 import type {
   LegendEntry, PaintInfo, ProcessPlugin, RGB, ViewCtx, ViewMode,
@@ -134,22 +135,26 @@ const assignmentMode: ViewMode = {
     let conflictCount = 0;
     let internalCount = 0;
     const { faces, verts } = ctx;
+    const tracker = new FocusTracker(ctx); // legend click -> fly to the group
 
     ctx.paintFaces((f) => {
       const b = brepIds[f];
       const cat = current[b];
       if (cat === INTERNAL_FEATURE) {
         internalCount++;
+        tracker.add(`r${region[f]}`, f);
         return regionColor(region[f]);
       }
       if (cat === CONFLICT_FEATURE) {
         conflictCount++;
+        tracker.add('conflict', f);
         // spatially truthful: each triangle shows which feature partially
         // reaches it (faded); unreachable triangles get the conflict color
         const m = membership[f];
         return m ? fade(colors[nthSetBit(m, 0)]) : conflictColor;
       }
       counts[cat]++;
+      tracker.add(`c${cat}`, f);
       const v = valid[b];
       const n = popcount(v);
       if (n <= 1) return colors[cat];
@@ -162,16 +167,43 @@ const assignmentMode: ViewMode = {
     });
 
     const legend: LegendEntry[] = labels
-      .map((label, i) => ({ color: colors[i], label: `${label} (${counts[i]})` }))
+      .map((label, i) => ({
+        color: colors[i],
+        label: `${label} (${counts[i]})`,
+        focus: tracker.focus(`c${i}`),
+      }))
       .filter((_, i) => counts[i] > 0);
     if (conflictCount) {
-      legend.push({ color: conflictColor, label: `conflict / needs split (${conflictCount})` });
+      legend.push({
+        color: conflictColor,
+        label: `conflict / needs split (${conflictCount})`,
+        focus: tracker.focus('conflict'),
+      });
     }
-    const regionCounts: number[] = desc.params.region_counts
-      ?? (resolveField(ctx, data.result, `internal_region_${data.option}`)?.params.region_counts ?? []);
-    regionCounts.forEach((count: number, i: number) => {
-      legend.push({ color: regionColor(i + 1), label: `internal undercut ${i + 1} (${count})` });
-    });
+
+    // internal undercut regions: real ones individually (click to view),
+    // sub-speck ones (< SPECK faces, often single slivers) as one group
+    const SPECK = 10;
+    const regionKeys = tracker.keys('r')
+      .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)));
+    for (const key of regionKeys) {
+      if (tracker.count(key) < SPECK) continue;
+      const id = Number(key.slice(1));
+      legend.push({
+        color: regionColor(id),
+        label: `internal undercut ${id} (${tracker.count(key)})`,
+        focus: tracker.focus(key),
+      });
+    }
+    const specks = regionKeys.filter((key) => tracker.count(key) < SPECK);
+    if (specks.length) {
+      const faceTotal = specks.reduce((sum, key) => sum + tracker.count(key), 0);
+      legend.push({
+        color: regionColor(Number(specks[0].slice(1))),
+        label: `tiny internal specks × ${specks.length} (${faceTotal} faces)`,
+        focus: tracker.merged(specks),
+      });
+    }
 
     if (ctx.params.showLines !== false) {
       const edgesDesc = ctx.manifest.fields.find((f) => f.id === 'brep_edges');
@@ -241,6 +273,35 @@ const assignmentMode: ViewMode = {
   },
 };
 
+const ISO_LEVELS = 12;
+const ISO_COLOR: RGB = [0.08, 0.09, 0.11];
+
+/** Fill-time surface plot, meshlib-style: per-vertex colors interpolated
+ * smoothly across faces plus marching-triangle isolines at equal-time
+ * levels. The node-quantized field is Laplacian-smoothed first so contours
+ * read cleanly; NaN vertices (unreached / no skeleton node) stay grey. */
+function paintFillField(ctx: ViewCtx, vertexFill: Float32Array, tMax: number) {
+  const { faces, verts } = ctx;
+  const field = smoothVertexField(ctx, vertexFill, 3);
+  ctx.paintCorners((f, k) => {
+    const v = field[faces[3 * f + k]];
+    return isNaN(v) ? COL.inaccess : rampColor(Math.min(v / tMax, 1));
+  });
+
+  let min = Infinity;
+  let max = -Infinity;
+  for (let i = 0; i < verts.length; i++) {
+    if (verts[i] < min) min = verts[i];
+    if (verts[i] > max) max = verts[i];
+  }
+  const lift = 0.0015 * (max - min) * Math.sqrt(3);
+  const levels = Array.from(
+    { length: ISO_LEVELS - 1 }, (_, i) => ((i + 1) * tMax) / ISO_LEVELS);
+  const segments = isolineSegments(ctx, field, levels, lift);
+  if (segments.length) ctx.setLines(segments, ISO_COLOR, true);
+}
+
+
 function pickSkeletonResult(ctx: ViewCtx) {
   const results = skeletonResults(ctx);
   const result = results[ctx.params.skelResult ?? 0] ?? results[0];
@@ -260,15 +321,15 @@ const skeletonMode: ViewMode = {
     const which = ctx.params.graph === 'raw' ? 'raw' : 'cluster';
     const sk = await loadSkeleton(ctx, result, which);
     const nodeCount = sk.nodes.length / 3;
-    ctx.setGraph(sk.key, sk.nodes, sk.edges, sk.radii);
-    ctx.setMeshOpacity(0.35);
 
     const gate = ctx.params.gate as [number, number, number] | null;
     const graphLabel = which === 'raw'
       ? `raw graph ${nodeCount} nodes` : `clustered graph ${nodeCount} nodes`;
 
     if (!gate) {
-      // no gate yet: color the skeleton by local wall radius (thin = hot)
+      // no gate yet: show the skeleton, colored by local wall radius
+      ctx.setGraph(sk.key, sk.nodes, sk.edges, sk.radii);
+      ctx.setMeshOpacity(0.35);
       const rMax = percentile(sk.radii, 0.98);
       ctx.paintGraph((n) => rampColor(1 - sk.radii[n] / rMax));
       ctx.paintFaces(() => COL.ok);
@@ -283,14 +344,20 @@ const skeletonMode: ViewMode = {
       };
     }
 
+    // gate placed: the fill-time surface plot is the product — full-opacity
+    // mesh with smooth colors and isolines, no skeleton overdraw; the gate
+    // itself stays visible as a single marker dot
     const source = nearestNode(sk.nodes, gate);
     const dist = dijkstra(buildAdjacency(sk.key, sk), source);
     const tMax = Math.max(percentile(dist, 0.98), 1e-12);
 
-    ctx.paintGraph((n) => {
-      if (n === source) return GATE;
-      return isFinite(dist[n]) ? rampColor(dist[n] / tMax) : COL.inaccess;
-    });
+    ctx.setGraph(`${sk.key}:gate:${source}`,
+                 new Float32Array([sk.nodes[3 * source],
+                                   sk.nodes[3 * source + 1],
+                                   sk.nodes[3 * source + 2]]),
+                 new Uint32Array(0),
+                 new Float32Array([Math.max(2 * percentile(sk.radii, 0.98), 1)]));
+    ctx.paintGraph(() => GATE);
 
     // back onto the mesh: per-vertex fill time via the vertex -> node map
     const vertexFill = new Float32Array(ctx.manifest.mesh!.counts.verts).fill(NaN);
@@ -302,14 +369,14 @@ const skeletonMode: ViewMode = {
         reached++;
       }
     }
-    const vals = faceValues(ctx, vertexFill, null);
-    ctx.paintFaces((f) => (isNaN(vals[f]) ? COL.inaccess : rampColor(vals[f] / tMax)));
+    paintFillField(ctx, vertexFill, tMax);
 
     return {
       legend: [
         { color: GATE, label: 'gate (click to move)' },
         { color: rampColor(0), label: 'fills early' },
         { color: rampColor(1), label: 'fills late' },
+        { color: ISO_COLOR, label: 'isolines: equal fill time' },
         { color: COL.inaccess, label: 'unreached / no skeleton node' },
       ],
       stats: `${graphLabel} — gate at node ${source}, `
@@ -416,8 +483,7 @@ const sprueMode: ViewMode = {
       const node = sk.vertNode[v];
       if (node !== SENTINEL && isFinite(dist[node])) vertexFill[v] = dist[node];
     }
-    const vals = faceValues(ctx, vertexFill, null);
-    ctx.paintFaces((f) => (isNaN(vals[f]) ? COL.inaccess : rampColor(vals[f] / tMax)));
+    paintFillField(ctx, vertexFill, tMax);
 
     if (ctx.params.showWeld !== false) {
       const segments = weldSegments(sk, dist);
@@ -433,6 +499,7 @@ const sprueMode: ViewMode = {
         { color: GATE, label: `gate #${proposal.rank} (score ${proposal.score.toFixed(2)})` },
         { color: rampColor(0), label: 'fills early' },
         { color: rampColor(1), label: 'fills late' },
+        { color: ISO_COLOR, label: 'isolines: equal fill time' },
         ...(ctx.params.showWeld !== false
           ? [{ color: WELD, label: 'weld-line indicator (fronts meet)' }] : []),
         { color: COL.inaccess, label: 'unreached / no skeleton node' },

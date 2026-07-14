@@ -3,7 +3,7 @@ import type { ProcessPlugin, ViewCtx } from '../../registry/types';
 import { faceAccess, vertexGap, vertexMinStickout } from './compose';
 import { CncControls } from './Controls';
 import {
-  accessMode, classMode, diffMode, gapMode, stickoutMode, unifiedMode,
+  accessMode, classMode, gapMode, stickoutMode, unifiedMode,
 } from './modes';
 import { loadSetups, setupsMode } from './setups';
 import { currentSource, currentTip } from './sources';
@@ -55,7 +55,7 @@ export const cncPlugin: ProcessPlugin = {
   processId: 'cnc',
   label: 'CNC machining',
   modes: [setupsMode, unifiedMode, accessMode, classMode, gapMode,
-          stickoutMode, diffMode, brepFacesMode, highlightsMode],
+          stickoutMode, brepFacesMode, highlightsMode],
   defaults: () => ({
     source: 0,
     tip: 0,

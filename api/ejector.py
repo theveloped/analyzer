@@ -28,7 +28,8 @@ def _load_result(workdir, analysis, result_hash):
         payload = json.load(f)
     if not os.path.exists(base + ".npz"):
         raise FileNotFoundError(f"{analysis} result {result_hash} has no arrays")
-    return payload, np.load(base + ".npz", allow_pickle=False)
+    with np.load(base + ".npz", allow_pickle=False) as stored:
+        return payload, {name: stored[name] for name in stored.files}
 
 
 def simulate(workdir, result_hash, pins, E=2000.0, allowable_pressure=80.0):

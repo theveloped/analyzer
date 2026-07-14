@@ -20,7 +20,8 @@ DEFAULT_TOOLS = [
 
 def run_setups(workdir, params, progress):
     cache_params = {**params, "schema": SETUPS_SCHEMA,
-                    "directions": pipeline.directions_fingerprint(workdir)}
+                    "directions": pipeline.directions_fingerprint(workdir),
+                    "mesh": pipeline.mesh_fingerprint(workdir)}
     cached = load_cached_result(workdir, "cnc", "setups", cache_params)
     if cached is not None:
         return AnalysisResult(stats=cached["stats"],
@@ -39,7 +40,8 @@ def run_setups(workdir, params, progress):
 
 def run_setup_verdict(workdir, params, progress):
     cache_params = {**params, "schema": SETUPS_SCHEMA, "verdict": 1,
-                    "directions": pipeline.directions_fingerprint(workdir)}
+                    "directions": pipeline.directions_fingerprint(workdir),
+                    "mesh": pipeline.mesh_fingerprint(workdir)}
     cached = load_cached_result(workdir, "cnc", "setups", cache_params)
     if cached is not None:
         return AnalysisResult(stats=cached["stats"],
@@ -79,7 +81,7 @@ def run_precompute(workdir, params, progress):
         workdir, directions=[int(i) for i in params["directions"]],
         pixel=params["pixel"], tips=_tips(params),
         clearances=[float(r) for r in params["clearances"] or []],
-        engine=params["engine"], window=params["window"], progress=progress)
+        window=params["window"], progress=progress)
     return AnalysisResult(stats=result)
 
 
@@ -95,7 +97,7 @@ def run_compose(workdir, params, progress):
         corner_radius=params["corner_radius"], stickout=params["stickout"],
         cylinders=cylinders, sweep=params["sweep"] or [],
         wall_tollerance=params["wall_tollerance"],
-        engine=params["engine"], window=params["window"], progress=progress)
+        window=params["window"], progress=progress)
     stats = {key: result[key] for key in ("unreachable", "accessible", "sweep")}
     return AnalysisResult(stats=stats)
 
@@ -140,8 +142,8 @@ PROCESS = ProcessDef(
                       label="Gap threshold"),
                 Param("wall_tollerance", "number", default=1.0, unit="deg",
                       min=0, label="Wall angle tolerance (side-milled)"),
-                Param("pixel", "number", default=1e-1, unit="mm", min=0,
-                      label="Height map pixel size"),
+                Param("pixel", "number", default=None, unit="mm", min=0,
+                      label="Height map pixel (blank = resolution/5)"),
                 Param("window", "number", default=0.3, unit="mm", min=0,
                       label="Exact gap window"),
                 Param("indexed", "bool", default=True,
@@ -167,14 +169,12 @@ PROCESS = ProcessDef(
             params=[
                 Param("directions", "int_list", default=[4],
                       label="Direction indices"),
-                Param("pixel", "number", default=1e-1, unit="mm", min=0,
-                      label="Height map pixel size"),
+                Param("pixel", "number", default=None, unit="mm", min=0,
+                      label="Height map pixel (blank = resolution/5)"),
                 Param("tips", "tip_list", default=[{"diameter": 6, "corner_radius": 0}],
                       label="Tool tips (diameter : corner radius)"),
                 Param("clearances", "number_list", default=[], unit="mm",
                       label="Holder/shank clearance radii"),
-                Param("engine", "select", default="zmap", options=["zmap", "voxel"],
-                      label="Field engine"),
                 Param("window", "number", default=0.3, unit="mm", min=0,
                       label="Exact gap window"),
             ],
@@ -201,10 +201,8 @@ PROCESS = ProcessDef(
                       label="Extra stickout sweep values"),
                 Param("wall_tollerance", "number", default=1.0, unit="deg",
                       min=0, label="Wall angle tolerance (side-milled)"),
-                Param("pixel", "number", default=1e-1, unit="mm", min=0,
-                      label="Height map pixel size"),
-                Param("engine", "select", default="zmap", options=["zmap", "voxel"],
-                      label="Field engine"),
+                Param("pixel", "number", default=None, unit="mm", min=0,
+                      label="Height map pixel (blank = resolution/5)"),
                 Param("window", "number", default=0.3, unit="mm", min=0,
                       label="Exact gap window"),
             ],

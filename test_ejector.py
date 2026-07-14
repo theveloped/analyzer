@@ -75,7 +75,9 @@ def run_analysis(workdir, **overrides):
     analysis = PROCESS.analysis("ejection_sticking")
     params = apply_defaults(analysis, overrides)
     result = analysis.run(workdir, params, None)
-    return result, params, params_hash({**params, "schema": EJECTION_SCHEMA})
+    return result, params, params_hash(
+        {**params, "schema": EJECTION_SCHEMA,
+         "mesh": pipeline.mesh_fingerprint(workdir)})
 
 
 def pin(x, y, z, diameter=4.0):
@@ -184,7 +186,8 @@ def main():
         from processes.base import load_result_arrays
         arrays = load_result_arrays(workdir, "injection_molding",
                                     "ejection_sticking",
-                                    {**params, "schema": EJECTION_SCHEMA})
+                                    {**params, "schema": EJECTION_SCHEMA,
+                                     "mesh": pipeline.mesh_fingerprint(workdir)})
         draft = arrays["draft_deg"]
         normals, _ = ejection.face_geometry(verts,
                                             faces.astype(np.int64))
@@ -258,7 +261,7 @@ def main():
         from processes.base import load_result_arrays
         skeleton = load_result_arrays(workdir, "injection_molding",
                                       "wall_skeleton",
-                                      skeleton_cache_params(params))
+                                      skeleton_cache_params(workdir, params))
         radii = skeleton["cluster_radii"]
         median_r = float(np.median(radii))
         sliver_fraction = float(np.mean(radii < 0.3 * median_r))
@@ -282,7 +285,7 @@ def main():
         from processes.base import load_result_arrays
         skeleton = load_result_arrays(workdir, "injection_molding",
                                       "wall_skeleton",
-                                      skeleton_cache_params(params))
+                                      skeleton_cache_params(workdir, params))
         nodes = skeleton["cluster_nodes"]
         radii = skeleton["cluster_radii"]
         web = (np.abs(nodes[:, 0]) < 3) & (radii < 0.5)
@@ -308,7 +311,7 @@ def main():
             from processes.base import load_result_arrays
             skeleton = load_result_arrays(workdir, "injection_molding",
                                           "wall_skeleton",
-                                          skeleton_cache_params(params))
+                                          skeleton_cache_params(workdir, params))
             medians.append(float(np.median(skeleton["cluster_radii"])))
             response = simulate(workdir, result_hash, [pin(0, 0, 2)])
             deflections.append(response["stats"]["max_deflection_mm"])
@@ -365,7 +368,7 @@ def main():
               f"{len(result.fields)} fields")
         check("skeleton hash binds the sub-run",
               result.stats["skeleton_hash"]
-              == params_hash(skeleton_cache_params(params)),
+              == params_hash(skeleton_cache_params(workdir, params)),
               result.stats["skeleton_hash"])
 
         from api.manifest import build_manifest

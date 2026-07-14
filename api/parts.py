@@ -1,22 +1,42 @@
 """Part discovery and registration over a parts root directory.
 
 A part is a working directory (the same one the CLI operates on). Uploaded
-parts get a part.json with their metadata; legacy workdirs are recognized by
-their fine_verts.npy and synthesized read-only.
+parts are stored content-addressed: id = sha1(source bytes)[:12], workdir
+under <root>/parts/ — the same STEP always lands in the same folder and
+re-uploads dedupe. Legacy workdirs directly in the root (CLI runs, committed
+samples) are recognized by their part.json or fine_verts.npy and served
+unchanged.
 """
 
 import datetime
+import hashlib
 import json
 import os
-import re
-import shutil
 
 import numpy as np
 
 import pipeline
 
 PART_META_FILE = "part.json"
-SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
+PARTS_DIR = "parts"  # content-addressed upload workdirs live here
+
+
+def content_part_id(data):
+    """Deterministic part id from the source file bytes."""
+    return hashlib.sha1(data).hexdigest()[:12]
+
+
+def workdir_for(root, part_id):
+    """Resolve a part id to its working directory.
+
+    Content-hash ids live under <root>/parts/; anything else (legacy
+    stem-named uploads, CLI workdirs, committed samples) sits directly in
+    the root.
+    """
+    hashed = os.path.join(root, PARTS_DIR, part_id)
+    if os.path.isdir(hashed):
+        return hashed
+    return os.path.join(root, part_id)
 
 
 def _read_meta(workdir):
@@ -34,7 +54,7 @@ def _write_meta(workdir, meta):
 
 def part_info(root, part_id):
     """Build the Part dict for one working directory, or None."""
-    workdir = os.path.join(root, part_id)
+    workdir = workdir_for(root, part_id)
     meta = _read_meta(workdir)
     verts_path = os.path.join(workdir, pipeline.FINE_VERTS_FILE)
     faces_path = os.path.join(workdir, pipeline.FINE_FACES_FILE)
@@ -61,72 +81,64 @@ def part_info(root, part_id):
 
 
 def list_parts(root):
-    parts = []
+    """All parts: legacy workdirs in the root plus content-hash uploads in
+    parts/. When both hold the same id, the parts/ entry wins (matching
+    workdir_for)."""
+    by_id = {}
     for name in sorted(os.listdir(root)):
-        workdir = os.path.join(root, name)
-        if name.startswith(".") or not os.path.isdir(workdir):
+        if name.startswith(".") or name == PARTS_DIR:
+            continue
+        if not os.path.isdir(os.path.join(root, name)):
             continue
         info = part_info(root, name)
         if info is not None:
-            parts.append(info)
-    return parts
+            by_id[name] = info
+    hashed_root = os.path.join(root, PARTS_DIR)
+    if os.path.isdir(hashed_root):
+        for name in sorted(os.listdir(hashed_root)):
+            info = part_info(root, name)
+            if info is not None:
+                by_id[name] = info
+    return list(by_id.values())
 
 
-def _unique_id(root, stem):
-    part_id = SAFE_ID_RE.sub("_", stem) or "part"
-    candidate, counter = part_id, 1
-    while os.path.exists(os.path.join(root, candidate, PART_META_FILE)) or (
-            os.path.isdir(os.path.join(root, candidate))
-            and part_info(root, candidate) is not None):
-        counter += 1
-        candidate = f"{part_id}_{counter}"
-    return candidate
+def _register(root, name, ext, data):
+    """Store source bytes in their content-addressed workdir (idempotent)."""
+    part_id = content_part_id(data)
+    existing = part_info(root, part_id)
+    if existing is not None:
+        return existing  # same bytes already registered; keep the first name
 
-
-def create_part(root, filename, data):
-    """Register an uploaded STEP/STL as a new raw part."""
-    stem, ext = os.path.splitext(os.path.basename(filename))
-    if ext.lower() not in pipeline.MESH_EXTENSIONS:
-        raise ValueError(f"unsupported extension {ext}; expected one of {pipeline.MESH_EXTENSIONS}")
-
-    part_id = _unique_id(root, stem)
-    workdir = os.path.join(root, part_id)
+    workdir = os.path.join(root, PARTS_DIR, part_id)
     os.makedirs(workdir, exist_ok=True)
-
     source_name = f"source{ext.lower()}"
     with open(os.path.join(workdir, source_name), "wb") as f:
         f.write(data)
-
     _write_meta(workdir, {
-        "name": stem,
+        "name": name,
         "source": source_name,
         "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     })
     return part_info(root, part_id)
 
 
+def create_part(root, filename, data):
+    """Register an uploaded STEP/STL; same bytes always yield the same part."""
+    stem, ext = os.path.splitext(os.path.basename(filename))
+    if ext.lower() not in pipeline.MESH_EXTENSIONS:
+        raise ValueError(f"unsupported extension {ext}; expected one of {pipeline.MESH_EXTENSIONS}")
+    return _register(root, stem or "part", ext, data)
+
+
 def register_part_file(root, path):
     """Register an existing STEP/STL file path as a part (used by `view <file>`).
 
-    Reuses a matching existing part when the workdir already holds the same
-    source name, so repeated launches do not duplicate parts.
+    Content-addressed like uploads, so repeated launches (and uploads of the
+    same file) all resolve to one part.
     """
     stem, ext = os.path.splitext(os.path.basename(path))
     if ext.lower() not in pipeline.MESH_EXTENSIONS:
         raise ValueError(f"unsupported extension {ext}; expected one of {pipeline.MESH_EXTENSIONS}")
-
-    part_id = SAFE_ID_RE.sub("_", stem) or "part"
-    workdir = os.path.join(root, part_id)
-    source_name = f"source{ext.lower()}"
-    source_path = os.path.join(workdir, source_name)
-
-    if not os.path.exists(source_path):
-        os.makedirs(workdir, exist_ok=True)
-        shutil.copyfile(path, source_path)
-        meta = _read_meta(workdir)
-        meta.setdefault("name", stem)
-        meta["source"] = source_name
-        meta.setdefault("created",
-                        datetime.datetime.now(datetime.timezone.utc).isoformat())
-        _write_meta(workdir, meta)
-    return part_info(root, part_id)
+    with open(path, "rb") as f:
+        data = f.read()
+    return _register(root, stem or "part", ext, data)

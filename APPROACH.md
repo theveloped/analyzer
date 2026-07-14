@@ -58,12 +58,11 @@ direction; the map resolution is auto-derived from the bounding box
 This replaced `mm.findUndercuts`, whose hard front/back-facing verdict flips
 between accessible/inaccessible for faces tangent to the direction — the same
 wall speckle the raster fixes in zmap.py solved for the tool fields. The
-legacy path is kept as `compute_accessibility_meshlib` for A/B comparison,
-and the cone-based **relaxation** (`relax_accessibility`: OR of `n` extra
-undercut passes on a 1° cone, `--relax`) still works but is no longer needed —
-the angular tolerance is built into the visibility test at no extra passes.
-On the Aligator test part the isolated-face speckle count from ±Z drops from
-~13.8k faces (meshlib) to ~180 (genuine shadow-boundary faces).
+angular tolerance is built into the visibility test at no extra passes, so
+the old cone-based relaxation workaround (`--relax`, n extra meshlib undercut
+passes on a 1° cone) became unnecessary and was removed together with the
+meshlib path. On the Aligator test part the isolated-face speckle count from
+±Z drops from ~13.8k faces (meshlib) to ~180 (genuine shadow-boundary faces).
 
 ### Stage 3 — `options`: mold orientation, face assignment & parting lines
 
@@ -205,56 +204,15 @@ and draft-angle checks (per-face surface types are recorded in
 ### Stage 4 — per-direction tool checks
 
 These stages answer: *of the faces visible from direction `d`, which can a real tool
-actually reach?* Both start from the same construction:
+actually reach?* The construction the whole approach rests on:
 
-**Machinable volume:** `fix_undercuts(mesh, d)` extrudes all undercut regions down
-along `d`, producing the volume a 3-axis machine could theoretically leave when
-approaching from `d` (the "shadow-filled" part). All tool checks are done against this
-mesh so results are consistent with the chosen direction.
+**Machinable volume:** extruding all undercut regions down along `d` produces the
+volume a 3-axis machine could theoretically leave when approaching from `d` (the
+"shadow-filled" part); all tool checks are consistent with that volume.
 
-#### `tool` — cutter radius check (ball mill / nose radius)
-
-Morphological **closing** with the tool sphere:
-
-```
-radius_mesh = double_offset(undercut_mesh, +r, -r)   # dilate then erode by r
-```
-
-Offsetting outward by the tool radius `r` and back inward by `r` fills every concave
-feature tighter than the tool radius (internal corners, narrow slots) — exactly the
-material a ball-nose of radius `r` cannot remove. Then `map_result_faces` projects the
-original mesh's vertices onto the closed mesh (`projectAllMeshVertices`): vertices
-whose distance exceeds the tolerance lie inside a filled region, i.e. **unreachable by
-this cutter**. Faces whose three vertices all deviate are flagged, and finally
-intersected with the accessibility row so only faces relevant to this direction are
-reported.
-
-This is the Minkowski-sum insight: one `+r/−r` double offset evaluates the cutter
-radius constraint for the entire part in a single operation.
-
-#### `length` — tool length / holder collision check
-
-Models the tool shank+holder envelope by construction:
-
-```
-radius_mesh     = single_offset(undercut_mesh, +diameter/2)   # part grown by tool radius
-translated_mesh = translate(radius_mesh, d, distance = -(length + diameter/2))
-inside_mesh     = boolean(mesh, translated_mesh, InsideA)
-```
-
-Growing the part by the tool radius gives the surface on which the **tool axis** may
-lie (the classic C-space obstacle construction). Translating that grown volume *up*
-along the approach direction by the usable tool length sweeps out where the
-**holder** ends up when the tip touches each point of the surface. Any part of the
-original mesh that falls *inside* this translated volume is deeper than the tool can
-reach without the holder colliding — extracted with a mesh boolean (`InsideA`), mapped
-back to face indices via projection distances, and again masked by accessibility.
-
-#### `endmill` — unified tip model (ball, flat and radius end)
-
-A ball mill is exactly a sphere Minkowski sum, so isotropic offsets model it natively.
-A flat endmill needs a **disk** perpendicular to the tool axis, and a radius (bull
-nose) endmill needs a disk with a rounded rim. Both reduce to one element:
+**The tool bottom as a Minkowski sum.** A ball mill is exactly a sphere Minkowski
+sum; a flat endmill needs a **disk** perpendicular to the tool axis, and a radius
+(bull nose) endmill a disk with a rounded rim. Both reduce to one element:
 
 ```
 tool bottom = disk(D/2 − rc) ⊕ sphere(rc)      rc = corner radius
@@ -264,37 +222,16 @@ tool bottom = disk(D/2 − rc) ⊕ sphere(rc)      rc = corner radius
 - `rc = 0`   → flat endmill (disk only)
 - in between → radius / bull-nose endmill
 
-MeshLib has no in-plane offset (see MeshInspector/MeshLib#2598), but linear transforms
-commute with Minkowski sums: `T(A ⊕ B) = T(A) ⊕ T(B)`. So the disk offset is emulated
-by the **scale trick** (`scale_along_axis` / `inplane_double_offset` in analysis.py):
+A morphological **closing** of the machinable volume with that element fills exactly
+the material the tool bottom cannot reach (internal corners, slots narrower than the
+tool); everywhere the closed volume deviates from the part is flagged.
 
-1. stretch the mesh along the tool axis by factor `s` (matrix `I + (s−1)·ddᵀ`),
-2. run the ordinary isotropic offset by the disk radius,
-3. scale back by `1/s`.
-
-The effective structuring element is an oblate ellipsoid: radius `r` in the plane
-perpendicular to the axis, `r/s` along it — a disk to within `r/s`. Flat regions
-perpendicular to the axis keep a residual rounding of about `0.41·(D − 2rc)/s`, so the
-flagging threshold is raised to at least that residual (`endmill_flag_threshold`) and
-`--scale` trades runtime (the voxel grid grows ~s× along the axis) against sensitivity.
-
-The closing sequence for the general tip interleaves the two elements (dilations and
-erosions each commute, so the disk/sphere order can be nested):
-
-```
-stretch → +(D/2−rc) → unstretch     dilate by disk
-        → +rc → −rc                  dilate and erode by sphere
-stretch → −(D/2−rc) → unstretch      erode by disk
-```
-
-Everything else matches the ball-mill flow: run on the undercut-fixed mesh, project
-the original vertices onto the closed mesh, flag faces whose deviation exceeds the
-threshold, and mask with the accessibility row. Validated end-to-end by
-`test_endmill.py` (synthetic pocket + slot part): a ball flags the pocket floor edges,
-a flat endmill leaves them clean, all tip types flag the too-narrow slot and the
-vertical internal corners — the last only when accessibility was computed with
-`--relax`, since strictly vertical walls otherwise count as undercuts and are masked
-out.
+This was first implemented in 3D with meshlib voxel offsets (`double_offset`
+closings, a scale-trick emulation of the in-plane disk offset, C-space obstacle
+constructions for holder collision — the removed `tool`/`length`/`endmill`
+commands, see git history). The 3D path validated the approach but cost minutes per
+(direction, tool); the height-map engine below computes the identical fields in
+milliseconds and is the only implementation today.
 
 #### `precompute` / `compose` — the cached height-map engine (zmap.py)
 
@@ -344,34 +281,18 @@ resolution; larger gaps are reported as lower bounds, which is all thresholding
 needs. Flat-disk dilations (holder clearance, tool flats) are decomposed into
 per-row moving-max chords, so large radii stay cheap while remaining exact.
 
-**The voxel engine behind the same cache.** `DirectionCache(engine="voxel")` fills
-the very same per-vertex fields with the 3D pipeline instead — tip gaps from
-`endmill_closing` + mesh projection distances, clearance from the in-plane-grown 3D
-mesh's top surface — so `compose` works identically on either cache and the engines
-can be cross-checked. Note the voxel flat/bull fields inherit the stretch-emulation
-residual (`endmill_flag_threshold`), which the zmap engine does not have: its disk is
-rasterized directly.
-
-`benchmark_engines.py` runs both engines on a mold-like part (one pocket with exact
-90° walls, one with 1° draft). Both engines: no false flags on either wall type,
-identical region behaviour, and 97–98% per-vertex classification agreement on
-accessible vertices. Per-field wall times (47k faces, pixel 0.1):
-
-| field | zmap | voxel | speedup |
-|---|---|---|---|
-| tip ball D4 | 0.34 s | 12.1 s | ×35 |
-| tip flat D4 | 0.33 s | 46.9 s | ×140 |
-| tip bull D4 rc1 | 0.34 s | 29.6 s | ×86 |
-| clearance r=8 | 0.13 s | 46.0 s | ×365 |
-
-The zmap side additionally scales gently: 2D morphology is O(pixels × footprint)
-versus O(voxels) 3D grids that also grow ~scale× along the stretch axis (the voxel
-engine OOMs at pixel 0.05 on a 15 GB machine where the zmap needs a few MB).
-Measured on the 656k-face housing: precompute of 2 directions × 6 tips × 3 clearance
-radii ≈ 9 s total; composing a complete tool (tip + 2-cylinder holder) with a
-5-value stickout sweep ≈ 1.7 s. `test_zmap.py` validates the engine against the same
-synthetic expectations as the 3D path plus exact Euclidean fillet-gap and stickout
-values.
+**Validation lineage.** Before its removal, a voxel engine filled the very same
+per-vertex fields with the 3D pipeline, and `benchmark_engines.py` cross-checked
+the two on a mold-like part (one pocket with exact 90° walls, one with 1° draft):
+no false flags on either wall type in either engine, identical region behaviour,
+97–98% per-vertex classification agreement on accessible vertices — at ×35–×365
+the zmap runtime per field (and OOM at pixel 0.05 where the zmap needs a few MB).
+That cross-check is what qualified the zmap engine as the sole implementation;
+the voxel code and benchmark live in git history. Measured on the 656k-face
+housing: precompute of 2 directions × 6 tips × 3 clearance radii ≈ 9 s total;
+composing a complete tool (tip + 2-cylinder holder) with a 5-value stickout sweep
+≈ 1.7 s. `test_zmap.py` validates the engine against analytic expectations plus
+exact Euclidean fillet-gap and stickout values.
 
 **Tip-aware holder coupling.** The plain clearance field is vertex-centred: it
 assumes the tool axis passes through the contact point with the tip at the vertex
@@ -391,8 +312,15 @@ built from two maps that already exist in the pipeline: the **inverse tool offse
 `tip_position_map` (the grey dilation that is the first half of the closing) and the
 per-radius clearance dilation. Contact offsets are ring/angle *sampled* (constant
 budget, ~1k samples regardless of tool size; skipping candidates is strictly
-conservative), so each field costs O(samples × verts) — ~0.7 s at 34k verts —
-independent of the tool diameter. Both dilations are decomposed by the same
+conservative), so each field costs O(samples × verts) — independent of the tool
+diameter. The vertex term is the one that bites on real parts, so the sampling
+loop is engineered to the memory floor: both maps edge-padded and interleaved
+into one complex64 plane (a single 8-byte gather per axis candidate through a
+shifted view), offsets grouped into equal-profile rings whose feasibility
+threshold hoists out of the inner loop, and vertices processed in spatially
+sorted chunks that keep the gather footprint cache-resident — ~15 s at 880k
+verts where the direct loop takes ~4 min (a reference implementation stays in
+zmap.py; test_zmap.py A/B-checks the two to float32 noise). Both dilations are decomposed by the same
 Minkowski identity as the 3D path (tool bottom = disk ⊕ sphere → row-decomposed
 flat dilation + chunked spherical dilations, `ball(r1) ⊕ ball(r2) = ball(r1+r2)`),
 which turns the naive O((D/pixel)²) structuring elements into ~O(D/pixel): a D16
@@ -485,8 +413,6 @@ Every check in the repo follows the same pattern:
 
 ## Known rough edges (as found in the code)
 
-- `projectAllMeshVertices`' limits are *squared* distances (`upDistLimitSq`), which
-  the `map_result_faces` call sites treat as plain distances.
 - `get_inside_indices` loops face-by-face building one-bit bitsets — correct but very
   slow; `inside_test.py` is a sandbox exploring a bulk-mapping alternative.
 - `toolart.py`, `drawer.py`, `tooltest.py` are standalone sketches for drawing tool

@@ -29,9 +29,9 @@ def run_mesh(workdir, params, progress):
         raise FileNotFoundError(
             "no source STEP/STL found in the working directory; upload one first")
     result = pipeline.mesh_part(
-        source, workdir, heal=params["heal"], subdivide=params["subdivide"],
-        offset=params["offset"], tollerance=params["tollerance"],
-        deflection=params["deflection"], progress=progress)
+        source, workdir, heal=params["heal"], resolution=params["resolution"],
+        subdivide=params["subdivide"], deflection=params["deflection"],
+        progress=progress)
     return AnalysisResult(stats=result["counts"])
 
 
@@ -39,8 +39,7 @@ def run_directions(workdir, params, progress):
     result = pipeline.compute_directions(
         workdir, count=params["count"], axes=params["axes"],
         tollerance=params["tollerance"], pixel=params["pixel"],
-        relax=params["relax"], relax_tollerance=params["relax_tollerance"],
-        relax_samples=params["relax_samples"], progress=progress)
+        progress=progress)
     return AnalysisResult(stats=result)
 
 
@@ -55,16 +54,14 @@ PROCESS = ProcessDef(
             description="Load the STEP/STL and store the canonical mesh with stable face indexing.",
             requires=[],
             params=[
+                Param("resolution", "number", default=None, unit="mm", min=0,
+                      label="Analysis resolution (blank = auto from part size)"),
                 Param("heal", "bool", default=False,
-                      label="Heal (voxel remesh, for dirty STL)"),
+                      label="Heal (voxel remesh at resolution/5, for dirty STL)"),
                 Param("subdivide", "number", default=None, unit="mm", min=0,
-                      label="Subdivide max edge length (blank = auto, 0 = off)"),
-                Param("offset", "number", default=None, unit="mm",
-                      label="Offset before storing"),
-                Param("tollerance", "number", default=1e-1, min=0,
-                      label="Voxel tolerance"),
-                Param("deflection", "number", default=0.5, unit="mm", min=0,
-                      label="BREP tessellation deflection (STEP)"),
+                      label="Subdivide override (blank = resolution, 0 = off)"),
+                Param("deflection", "number", default=None, unit="mm", min=0,
+                      label="BREP deflection override (blank = resolution/8)"),
             ],
             run=run_mesh,
         ),
@@ -80,11 +77,7 @@ PROCESS = ProcessDef(
                 Param("tollerance", "number", default=0.1, unit="deg", min=0,
                       label="Wall relaxation tolerance"),
                 Param("pixel", "number", default=None, unit="mm", min=0,
-                      label="Visibility map pixel (empty = auto)"),
-                Param("relax", "bool", default=False, label="Relax near-vertical walls"),
-                Param("relax_tollerance", "number", default=1.0, unit="deg",
-                      label="Relax tolerance"),
-                Param("relax_samples", "int", default=4, label="Relax samples"),
+                      label="Visibility map pixel (blank = resolution/5)"),
             ],
             run=run_directions,
         ),

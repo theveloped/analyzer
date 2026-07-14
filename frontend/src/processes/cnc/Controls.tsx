@@ -23,14 +23,19 @@ export function CncControls() {
 
   return (
     <>
-      <label>Direction / engine</label>
+      <label>Direction</label>
       <select
         value={params.source ?? 0}
         onChange={(e) => { set('source', parseInt(e.target.value)); set('tip', 0); }}
       >
         {sources.map((s, i) => {
           const d = manifest!.directions[s.direction]?.map((x) => x.toFixed(2)).join(', ');
-          return <option key={s.key} value={i}>{`dir ${s.direction} [${d}] — ${s.engine}`}</option>;
+          const bare = !s.tips.length && !s.clearances.length;
+          return (
+            <option key={s.key} value={i}>
+              {`dir ${s.direction} [${d}]${bare ? ' — accessibility only' : ''}`}
+            </option>
+          );
         })}
         {!sources.length && <option value={0}>no cached fields</option>}
       </select>

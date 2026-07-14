@@ -23,6 +23,10 @@ export function PartPicker() {
     }
   }
 
+  // ids are content hashes: same display name can mean different geometry
+  const nameCounts = new Map<string, number>();
+  for (const p of parts) nameCounts.set(p.name, (nameCounts.get(p.name) ?? 0) + 1);
+
   return (
     <>
       <label>Part</label>
@@ -34,7 +38,9 @@ export function PartPicker() {
           {!partId && <option value="">— pick a part —</option>}
           {parts.map((p) => (
             <option key={p.id} value={p.id}>
-              {p.name}{p.status === 'raw' ? ' (not meshed)' : ''}
+              {p.name}
+              {(nameCounts.get(p.name) ?? 0) > 1 ? ` · ${p.id.slice(0, 6)}` : ''}
+              {p.status === 'raw' ? ' (not meshed)' : ''}
             </option>
           ))}
         </select>

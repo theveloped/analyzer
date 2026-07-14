@@ -44,7 +44,9 @@ def _field_stats(values, max_radius):
 
 def _run_sphere_field(workdir, analysis_id, member, kind, inverted, params,
                       progress):
-    cached = load_cached_result(workdir, "injection_molding", analysis_id, params)
+    cache_params = {**params, "mesh": pipeline.mesh_fingerprint(workdir)}
+    cached = load_cached_result(workdir, "injection_molding", analysis_id,
+                                cache_params)
     if cached is not None:
         return AnalysisResult(stats=cached["stats"], fields=list(cached["arrays"]))
 
@@ -56,8 +58,8 @@ def _run_sphere_field(workdir, analysis_id, member, kind, inverted, params,
     field_meta = {member: {"kind": kind, "association": "vertex",
                            "role": "scalar", "units": "mm",
                            "max_radius": max_radius}}
-    store_result(workdir, "injection_molding", analysis_id, params, stats,
-                 arrays={member: values}, field_meta=field_meta)
+    store_result(workdir, "injection_molding", analysis_id, cache_params,
+                 stats, arrays={member: values}, field_meta=field_meta)
     return AnalysisResult(stats=stats, fields=[member])
 
 
@@ -73,7 +75,8 @@ def run_gaps(workdir, params, progress):
 
 def run_mold_orientation(workdir, params, progress):
     cache_params = {**params, "schema": MOLD_SCHEMA,
-                    "directions": pipeline.directions_fingerprint(workdir)}
+                    "directions": pipeline.directions_fingerprint(workdir),
+                    "mesh": pipeline.mesh_fingerprint(workdir)}
     cached = load_cached_result(workdir, "injection_molding",
                                 "mold_orientation", cache_params)
     if cached is not None:
@@ -92,14 +95,15 @@ def run_mold_orientation(workdir, params, progress):
     return AnalysisResult(stats=result["stats"], fields=list(result["arrays"]))
 
 
-def skeleton_cache_params(params):
-    """wall_skeleton cache key: declared params + schema salt."""
+def skeleton_cache_params(workdir, params):
+    """wall_skeleton cache key: declared params + schema/mesh salts."""
     return {**{name: params[name] for name in SKELETON_PARAMS},
-            "schema": SKELETON_SCHEMA}
+            "schema": SKELETON_SCHEMA,
+            "mesh": pipeline.mesh_fingerprint(workdir)}
 
 
 def run_wall_skeleton(workdir, params, progress):
-    cache_params = skeleton_cache_params(params)
+    cache_params = skeleton_cache_params(workdir, params)
     cached = load_cached_result(workdir, "injection_molding",
                                 "wall_skeleton", cache_params)
     if cached is not None:
@@ -118,7 +122,8 @@ def run_wall_skeleton(workdir, params, progress):
 
 
 def run_sprue_proposals(workdir, params, progress):
-    cache_params = {**params, "schema": SPRUE_SCHEMA}
+    cache_params = {**params, "schema": SPRUE_SCHEMA,
+                    "mesh": pipeline.mesh_fingerprint(workdir)}
     cached = load_cached_result(workdir, "injection_molding",
                                 "sprue_proposals", cache_params)
     if cached is not None:
@@ -132,7 +137,7 @@ def run_sprue_proposals(workdir, params, progress):
 
     # the skeleton is a cache-aware sub-run: shared params -> shared result
     skel_result = run_wall_skeleton(workdir, params, scaled(0.0, 0.4))
-    skel_cache = skeleton_cache_params(params)
+    skel_cache = skeleton_cache_params(workdir, params)
     skeleton = load_result_arrays(workdir, "injection_molding",
                                   "wall_skeleton", skel_cache)
 
@@ -155,7 +160,8 @@ def run_sprue_proposals(workdir, params, progress):
 
 
 def run_ejection_sticking(workdir, params, progress):
-    cache_params = {**params, "schema": EJECTION_SCHEMA}
+    cache_params = {**params, "schema": EJECTION_SCHEMA,
+                    "mesh": pipeline.mesh_fingerprint(workdir)}
     cached = load_cached_result(workdir, "injection_molding",
                                 "ejection_sticking", cache_params)
     if cached is not None:
@@ -169,7 +175,7 @@ def run_ejection_sticking(workdir, params, progress):
 
     # the skeleton is a cache-aware sub-run: shared params -> shared result
     skel_result = run_wall_skeleton(workdir, params, scaled(0.0, 0.6))
-    skel_cache = skeleton_cache_params(params)
+    skel_cache = skeleton_cache_params(workdir, params)
     skeleton = load_result_arrays(workdir, "injection_molding",
                                   "wall_skeleton", skel_cache)
 

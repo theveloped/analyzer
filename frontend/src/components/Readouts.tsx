@@ -1,11 +1,17 @@
 import { useStore } from '../state/store';
+import { flyToFocus } from '../viewer/controller';
 
 export function Legend() {
   const legend = useStore((s) => s.legend);
   return (
     <div className="legend">
       {legend.map((entry, i) => (
-        <div key={i}>
+        <div
+          key={i}
+          style={entry.focus ? { cursor: 'pointer' } : undefined}
+          title={entry.focus ? 'click to view these faces' : undefined}
+          onClick={entry.focus ? () => flyToFocus(entry.focus!) : undefined}
+        >
           <span
             className="chip"
             style={{ background: `rgb(${entry.color.map((x) => Math.round(x * 255)).join(',')})` }}

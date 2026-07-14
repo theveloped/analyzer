@@ -1,4 +1,4 @@
-# Testing the endmill accessibility analysis locally
+# Testing the analyses locally
 
 ## Setup
 
@@ -15,84 +15,68 @@ while hacking on it).
 ## Sanity check
 
 ```bash
-python test_endmill.py
+python test_zmap.py
 ```
 
 Builds a synthetic pocket + slot part and verifies ball / bull-nose / flat
-behaviour end to end (takes a few minutes).
+tool behaviour against analytic expectations.
 
 ## Analyzing a part
 
 Stage 1 — mesh (accepts .stl, .stp, .step; the result is cached in a working
-directory named after the part). Two preparation modes:
+directory named after the part). `--resolution` is the single analysis
+resolution: it drives the BREP tessellation sag (resolution/8), the
+subdivide edge target (= resolution), the heal voxel size (resolution/5)
+and the default zmap pixel of every later stage (resolution/5, via
+`mesh_meta.json`). Two preparation modes:
 
 ```bash
-# clean CAD input (STEP): keep the exact geometry, refine for reporting only
-python main.py mesh tests/testpart_42.stp --subdivide 0.6
+# clean CAD input (STEP): exact geometry, curved faces tessellated at
+# analysis scale, everything refined to the resolution
+python main.py mesh tests/testpart_42.stp --resolution 0.6
 
 # dirty STL: voxel-remesh it watertight (this DOES change the geometry:
 # edges get rounded to the voxel size - do not use it on clean STEP)
-python main.py mesh part.stl --heal --tollerance 0.15
+python main.py mesh part.stl --heal --resolution 0.75
 ```
 
-`--subdivide` splits edges without moving anything (planar faces stay planar,
-walls stay exactly 90°); face size is the reporting resolution, since results
-are per-face masks over per-vertex fields. When left unset the mesh stage
-picks an automatic target from the part size (0.5% of the bounding-box
-diagonal, clamped to 0.3–2 mm), so every analysis mesh has bounded,
+When left unset the resolution is automatic: 0.5% of the bounding-box
+diagonal, clamped to 0.3–2 mm, so every analysis mesh has bounded,
 well-spaced vertices even on large flat faces — a curvature-driven
 tessellation alone leaves those nearly empty, which starves the
-vertex-anchored thickness/skeleton analyses. Pass `--subdivide 0` to store
-the input tessellation untouched.
+vertex-anchored thickness/skeleton analyses. `--subdivide` and
+`--deflection` remain expert overrides; `--subdivide 0` stores the input
+tessellation untouched.
 
 Stage 2 — accessibility per direction. `--axes` prepends exact ±X/±Y/±Z as
-indices 0..5 (so +Z is index 4). `--relax` is important for endmill work:
-without it, strictly vertical walls count as undercuts and can never be
-flagged by the tool checks:
+indices 0..5 (so +Z is index 4). Near-vertical walls are handled by the
+visibility test's angular tolerance (`--tollerance`, degrees) — they count
+deterministically as front-facing:
 
 ```bash
-python main.py directions testpart_42 --count 16 --axes --relax
+python main.py directions testpart_42 --count 16 --axes
 ```
 
-Stage 3 — tool tip check for one (direction, diameter, corner radius):
+## Testing a whole tool catalog
 
-```bash
-# flat endmill D6
-python main.py endmill testpart_42 4 --diameter 6 --corner_radius 0 --tollerance 0.15
-# bull nose D6 rc1
-python main.py endmill testpart_42 4 --diameter 6 --corner_radius 1 --tollerance 0.15
-# ball nose D6
-python main.py endmill testpart_42 4 --diameter 6 --corner_radius 3 --tollerance 0.15
-```
-
-Unreachable-face indices land in `<dir>/highlights.json`; add `--serve` to
-open the interactive viewer on the working directory (the "Last CLI
-highlights.json" view replays exactly what the command flagged).
-
-Tool length checks are still the separate `length` command (ball model):
-
-```bash
-python main.py length testpart_42 4 --diameter 6 --length 120
-```
-
-## Fast path — testing a whole tool catalog
-
-The `endmill` command runs one 3D voxel closing per tool: exact, but minutes
-per (direction, D, rc). To sweep a catalog, use the Z-map engine instead
-(`zmap.py`, `precompute` + `compose`): the undercut-fixed volume is a
-heightfield along the approach direction, so each tool tip becomes a 2D
-grayscale closing of a rendered depth map, cached per direction as
-per-vertex scalar fields:
+Tool reachability runs on the Z-map engine (`zmap.py`, `precompute` +
+`compose`): the undercut-fixed volume is a heightfield along the approach
+direction, so each tool tip becomes a 2D grayscale closing of a rendered
+depth map, cached per direction as per-vertex scalar fields:
 
 ```bash
 # once per direction: depth map + gap field per tip + clearance field per shank/holder radius
-python main.py precompute testpart_42 --directions 4 5 --pixel 0.1 \
+python main.py precompute testpart_42 --directions 4 5 \
     --tips 6:0 6:1 6:3 10:0 10:2 --clearances 3 5 8
 
 # then any full tool assembly is a sub-second numpy threshold over the cache
 python main.py compose testpart_42 4 --diameter 6 --corner_radius 0 \
     --stickout 120 --holder 5:0,8:40 --serve
 ```
+
+Unreachable-face indices land in `<dir>/highlights.json`; the "Last CLI
+highlights.json" view in the viewer replays exactly what the command
+flagged.
 
 `--holder` stacks concentric cylinders (radius:start-height from the tip), so
 shank, holder and spindle nose are all one string; `--sweep 93 120 150 210`
@@ -126,8 +110,7 @@ Processes are tabs (CNC machining, injection molding, sheet metal —
 the registry seam for future DFM rules). CNC views: unified verdict
 (reachable / tip-blocked / holder-blocked / side-milled / inaccessible),
 accessibility, surface class, tip gap heatmap, required-stickout heatmap,
-engine diff (zmap vs voxel, needs the same tip precomputed with both
-engines), and the last CLI highlights.json. Tolerance, stickout and the
+and the last CLI highlights.json. Tolerance, stickout and the
 holder stack are recomputed live in the browser from the cached per-vertex
 fields — no Python round trips — and clicking a face prints its exact gap /
 clearance / accessibility values for step-by-step debugging. Injection
@@ -141,8 +124,11 @@ against a running server (`node smoke.mjs` inside `frontend/`, with
 ## Mold orientation, face assignment & parting lines
 
 STEP parts mesh through the BREP (exact triangle→face mapping, shared
-vertices along BREP edges); `--deflection` controls the base tessellation
-and `--subdivide` the analysis resolution as before:
+vertices along BREP edges). `--resolution` is the single analysis-resolution
+knob: curved faces tessellate at a `resolution/8` sag budget (their true
+shape at analysis scale), all edges refine to `resolution`, and later stages
+default their zmap pixel to `resolution/5` (from `mesh_meta.json`).
+`--deflection` / `--subdivide` / `--pixel` remain expert overrides:
 
 ```bash
 python main.py mesh tests/testpart_42.stp -o testpart_42 --subdivide 1.0
@@ -252,36 +238,19 @@ and the per-pin force/pressure list update after every change.
 Catalog math: of the 16 x 13 nose-radius/diameter grid, ~156 combinations are
 valid (rc <= D/2). Per direction that is ~156 tip closings at ~8 s each
 (pixel 0.1 on a 100 mm part) ~ 20 min once, plus ~1 s per clearance radius —
-after which every (tip, length, holder) query composes in ~0.2 s. The exact
-voxel `endmill` path stays useful as a spot-check (it agrees within a couple
-percent of flagged faces: 885 vs 904 on testpart_42, the difference being the
-holder/stickout constraints only `compose` models).
+after which every (tip, length, holder) query composes in ~0.2 s.
 
 ## Resolution knobs
 
-Three independent resolutions stack; jagged results usually mean the first
-one is wrong:
+Everything derives from `mesh --resolution` (auto = 0.5% of the part
+diagonal, clamped 0.3–2 mm); the per-stage overrides stack as:
 
 | Knob | What it controls | Cost |
 |---|---|---|
-| `mesh --subdivide` (STEP) or `--heal --tollerance` (STL) | geometry fidelity + how finely results localize (faces are the reporting unit) | faces ~ area / edge² |
-| `precompute --pixel` | field accuracy: gap/clearance quantization, wall noise threshold (2.5 × pixel) | maps + closings ~ 1/pixel², fields ~ verts |
+| `mesh --resolution` | geometry fidelity (BREP sag = resolution/8) + how finely results localize (faces are the reporting unit) + downstream pixel defaults | faces ~ area / resolution² |
+| `--pixel` override (directions/precompute/compose/verdict) | field accuracy: gap/clearance quantization, wall noise threshold (2.5 × pixel); default resolution/5 | maps + closings ~ 1/pixel², fields ~ verts |
 | `precompute --window` | range in which gaps are Euclidean-exact (keep ≥ wall threshold) | per-vertex window² |
 
 Reference: testpart_42 exact STEP at `--subdivide 0.6` = 683k faces; full
 precompute (4 tips, 3 clearance radii, 12 coupled stickout fields) at
 `--pixel 0.05` ≈ 6 min for one direction; composing any tool stays < 1 s.
-
-## Knobs vs runtime (exact voxel path)
-
-Reference timings, testpart_42 (100 x 100 x 40 mm) at voxel 0.15 mm, one
-direction: ball ~1 min, flat ~4.5 min, bull nose ~6 min. The flat/bull cost
-is dominated by the anisotropic stretch (`--scale`, default 10): the voxel
-grid grows ~scale x along the tool axis.
-
-- `--tollerance` is the voxel size; halving it costs ~8x. 0.3 mm is fine for
-  roughing-level answers, 0.1-0.15 mm for fine detail.
-- `--scale` bounds flat-floor sensitivity: deviations below
-  ~0.41 * (D - 2 rc) / scale can't be distinguished from the disk
-  approximation residual (the command warns and raises its threshold when
-  that bound exceeds the tolerance).

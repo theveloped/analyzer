@@ -126,11 +126,16 @@ def load_cached_result(workdir, process_id, analysis_id, params):
 
 
 def load_result_arrays(workdir, process_id, analysis_id, params):
-    """Open the npz of a stored result (None if absent)."""
+    """Load the arrays of a stored result as a dict (None if absent).
+
+    Materialized eagerly so the npz file handle is closed — a lingering
+    handle blocks workdir deletion on Windows.
+    """
     _, npz_path = result_paths(workdir, process_id, analysis_id, params)
     if not os.path.exists(npz_path):
         return None
-    return np.load(npz_path, allow_pickle=False)
+    with np.load(npz_path, allow_pickle=False) as stored:
+        return {name: stored[name] for name in stored.files}
 
 
 def store_result(workdir, process_id, analysis_id, params, stats, arrays=None,

@@ -57,7 +57,7 @@ cd frontend && npm install && npm run build && cd ..   # one-time viewer build (
 ```
 
 - CLI entry point: `python main.py <command>` — commands: `mesh`, `directions`,
-  `options`, `thickness`, `tool`, `length`, `endmill`, `precompute`, `compose`,
+  `options`, `thickness`, `setups`, `verdict`, `precompute`, `compose`,
   `serve`, `view`. `python main.py <command> -h` for flags; TESTING.md for workflows.
 - Typical smoke workflow (fast, small part):
   ```bash
@@ -78,11 +78,9 @@ Test files are **plain scripts, not pytest** — run them directly:
 python test_zmap.py          # zmap engine vs analytic expectations (fast-ish)
 python test_mold.py          # mold orientation / assignment fixtures
 python test_thickness.py     # rolling-sphere plate/gap probes
-python test_accessibility.py # visibility raster vs meshlib undercuts
+python test_accessibility.py # visibility raster on a synthetic pocket part
 python test_gap_probes.py    # Euclidean gap metric probes
 python test_skeleton.py      # wall-thickness skeleton graph
-python test_endmill.py       # full 3D voxel path — SLOW (minutes), run only when
-                             # touching analysis.py closings
 ```
 
 They build synthetic parts with known-correct answers and assert on them; a green
@@ -106,8 +104,7 @@ against a running server (needs `CHROMIUM_PATH`).
 
 ## Known rough edges (do not "clean up" blindly)
 
-See the end of APPROACH.md. Highlights: `projectAllMeshVertices` limits are squared
-distances but call sites pass plain distances; `get_inside_indices` is a slow
+See the end of APPROACH.md. Highlights: `get_inside_indices` is a slow
 per-face loop (`inside_test.py` is the sandbox for a bulk alternative);
 `toolart.py` / `drawer.py` / `tooltest.py` are standalone sketches not wired into
 the pipeline.

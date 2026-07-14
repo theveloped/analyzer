@@ -18,19 +18,23 @@ from meshlib import mrmeshnumpy as mn
 
 from analysis import (
     load_mesh,
+    heal_mesh,
     save_mesh,
     get_mesh_data,
     subdivide_mesh,
     sample_unity_vector_pairs,
     compute_accessibility,
-    relax_accessibility,
 )
-from utils import ensure_directory, file_fingerprint, has_valid_extension
+from utils import (ensure_directory, file_fingerprint, files_fingerprint,
+                   has_valid_extension)
 
 FINE_MESH_FILE = "fine_mesh.obj"
 FINE_VERTS_FILE = "fine_verts.npy"
 FINE_FACES_FILE = "fine_faces.npy"
+NORMALS_FILE = "normals.npy"
+MESH_META_FILE = "mesh_meta.json"
 DIRECTIONS_FILE = "directions.npy"
+DIRECTIONS_META_FILE = "directions_meta.json"
 ACCESSIBILITY_FILE = "accessibility.npy"
 BREP_FACES_FILE = "brep_faces.npy"
 BREP_META_FILE = "brep_meta.json"
@@ -63,6 +67,19 @@ def directions_fingerprint(workdir):
     caches instead of silently renumbering them.
     """
     return file_fingerprint(os.path.join(workdir, DIRECTIONS_FILE))
+
+
+def mesh_fingerprint(workdir):
+    """Short content hash of fine_verts + fine_faces (None before prep/mesh).
+
+    Every stored result and zcache field is expressed over this mesh's
+    face/vertex indexing; salting the fingerprint into cache keys keeps a
+    re-meshed workdir from silently serving misaligned artifacts. Both
+    files matter: an offset re-mesh moves only the vertices, a re-index
+    only the faces.
+    """
+    return files_fingerprint([os.path.join(workdir, FINE_VERTS_FILE),
+                              os.path.join(workdir, FINE_FACES_FILE)])
 
 
 def parse_tools(entries):
@@ -122,6 +139,39 @@ def load_mesh_arrays(workdir):
     return verts, faces
 
 
+def _facet_normals(verts, faces):
+    """Per-face unit normals from the triangle cross products."""
+    tri = np.asarray(verts)[faces]
+    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+    return (normals / np.maximum(lengths, 1e-30)).astype("<f4")
+
+
+def load_face_normals(workdir):
+    """Per-face unit normals for classification (facing/wall/draft tests).
+
+    mesh_part stores exact BREP surface normals for STEP parts (quadrics
+    analytically, freeform surfaces via UV evaluation on the live shape) as
+    normals.npy — served here when fresh. Legacy/STL workdirs get facet
+    cross-product normals, computed lazily and cached in the same file.
+    """
+    faces_path = os.path.join(workdir, FINE_FACES_FILE)
+    normals_path = os.path.join(workdir, NORMALS_FILE)
+    if (os.path.exists(normals_path)
+            and os.path.getmtime(normals_path) >= os.path.getmtime(faces_path)):
+        stored = np.load(normals_path)
+        faces = np.load(faces_path, mmap_mode="r")
+        face_count = int(faces.shape[0])
+        del faces  # release the Windows file handle promptly
+        if stored.shape == (face_count, 3):
+            return stored
+
+    verts, faces = load_mesh_arrays(workdir)
+    normals = _facet_normals(verts, faces)
+    np.save(normals_path, normals)
+    return normals
+
+
 def _per_vertex(values, vert_count):
     """Trim a meshlib per-vertex array to the stored vertex count.
 
@@ -149,16 +199,47 @@ def auto_subdivide(diagonal):
     return float(np.clip(0.005 * diagonal, 0.3, 2.0))
 
 
-def mesh_part(input_path, workdir=None, *, heal=False, subdivide=None, offset=None,
-              tollerance=1e-1, deflection=0.5, progress=None):
+def part_resolution(workdir):
+    """The analysis resolution the part was meshed at (None for legacy
+    workdirs that predate mesh_meta.json)."""
+    meta_path = os.path.join(workdir, MESH_META_FILE)
+    if not os.path.exists(meta_path):
+        return None
+    with open(meta_path) as f:
+        resolution = json.load(f).get("resolution")
+    return float(resolution) if resolution else None
+
+
+def resolve_pixel(workdir, pixel, fallback=1e-1):
+    """Tool-field zmap pixel: explicit value, else resolution/5, else the
+    legacy fixed default."""
+    if pixel is not None:
+        return float(pixel)
+    resolution = part_resolution(workdir)
+    if resolution:
+        pixel = resolution / 5.0
+        logger.info(f"pixel {pixel:.3f} mm from resolution {resolution:.2f} mm")
+        return pixel
+    return fallback
+
+
+def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
+              subdivide=None, deflection=None, progress=None):
     """Canonicalize an input STL/STEP into a part working directory.
 
     Writes fine_mesh.obj + fine_verts.npy + fine_faces.npy (the stable face
     indexing every later stage refers to). STEP input tessellates through
-    the BREP (brep.mesh_step) so every fine face carries its source BREP
-    face id (brep_faces.npy) — heal/offset destroy the surfaces and fall
-    back to the anonymous meshlib path, as does STL input.
-    Returns the workdir and counts.
+    the BREP (brep.mesh_shape) so every fine face carries its source BREP
+    face id (brep_faces.npy) — healing destroys the surfaces and falls back
+    to the anonymous meshlib path, as does STL input.
+
+    ``resolution`` is the single analysis-resolution knob: it defaults the
+    subdivide edge target (= resolution), the BREP tessellation sag
+    (= resolution / 8, so curved faces carry their true shape at analysis
+    scale while planes stay coarse), the heal voxel size (= resolution / 5)
+    and, via mesh_meta.json, the zmap pixel of every later stage
+    (= resolution / 5). ``subdivide``/``deflection`` remain expert
+    overrides. Returns the workdir and counts.
     """
     has_valid_extension(input_path, MESH_EXTENSIONS)
 
@@ -166,32 +247,52 @@ def mesh_part(input_path, workdir=None, *, heal=False, subdivide=None, offset=No
     brep_ids = None
     surface_types = None
 
-    if is_step and not heal and offset is None:
+    if is_step and not heal:
         import brep
 
-        _report(progress, 0.0, "tessellating BREP")
-        verts, faces, brep_ids, surface_types = brep.mesh_step(
-            input_path, deflection=deflection)
+        shape = brep.load_step_shape(input_path)
+        if resolution is None:
+            resolution = auto_subdivide(brep.shape_diagonal(shape))
+        if deflection is None:
+            deflection = resolution / 8.0
+        if subdivide is None:  # blank = resolution; 0 disables explicitly
+            subdivide = resolution
+        logger.info(f"resolution {resolution:.2f} mm -> deflection "
+                    f"{deflection:.3f} mm, subdivide {subdivide:.2f} mm")
 
-        if subdivide is None:  # blank = auto; 0 disables explicitly
-            diagonal = float(np.linalg.norm(verts.max(0) - verts.min(0)))
-            subdivide = auto_subdivide(diagonal)
-            logger.info(f"auto subdivide target {subdivide:.2f} mm")
+        _report(progress, 0.0, "tessellating BREP")
+        (verts, faces, brep_ids, surface_types, surface_params,
+         corner_uv) = brep.mesh_shape(shape, deflection=deflection)
+
+        # parent-facet ids ride along with the BREP ids through subdivision:
+        # children stay coplanar with their parent, so the parent's corner
+        # UVs recover any child centroid's surface parameters exactly
+        coarse_faces = faces
+        parents = np.arange(len(faces), dtype=np.int32)
         if subdivide:
             _report(progress, 0.4, "subdividing mesh (tag preserving)")
-            verts, faces, brep_ids = brep.subdivide_tagged(
-                verts, faces, brep_ids, subdivide)
+            verts, faces, tags = brep.subdivide_tagged(
+                verts, faces, np.stack([brep_ids, parents], axis=1),
+                subdivide)
+            brep_ids, parents = tags[:, 0], tags[:, 1]
 
         verts = verts.astype(np.float32)
         mesh = mn.meshFromFacesVerts(faces, verts)
     else:
         _report(progress, 0.0, "loading mesh")
-        mesh = load_mesh(input_path, heal=heal, offset=offset, tollerance=tollerance)
+        mesh = load_mesh(input_path)
 
-        if subdivide is None:  # blank = auto; 0 disables explicitly
+        deflection = None  # no BREP tessellation on this path
+        if resolution is None:
             box = mesh.computeBoundingBox()
-            subdivide = auto_subdivide((box.max - box.min).length())
-            logger.info(f"auto subdivide target {subdivide:.2f} mm")
+            resolution = auto_subdivide((box.max - box.min).length())
+        if subdivide is None:  # blank = resolution; 0 disables explicitly
+            subdivide = resolution
+        logger.info(f"resolution {resolution:.2f} mm -> subdivide "
+                    f"{subdivide:.2f} mm")
+        if heal:
+            _report(progress, 0.2, "healing (voxel remesh)")
+            mesh = heal_mesh(mesh, resolution / 5.0)
         if subdivide:
             _report(progress, 0.5, "subdividing mesh")
             mesh = subdivide_mesh(mesh, subdivide)
@@ -217,12 +318,22 @@ def mesh_part(input_path, workdir=None, *, heal=False, subdivide=None, offset=No
     logger.debug(f"Storing obj file: {obj_path}")
     save_mesh(mesh, obj_path)
 
-    counts = {"verts": int(len(verts)), "faces": int(len(faces))}
+    mesh_meta = {
+        "resolution": float(resolution),
+        "deflection": None if deflection is None else float(deflection),
+        "subdivide": float(subdivide),
+        "diagonal": float(np.linalg.norm(verts.max(0) - verts.min(0))),
+    }
+    with open(os.path.join(workdir, MESH_META_FILE), "w") as f:
+        json.dump(mesh_meta, f)
+
+    counts = {"verts": int(len(verts)), "faces": int(len(faces)), **mesh_meta}
     if brep_ids is not None:
         np.save(os.path.join(workdir, BREP_FACES_FILE), brep_ids)
         with open(os.path.join(workdir, BREP_META_FILE), "w") as f:
             json.dump({"face_count": len(surface_types),
-                       "surface_types": surface_types}, f)
+                       "surface_types": surface_types,
+                       "surface_params": surface_params}, f)
         counts["brep_faces"] = len(surface_types)
 
         # BREP edge geometry: mesh edges between different BREP faces,
@@ -239,19 +350,39 @@ def mesh_part(input_path, workdir=None, *, heal=False, subdivide=None, offset=No
         np.save(os.path.join(workdir, BREP_EDGE_PAIRS_FILE), id_pairs)
         counts["brep_edge_segments"] = int(len(segments))
 
+        # exact surface normals on every BREP face — quadrics from their
+        # analytic params, freeform (bspline etc.) via UV evaluation on the
+        # live shape. Classification uses these, geometry stays facet.
+        # Written LAST so the normals cache is fresh by the mtime rule.
+        _report(progress, 0.95, "computing exact surface normals")
+        normals = brep.analytic_face_normals(
+            verts, faces, brep_ids, surface_params,
+            _facet_normals(verts, faces))
+        normals = brep.freeform_face_normals(
+            shape, verts, faces, brep_ids, surface_params,
+            coarse_faces, corner_uv, parents, normals)
+        np.save(os.path.join(workdir, NORMALS_FILE),
+                normals.astype("<f4"))
+
     return {"workdir": workdir, "counts": counts}
 
 
 def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
-                       pixel=None, relax=False, relax_tollerance=1.0,
-                       relax_samples=4, progress=None):
+                       pixel=None, progress=None):
     """Sample approach directions and compute the accessibility matrix.
 
     ``tollerance`` is the angular relaxation (degrees) of the visibility
     test: faces within it of perpendicular still count as front-facing, so
     near-vertical walls classify deterministically. ``pixel`` sets the
-    visibility height-map resolution (None = auto from the bounding box).
+    visibility height-map resolution (None = resolution/5 from mesh_meta,
+    falling back to auto from the bounding box on legacy workdirs).
     """
+    if pixel is None:
+        resolution = part_resolution(workdir)
+        if resolution:
+            pixel = resolution / 5.0
+            logger.info(f"pixel {pixel:.3f} mm from resolution {resolution:.2f} mm")
+
     logger.debug(f"Computing {count} directions")
     directions = sample_unity_vector_pairs(count)
 
@@ -271,16 +402,8 @@ def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
     face_count = len(faces)
     _report(progress, 0.1, f"accessibility for {directions.shape[0]} directions")
     accessibility = compute_accessibility(mesh, directions, face_count,
-                                          tolerance_deg=tollerance, pixel=pixel)
-
-    if relax:
-        for direction_index in range(directions.shape[0]):
-            _report(progress, 0.5 + 0.5 * direction_index / directions.shape[0],
-                    f"relaxing direction {direction_index}")
-            relaxed = relax_accessibility(
-                mesh, accessibility[direction_index, :], directions[direction_index],
-                tolerance_degrees=relax_tollerance, n=relax_samples)
-            accessibility[direction_index, :] = relaxed
+                                          tolerance_deg=tollerance, pixel=pixel,
+                                          normals=load_face_normals(workdir))
 
     directions_path = os.path.join(workdir, DIRECTIONS_FILE)
     accessibility_path = os.path.join(workdir, ACCESSIBILITY_FILE)
@@ -290,6 +413,12 @@ def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
 
     logger.debug(f"Storing accessibility at: {accessibility_path}")
     np.save(accessibility_path, accessibility)
+
+    # which mesh the accessibility rows index — the manifest flags the
+    # directions stale when the workdir is re-meshed afterwards
+    with open(os.path.join(workdir, DIRECTIONS_META_FILE), "w") as f:
+        json.dump({"mesh_fingerprint": mesh_fingerprint(workdir),
+                   "pixel": None if pixel is None else float(pixel)}, f)
 
     return {
         "directions": int(directions.shape[0]),
@@ -566,7 +695,7 @@ def cnc_setups(workdir, *, indexed=True, tilt=90.0, max_setups=4,
 
 
 def setup_verdict(workdir, *, option=0, tools=(), tollerance=0.1,
-                  wall_tollerance=1.0, pixel=0.1, window=0.3, indexed=True,
+                  wall_tollerance=1.0, pixel=None, window=0.3, indexed=True,
                   tilt=90.0, max_setups=4, min_setup_area=None, count=10,
                   field_options=3, progress=None):
     """Re-verdict one ranked setup plan with a real tool library.
@@ -596,11 +725,12 @@ def setup_verdict(workdir, *, option=0, tools=(), tollerance=0.1,
     if not tools:
         raise ValueError("setup_verdict needs at least one tool")
 
+    pixel = resolve_pixel(workdir, pixel)
     verts, faces = load_mesh_arrays(workdir)
     directions = np.load(os.path.join(workdir, DIRECTIONS_FILE))
     accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))
     weights = machining.face_areas(verts, faces)
-    normals = machining.face_unit_normals(verts, faces)
+    normals = load_face_normals(workdir)
 
     brep_path = os.path.join(workdir, BREP_FACES_FILE)
     brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
@@ -633,7 +763,7 @@ def setup_verdict(workdir, *, option=0, tools=(), tollerance=0.1,
             if not visible.any():
                 continue
             cache = DirectionCache(workdir, int(d), verts=verts, faces=faces,
-                                   pixel=pixel, window=window, engine="zmap")
+                                   pixel=pixel, window=window)
             angles = machining.face_angles_deg(normals, directions[d])
             for tool in tools:
                 cylinders = ([(tool["holder_radius"], 0.0)]
@@ -1033,8 +1163,10 @@ def _latest_mold_orientation(workdir):
         return None, None, None
     result_hash = os.path.splitext(os.path.basename(best[1]))[0]
     npz_path = best[1][:-len(".json")] + ".npz"
-    arrays = (np.load(npz_path, allow_pickle=False)
-              if os.path.exists(npz_path) else None)
+    arrays = None
+    if os.path.exists(npz_path):
+        with np.load(npz_path, allow_pickle=False) as stored:
+            arrays = {name: stored[name] for name in stored.files}
     return result_hash, best[2], arrays
 
 
@@ -1308,7 +1440,8 @@ def ejection_sticking(workdir, *, skeleton, skeleton_hash, mesh_spec=None,
     vert_node = np.asarray(skeleton["cluster_vert_node"])
 
     _report(progress, 0.1, "face geometry")
-    normals, areas = ejection.face_geometry(verts, faces)
+    _, areas = ejection.face_geometry(verts, faces)
+    normals = load_face_normals(workdir)
 
     # pull axis + B-side scope from the newest mold orientation, if any
     mold_hash, mold_payload, mold_arrays = _latest_mold_orientation(workdir)
@@ -1412,59 +1545,77 @@ def highlight_union(workdir, include=(), exclude=()):
     return indices
 
 
-def precompute_fields(workdir, *, directions, pixel=1e-1, tips=(), clearances=(),
-                      engine="zmap", window=0.3, progress=None):
-    """Cache height maps and per-tip/per-clearance fields for directions."""
+def precompute_fields(workdir, *, directions, pixel=None, tips=(), clearances=(),
+                      window=0.3, progress=None):
+    """Cache height maps and per-tip/per-clearance fields for directions.
+
+    ``pixel`` None = resolution/5 from mesh_meta (legacy fallback 0.1 mm).
+    """
     from zmap import DirectionCache
 
+    pixel = resolve_pixel(workdir, pixel)
     verts, faces = load_mesh_arrays(workdir)
     tips = [tips_entry if isinstance(tips_entry, tuple) else tuple(tips_entry)
             for tips_entry in tips]
 
+    # per-field progress: each field is minutes on a big part, so a
+    # per-direction report would freeze the UI bar for the whole run
+    per_direction = 1 + len(tips) + len(clearances) + len(tips) * len(clearances)
+    total = max(len(directions) * per_direction, 1)
+    done = 0
+
+    def _step(message):
+        nonlocal done
+        _report(progress, done / total, message)
+        done += 1
+
     computed = []
-    for step, direction_index in enumerate(directions):
+    for direction_index in directions:
         logger.info(f"Direction {direction_index}")
-        _report(progress, step / max(len(directions), 1),
-                f"direction {direction_index}")
+        _step(f"direction {direction_index}: height map")
         cache = DirectionCache(workdir, direction_index, verts=verts, faces=faces,
-                               pixel=pixel, window=window, engine=engine)
+                               pixel=pixel, window=window)
         for diameter, corner_radius in tips:
+            _step(f"direction {direction_index}: tip {diameter:g}:{corner_radius:g}")
             cache.tip_gap(diameter, corner_radius)
         for radius in clearances:
+            _step(f"direction {direction_index}: clearance r={radius:g}")
             cache.clearance(radius)
-        if engine == "zmap":
-            # tip-aware holder stickout fields per (tip, cylinder radius)
-            for diameter, corner_radius in tips:
-                for radius in clearances:
-                    cache.tip_min_stickout(diameter, corner_radius, radius)
+        # tip-aware holder stickout fields per (tip, cylinder radius)
+        for diameter, corner_radius in tips:
+            for radius in clearances:
+                _step(f"direction {direction_index}: stickout "
+                      f"{diameter:g}:{corner_radius:g} r={radius:g}")
+                cache.tip_min_stickout(diameter, corner_radius, radius)
         computed.append(int(direction_index))
 
     return {
         "directions": computed,
         "tips": [list(tip) for tip in tips],
         "clearances": [float(r) for r in clearances],
-        "engine": engine,
     }
 
 
-def compose_tool(workdir, direction, *, pixel=1e-1, tollerance=1e-1, diameter=2.0,
+def compose_tool(workdir, direction, *, pixel=None, tollerance=1e-1, diameter=2.0,
                  corner_radius=0.0, stickout=None, cylinders=None, sweep=(),
-                 wall_tollerance=1.0, engine="zmap", window=0.3, progress=None):
+                 wall_tollerance=1.0, window=0.3, progress=None):
     """Evaluate a full tool assembly from precomputed fields.
 
     Uses the canonical per-face rule (zmap.tool_face_verdict), including the
     side-milled treatment of near-vertical walls the viewer applies.
+    ``pixel`` None = resolution/5 from mesh_meta (legacy fallback 0.1 mm).
     """
     import machining
     from zmap import DirectionCache, tool_face_verdict
 
+    pixel = resolve_pixel(workdir, pixel)
     verts, faces = load_mesh_arrays(workdir)
     accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))
 
     _report(progress, 0.1, "composing tool verdict")
     cache = DirectionCache(workdir, direction, verts=verts, faces=faces,
-                           pixel=pixel, window=window, engine=engine)
-    angles = machining.face_angles_deg(machining.face_unit_normals(verts, faces),
+                           pixel=pixel, window=window)
+    angles = machining.face_angles_deg(load_face_normals(workdir),
                                        cache.direction)
     machinable, _, min_stick = tool_face_verdict(
         cache, faces, angles, diameter=diameter, corner_radius=corner_radius,

@@ -7,16 +7,15 @@ and this document disagree, the code wins — update this file in the same commi
 
 | File | Role | Key entry points |
 |---|---|---|
-| `main.py` | argparse CLI, one subcommand per stage; thin wrappers over `pipeline.py` | `mesh`, `directions`, `options`, `thickness`, `tool`, `length`, `endmill`, `precompute`, `compose`, `serve`, `view` |
+| `main.py` | argparse CLI, one subcommand per stage; thin wrappers over `pipeline.py` | `mesh`, `directions`, `options`, `thickness`, `setups`, `verdict`, `precompute`, `compose`, `serve`, `view` |
 | `pipeline.py` | The shared orchestration layer used by both CLI and API jobs. All workdir I/O funnels through here | `mesh_part`, `compute_directions`, `mold_orientation`, `compute_thickness`, `wall_skeleton`, `precompute_fields`, `compose_tool`, `write_highlights`, `load_mesh_arrays`, `parse_tips`, `parse_holder` |
-| `analysis.py` | meshlib geometry primitives: healing, offsets, booleans, undercuts, accessibility | `load_mesh`, `heal_mesh`, `single_offset`, `double_offset`, `inplane_double_offset` (scale trick), `endmill_closing`, `fix_undercuts`, `sample_unity_vector_pairs`, `compute_accessibility`, `map_result_faces` |
+| `analysis.py` | meshlib geometry primitives: loading, healing, subdivision, direction sampling, accessibility | `load_mesh`, `heal_mesh`, `offset_mesh`, `subdivide_mesh`, `sample_unity_vector_pairs`, `compute_accessibility` |
 | `zmap.py` | 2D height-map (Z-map) engine: renders depth maps, grayscale closings, Euclidean gaps, clearance fields; owns the per-direction cache | `render_heightmap`, `face_visibility`, `close_heightmap`, `euclidean_gap`, `clearance_heightmap`, `tip_aware_min_stickout`, `DirectionCache`, `compose_unreachable` |
 | `molding.py` | Mold orientation search & face assignment (pure numpy over accessibility rows) | `mold_orientation_search`, `membership_field`, `internal_regions`, `brep_validity`, `brep_defaults`, `face_adjacency` |
 | `brep.py` | BREP-aware STEP meshing via OCCT (OCP bindings): per-face tessellation, welding, conformal subdivision | `mesh_step`, `subdivide_tagged` |
 | `processes/` | Backend analysis registry (see below) | `processes.base`, one module per process |
 | `api/` | FastAPI server (see routes below) | `api.app.create_app`, `serve_app` |
 | `utils.py`, `pathtypes.py` | Small helpers: dirs, timing decorator, argparse `PathType` | |
-| `benchmark_engines.py` | zmap-vs-voxel engine benchmark/cross-check on a mold-like part | run directly |
 | `inside_test.py`, `toolart.py`, `drawer.py`, `tooltest.py` | Standalone sandboxes/sketches, NOT wired into the pipeline | |
 
 Root `test_*.py` are self-checking scripts (synthetic parts with analytic
@@ -25,30 +24,35 @@ expectations), run as `python test_x.py` — see AGENTS.md.
 ## Per-part working directory (the cache everything shares)
 
 Created by `main.py mesh <input> -o <workdir>` (or UI upload). All later stages and
-the viewer read/write here; the parent directory of a workdir is the "parts root"
-the server scans for the part picker.
+the viewer read/write here. The server scans the parts root for legacy workdirs
+plus `parts/` for uploads: an uploaded file's part id is `sha1(bytes)[:12]` and its
+workdir `<root>/parts/<id>` (gitignored), so the same STEP always lands in the same
+folder and re-uploads dedupe; the human name stays in `part.json`.
 
 | File | Written by | Contents |
 |---|---|---|
 | `fine_mesh.obj` | mesh | canonical analysis mesh |
 | `fine_verts.npy` / `fine_faces.npy` | mesh | float32 `(V,3)` / int `(F,3)` — **face/vertex indexing is stable from here on** |
-| `normals.npy` | mesh (lazy) | per-face unit normals `(F,3)` (gitignored, regenerated) |
+| `mesh_meta.json` | mesh | resolved `resolution` / `deflection` / `subdivide` / `diagonal`; `resolution/5` is the default zmap pixel of every later stage |
+| `normals.npy` | mesh | per-face unit normals `(F,3)` used for classification: exact BREP surface normals on every STEP face (quadrics from analytic params, freeform via UV evaluation on the live shape; written eagerly), lazy facet fallback otherwise (gitignored, regenerated) |
 | `brep_faces.npy` | mesh (STEP only) | int `(F,)` — source BREP face id per fine triangle |
 | `brep_edges.npy` / `brep_edge_pairs.npy` | mesh (STEP only) | BREP edge polylines + the two BREP face ids adjacent to each edge (parting-line rendering) |
-| `brep_meta.json` | mesh (STEP only) | per-BREP-face surface types etc. |
+| `brep_meta.json` | mesh (STEP only) | per-BREP-face surface types + analytic `surface_params` (plane/cylinder/cone/sphere/torus; freeform faces have `null` params — their exact normals are evaluated at mesh time) |
 | `directions.npy` | directions | float `(D,3)`, laid out as antipodal pairs `[d0,-d0,d1,-d1,...]`; `--axes` prepends ±X/±Y/±Z as indices 0–5 (+Z = 4) |
 | `accessibility.npy` | directions | bool `(D,F)` — face f visible from direction d |
+| `directions_meta.json` | directions | mesh fingerprint + pixel the accessibility was computed at; a re-meshed workdir flags `directions_stale` in the manifest |
 | `highlights.json` | any CLI check | flat list of flagged face indices; replayed by the viewer's "Last CLI highlights" mode |
-| `zcache/dir_<idx 04d>.npz` | precompute/compose (zmap engine) | see next section; voxel engine writes `dir_<idx>_voxel.npz` |
-| `results/<process>/<analysis>/<hash>.json[.npz]` | registry analyses | generic results, `<hash>` = `params_hash(params)` (sha1[:12] of canonical JSON) |
+| `zcache/dir_<idx 04d>.npz` | precompute/compose | see next section |
+| `results/<process>/<analysis>/<hash>.json[.npz]` | registry analyses | generic results, `<hash>` = `params_hash(params)` (sha1[:12] of canonical JSON); runners salt in schema, `directions` and `mesh` fingerprints so stale results orphan instead of misindexing |
 | `results/<process>/<analysis>/<hash>_overrides.json` | viewer via API | user face-assignment overrides for a mold result |
 | `part.json` | API upload/registration | part metadata (gitignored) |
 
 ## `zcache/dir_*.npz` field keys (DirectionCache, zmap.py)
 
 Always present: `version` (must equal `DirectionCache.VERSION`, else the cache is
-discarded), `pixel`. zmap engine also stores the rendered frame: `heights`,
-`origin`, `x_axis`, `y_axis`, `direction`.
+discarded), `pixel`, `dirfp`/`meshfp` (directions.npy and fine mesh fingerprints —
+a mismatch discards the cache). zmap engine also stores the rendered frame:
+`heights`, `origin`, `x_axis`, `y_axis`, `direction`.
 
 Per-tool fields, all per-vertex float arrays over `fine_verts.npy` (formatted with
 `%.6g`):
@@ -89,7 +93,7 @@ Binary endpoints stream raw typed arrays with ETag caching (`fields.py`).
 GET  /api/config                     server config
 GET  /api/processes                  registry (processes, analyses, param schemas)
 GET  /api/parts                      part list (parts root scan)
-POST /api/parts                      upload STEP/STL → new workdir
+POST /api/parts                      upload STEP/STL → content-addressed workdir parts/<sha1[:12]> (idempotent)
 GET  /api/parts/{id}                 part info
 GET  /api/parts/{id}/manifest        all available fields/results for the part
 GET  /api/parts/{id}/mesh/{which}    raw arrays: verts f4, faces u4, normals f4 (un-indexed contract: face f → vertices 3f..3f+2)

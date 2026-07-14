@@ -10,22 +10,8 @@ from utils import log_execution_time
 
 
 @log_execution_time
-def load_mesh(path, heal=False, offset=None, tollerance=1e-1):
-    start = time.time()
-    mesh = mm.loadMesh(path)
-    logger.debug( f"Time to load mesh: {time.time() - start}")
-    
-    if heal:
-        start = time.time()
-        mesh = heal_mesh(mesh, tollerance, True)
-        logger.debug( f"Time to heal mesh: {time.time() - start}")
-    
-    if offset is not None:
-        start = time.time()
-        mesh = offset_mesh(mesh, offset=offset, tollerance=tollerance)
-        logger.debug( f"Time to offset mesh: {time.time() - start}")
-   
-    return mesh
+def load_mesh(path):
+    return mm.loadMesh(path)
 
 
 @log_execution_time
@@ -96,156 +82,6 @@ def heal_mesh( mesh : mm.Mesh, voxelSize : float, decimate : bool = True) -> mm.
     return resMesh
 
 
-@log_execution_time    
-def single_offset( mesh : mm.Mesh, offset: float, voxelSize : float, decimate : bool = True) -> mm.Mesh:
-    numHoles = mm.findRightBoundary(mesh.topology).size()
-    oParams = mm.GeneralOffsetParameters()
-    if (numHoles != 0):
-        oParams.signDetectionMode = mm.SignDetectionMode.HoleWindingRule
-  
-    oParams.voxelSize = voxelSize
-    resMesh = mm.generalOffsetMesh(mesh, offset, oParams)
-    
-    if (decimate):
-        resMesh.packOptimally(False)
-        dSettings = mm.DecimateSettings()
-        dSettings.maxError = 0.25 * voxelSize
-        dSettings.tinyEdgeLength = mesh.computeBoundingBox().diagonal() * 1e-4
-        dSettings.stabilizer = 1e-5
-        dSettings.packMesh = True
-        dSettings.subdivideParts = 64
-        mm.decimateMesh(resMesh,dSettings)
-  
-    return resMesh
-
-
-@log_execution_time    
-def double_offset( mesh : mm.Mesh, offset_a: float, offset_b: float, voxelSize : float, decimate : bool = True) -> mm.Mesh:
-    numHoles = mm.findRightBoundary(mesh.topology).size()
-    oParams = mm.GeneralOffsetParameters()
-    if (numHoles != 0):
-        oParams.signDetectionMode = mm.SignDetectionMode.HoleWindingRule
-  
-    oParams.voxelSize = voxelSize
-    resMesh = mm.doubleOffsetMesh(mesh, offset_a, offset_b, oParams)
-    
-    if (decimate):
-        resMesh.packOptimally(False)
-        dSettings = mm.DecimateSettings()
-        dSettings.maxError = 0.25 * voxelSize
-        dSettings.tinyEdgeLength = mesh.computeBoundingBox().diagonal() * 1e-4
-        dSettings.stabilizer = 1e-5
-        dSettings.packMesh = True
-        dSettings.subdivideParts = 64
-        mm.decimateMesh(resMesh,dSettings)
-  
-    return resMesh
-
-
-@log_execution_time
-def scale_along_axis(mesh, direction, scale):
-    """
-    Anisotropically scale a mesh along an arbitrary axis, leaving the plane
-    perpendicular to it untouched. Used to emulate in-plane (disk) offsets:
-    stretching by `scale`, offsetting isotropically and scaling back by
-    1/scale is a Minkowski sum with an oblate ellipsoid of in-plane radius
-    `offset` and axial radius `offset/scale`.
-
-    :param mesh: The mesh to transform (modified in place).
-    :param direction: The axis to scale along (need not be normalized).
-    :param scale: The scale factor along the axis.
-    :return: The transformed mesh.
-    """
-    d = np.asarray(direction, dtype=float)
-    d /= np.linalg.norm(d)
-
-    # M = I + (s - 1) * d d^T stretches by s along d, identity in-plane
-    m = np.eye(3) + (scale - 1.0) * np.outer(d, d)
-
-    matrix = mm.Matrix3f()
-    matrix.x = mm.Vector3f(float(m[0][0]), float(m[0][1]), float(m[0][2]))
-    matrix.y = mm.Vector3f(float(m[1][0]), float(m[1][1]), float(m[1][2]))
-    matrix.z = mm.Vector3f(float(m[2][0]), float(m[2][1]), float(m[2][2]))
-
-    mesh.transform(mm.AffineXf3f.linear(matrix))
-    return mesh
-
-
-@log_execution_time
-def inplane_double_offset(mesh, direction, offset_a, offset_b, voxelSize, scale=10.0, decimate=False):
-    """
-    Double offset (e.g. +r then -r for a morphological closing) restricted to
-    the plane perpendicular to `direction`. The structuring element is a disk
-    of radius `offset` (approximated by an oblate ellipsoid of axial radius
-    offset/scale). Returns a new mesh; the input is not modified.
-    """
-    work = mm.copyMesh(mesh)
-    scale_along_axis(work, direction, scale)
-    work = double_offset(work, offset_a, offset_b, voxelSize, decimate=decimate)
-    scale_along_axis(work, direction, 1.0 / scale)
-    return work
-
-
-@log_execution_time
-def endmill_closing(mesh, direction, diameter, corner_radius, voxelSize, scale=10.0):
-    """
-    Morphological closing of `mesh` with the bottom shape of an endmill whose
-    axis is aligned with `direction`. The tool bottom is modelled as the
-    Minkowski sum of a disk of radius (D/2 - rc) perpendicular to the tool
-    axis and a sphere of radius rc:
-
-    - corner_radius == D/2 -> ball nose (sphere only)
-    - corner_radius == 0   -> flat endmill (disk only)
-    - in between           -> bull nose / radius endmill
-
-    Everywhere the closed mesh deviates from the input is material the tool
-    bottom cannot reach. Run this on the undercut-fixed mesh so results are
-    consistent with the chosen approach direction.
-
-    The disk part is emulated with the scale trick (see scale_along_axis), so
-    flat regions perpendicular to the axis keep a residual rounding of about
-    0.41 * (D - 2*rc) / scale that must stay below the flagging threshold.
-
-    :return: A new closed mesh; the input is not modified.
-    """
-    radius = diameter / 2.0
-    corner_radius = min(max(corner_radius, 0.0), radius)
-    disk_radius = radius - corner_radius
-
-    # Pure ball nose: plain isotropic closing
-    if disk_radius <= 0:
-        return double_offset(mesh, corner_radius, -corner_radius, voxelSize, decimate=False)
-
-    # Pure flat endmill: closing entirely in stretched space
-    if corner_radius <= 0:
-        return inplane_double_offset(mesh, direction, disk_radius, -disk_radius, voxelSize, scale=scale)
-
-    # Bull nose: dilate by disk then sphere, erode by sphere then disk
-    work = mm.copyMesh(mesh)
-    scale_along_axis(work, direction, scale)
-    work = single_offset(work, disk_radius, voxelSize, decimate=False)
-    scale_along_axis(work, direction, 1.0 / scale)
-
-    work = double_offset(work, corner_radius, -corner_radius, voxelSize, decimate=False)
-
-    scale_along_axis(work, direction, scale)
-    work = single_offset(work, -disk_radius, voxelSize, decimate=False)
-    scale_along_axis(work, direction, 1.0 / scale)
-    return work
-
-
-def endmill_flag_threshold(diameter, corner_radius, tollerance, scale):
-    """
-    Smallest deviation that can safely be flagged as unreachable: the user
-    tolerance, but never less than the disk emulation residual (with some
-    margin). Deviations below the residual may be artifacts of the finite
-    stretch factor rather than genuine tool limitations.
-    """
-    disk_radius = diameter / 2.0 - corner_radius
-    residual = 0.5 * disk_radius / scale  # 1.2 * (sqrt(2)-1) * disk_r / scale
-    return max(tollerance, residual)
-
-
 @log_execution_time
 def subdivide_mesh(mesh, max_edge_len):
     """
@@ -262,22 +98,6 @@ def subdivide_mesh(mesh, max_edge_len):
     settings.maxDeviationAfterFlip = 0.0
     mm.subdivideMesh(mesh, settings)
     return mesh
-
-
-@log_execution_time
-def get_distance(mesh_a, mesh_b, upper_limit: float = 3.4028234663852886e+38, lower_limit: float = 0.0):
-    res = mm.projectAllMeshVertices(mesh_b, mesh_a, upDistLimitSq=upper_limit, loDistLimitSq=lower_limit)
-    return res.vec
-
-
-@log_execution_time
-def get_inside_mesh(mesh_a, mesh_b):
-    bOperation = mm.BooleanOperation.InsideA
-    # mm.BooleanOperation.InsideA
-    bResMapper = mm.BooleanResultMapper()
-    bResult = mm.boolean(mesh_a, mesh_b, bOperation, None, bResMapper)
-    bResMesh = bResult.mesh
-    return bResMesh
 
 
 @log_execution_time
@@ -302,99 +122,6 @@ def get_inside_indices(mesh_a, mesh_b):
             inner_verts.set(v,False)
     
     return mn.getNumpyBitSet(inner_faces), mn.getNumpyBitSet(inner_verts)
-
-
-@log_execution_time
-def map_result_faces(mesh_a, mesh_b, faces_a, min_range=None, max_range=None):
-    distances = get_distance(mesh_a, mesh_b, upper_limit=10, lower_limit=0.0)
-    
-    # Compute all vertices where distance is abbove tollerance of 0.1
-    if min_range is not None and max_range is not None:
-        indices = np.where((np.abs(distances) >= min_range) & (np.abs(distances) <= max_range))[0]
-        indices_set = set(indices)
-    
-    elif min_range is not None:
-        indices = np.where(np.abs(distances) >= min_range)[0]
-        indices_set = set(indices)
-        
-    elif max_range is not None:
-        indices = np.where(np.abs(distances) <= max_range)[0]
-        indices_set = set(indices)
-    
-    
-    # Get all face indices where all three vertices are in the indices set
-    inside_faces = [i for i, face in enumerate(faces_a) if set(face).issubset(indices_set)]
-    return np.array(inside_faces)
-
-
-def get_undercuts(mesh, x, y, z):
-    # Compute analysis direction
-    dir = mm.Vector3f()
-    dir.x = x
-    dir.y = y
-    dir.z = z
-
-    # Find undercuts (meshlib >= 3 moved this into the FixUndercuts namespace)
-    undercuts = mm.FaceBitSet()
-    if hasattr(mm, "FixUndercuts"):
-        params = mm.FixUndercuts.FindParams(dir, 0.0)
-        mm.FixUndercuts.find(mesh, params, undercuts)
-    else:
-        mm.findUndercuts(mesh, dir, undercuts)
-
-    # Extract face indices
-    return mn.getNumpyBitSet(undercuts)
-
-
-
-@log_execution_time
-def fix_undercuts(input_mesh, x, y, z, tollerance=1e-1, bottom_offset=0.0):
-    # Compute analysis direction
-    dir = mm.Vector3f()
-    dir.x = x
-    dir.y = y
-    dir.z = z
-    
-    # Copy mesh to avoid modifying the input
-    mesh = mm.copyMesh(input_mesh)
-
-    # Remove undercuts (meshlib >= 3 moved this into the FixUndercuts namespace)
-    if hasattr(mm, "FixUndercuts"):
-        params = mm.FixUndercuts.FixParams()
-        params.findParameters = mm.FixUndercuts.FindParams(dir, 0.0)
-        params.voxelSize = tollerance
-        params.bottomExtension = bottom_offset
-        mm.FixUndercuts.fix(mesh, params)
-    else:
-        mm.fixUndercuts(mesh, dir, tollerance, bottom_offset)
-
-    # Return the updated mesh
-    return mesh
-
-
-@log_execution_time
-def translate(mesh, x, y, z, distance=None):
-    
-    trans_vector = np.array([x, y, z], dtype=float)
-    
-    if distance is not None:
-        unit_vector = trans_vector / np.linalg.norm(trans_vector)
-        trans_vector = unit_vector * distance
-        
-    # Compute analysis direction
-    vec = mm.Vector3f()
-    vec.x = trans_vector[0]
-    vec.y = trans_vector[1]
-    vec.z = trans_vector[2]
-    
-    # Compute translation
-    tanslation = mm.AffineXf3f.translation(vec)
-    
-    # Translate mesh
-    mesh.transform(tanslation)
-
-    # Return the updated mesh
-    return mesh
 
 
 @log_execution_time
@@ -452,33 +179,16 @@ def sample_unity_vector_pairs(n):
 
 
 @log_execution_time
-def compute_accessibility_meshlib(mesh, directions, face_count):
-    """Legacy accessibility via meshlib undercut detection.
-
-    Kept for A/B comparison: its hard front/back-facing verdict flips for
-    faces tangent to a direction (vertical walls), producing speckle that
-    only the expensive cone relaxation smooths out.
-    """
-    dir_count = len(directions)
-    accessibility = np.ones((dir_count, face_count), dtype=bool)
-    for i in range(dir_count):
-        x, y, z = directions[i]
-        undercuts = get_undercuts(mesh, x, y, z)
-        accessibility[i, :] = np.invert(undercuts)
-
-    return accessibility
-
-
-@log_execution_time
 def compute_accessibility(mesh, directions, face_count, *, tolerance_deg=0.1,
-                          pixel=None):
+                          pixel=None, normals=None):
     """Per-direction face accessibility via our own visibility test.
 
     A face is accessible iff it faces the direction within `tolerance_deg`
     (near-vertical walls are deterministically front-facing — no speckle)
     and no material shadows it per a rendered height map (zmap engine).
     `pixel` is the height-map resolution; None derives it from the part's
-    bounding box diagonal.
+    bounding box diagonal. ``normals`` overrides the facet normals (pass
+    exact BREP surface normals for STEP parts).
     """
     from zmap import face_visibility
 
@@ -494,88 +204,6 @@ def compute_accessibility(mesh, directions, face_count, *, tolerance_deg=0.1,
     for i in range(dir_count):
         accessibility[i, :] = face_visibility(
             mesh, verts, faces, directions[i],
-            tolerance_deg=tolerance_deg, pixel=pixel)
+            tolerance_deg=tolerance_deg, pixel=pixel, normals=normals)
 
     return accessibility
-
-
-def find_perpendicular_vector(v):
-    """Find a non-zero vector perpendicular to v."""
-    if v[0] == 0 and v[1] == 0:
-        if v[2] == 0:
-            # v is a zero vector
-            return None
-        # v is along the z-axis
-        return np.array([1, 0, 0], dtype=float)
-    return np.array([-v[1], v[0], 0], dtype=float)
-
-
-def rotate_vector_around_axis(v, axis, theta_deg):
-    """Rotate vector v around axis by theta degrees."""
-    theta = np.radians(theta_deg)
-    axis = axis / np.linalg.norm(axis)
-    v_rot = (v * np.cos(theta) +
-             np.cross(axis, v) * np.sin(theta) +
-             axis * np.dot(axis, v) * (1 - np.cos(theta)))
-    return v_rot
-
-
-def generate_cone_vectors(x, y, z, angle_deg, N):
-    original_vector = np.array([x, y, z], dtype=float)
-    axis_vector = original_vector / np.linalg.norm(original_vector)
-    
-    perp_vector = find_perpendicular_vector(axis_vector)
-    cone_vector = rotate_vector_around_axis(axis_vector, perp_vector, angle_deg)
-    
-    vectors = []
-    for i in range(N):
-        theta = 360.0 * i / N  # Step through 360 degrees in N increments
-        rotated_vector = rotate_vector_around_axis(cone_vector, axis_vector, theta)
-        vectors.append(rotated_vector)
-    
-    return np.array(vectors)
-
-
-def generate_circle_translations(x, y, z, radius, N):
-    original_vector = np.array([x, y, z], dtype=float)
-    axis_vector = original_vector / np.linalg.norm(original_vector)
-    
-    perp_vector = find_perpendicular_vector(axis_vector)
-    radius_vector = perp_vector * radius
-    # cone_vector = rotate_vector_around_axis(axis_vector, perp_vector, angle_deg)
-    
-    vectors = []
-    for i in range(N):
-        theta = 360.0 * i / N  # Step through 360 degrees in N increments
-        rotated_vector = rotate_vector_around_axis(radius_vector, axis_vector, theta)
-        
-        print(f"{rotated_vector[0]:.2f}, {rotated_vector[1]:.2f}, {rotated_vector[2]:.2f}")
-        
-        # Compute relative translation compared to previous vector
-        if i > 0:
-            vectors.append(rotated_vector - previous_vector)
-            previous_vector = rotated_vector
-
-        else:
-            previous_vector = rotated_vector
-            vectors.append(rotated_vector)
-    
-    return np.array(vectors)
-
-
-@log_execution_time
-def relax_accessibility(mesh, initial_accessibility, direction, tolerance_degrees=1.0, n=4):
-    # Compute the additional directions
-    cone_vectors = generate_cone_vectors(direction[0], direction[1], direction[2], tolerance_degrees, n)
-    
-    face_count = initial_accessibility.shape[0]
-    cone_accessibility = np.ones((n, face_count), dtype=bool)
-    
-    for i in range(n):
-        x, y, z = cone_vectors[i]
-        undercuts = get_undercuts(mesh, x, y, z)
-        cone_accessibility[i, :] = np.invert(undercuts)
-        
-    relaxed_accessibility = np.any(cone_accessibility, axis=0)
-    
-    return relaxed_accessibility

@@ -204,7 +204,7 @@ def main():
         from api.fields import result_field_bytes
         from processes.base import params_hash
         from processes.injection_molding import skeleton_cache_params
-        result_hash = params_hash(skeleton_cache_params(params))
+        result_hash = params_hash(skeleton_cache_params(workdir, params))
         for name, entry in by_id.items():
             data, dtype = result_field_bytes(
                 workdir, "injection_molding", "wall_skeleton", result_hash, name)
@@ -243,7 +243,7 @@ def main():
             from processes.injection_molding import skeleton_cache_params
             skel = load_result_arrays(
                 wd, "injection_molding", "wall_skeleton",
-                skeleton_cache_params(apply_defaults(
+                skeleton_cache_params(wd, apply_defaults(
                     INJ.analysis("wall_skeleton"), {})))
             check("thickness field aligns to disk vertices",
                   len(skel["thickness"]) == len(verts),

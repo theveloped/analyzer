@@ -9,7 +9,7 @@ import {
 import type { Manifest } from '../api/types';
 import { clearFieldCache, fetchBin, fetchField } from '../fields/fields';
 import { getPlugin } from '../registry';
-import type { ViewCtx } from '../registry/types';
+import type { LegendFocus, ViewCtx } from '../registry/types';
 import { useStore } from '../state/store';
 import { Scene3D } from './scene';
 
@@ -64,6 +64,11 @@ async function boot() {
 
 export async function refreshParts() {
   useStore.getState().set({ parts: await fetchParts() });
+}
+
+/** Fly the camera to a legend entry's face group. */
+export function flyToFocus(focus: LegendFocus) {
+  scene?.flyTo(focus.center, focus.direction, focus.radius);
 }
 
 export async function selectPart(partId: string) {
@@ -167,7 +172,9 @@ function buildCtx(): ViewCtx | null {
     highlights,
     getField: fetchField,
     paintFaces: (colorOf) => theScene.paintFaces(colorOf),
-    setLines: (positions, color) => theScene.setLines(positions, color),
+    paintCorners: (colorOf) => theScene.paintCorners(colorOf),
+    setLines: (positions, color, depthTest) =>
+      theScene.setLines(positions, color, depthTest),
     setArrows: (arrows) => theScene.setArrows(arrows),
     setGraph: (key, nodes, edges, radii) => {
       graphTouched = true;

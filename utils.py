@@ -20,6 +20,19 @@ def file_fingerprint(path, length=12):
     return digest.hexdigest()[:length]
 
 
+def files_fingerprint(paths, length=12):
+    """Short combined content hash of several files, in order; None if any
+    is missing. Same role as file_fingerprint over a set of artifacts."""
+    digest = hashlib.sha1()
+    for path in paths:
+        if not os.path.exists(path):
+            return None
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                digest.update(chunk)
+    return digest.hexdigest()[:length]
+
+
 def has_valid_extension(path: str, extensions: list[str] = []):
     if not any(path.lower().endswith(extension) for extension in extensions):
         raise ValueError(f"The file {path} does not have a valid extension! Allowed extensions: {extensions}")

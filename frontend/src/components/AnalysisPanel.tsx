@@ -3,11 +3,14 @@
 // refresh the manifest so new fields appear in the view selectors.
 
 import { useEffect, useMemo, useState } from 'react';
-import { fetchJob, submitJob } from '../api/client';
+import { fetchJob, fetchJobs, submitJob } from '../api/client';
 import type { AnalysisInfo, Job } from '../api/types';
 import { useStore } from '../state/store';
 import { refreshManifest, refreshParts, schedulePaint } from '../viewer/controller';
 import { initialValues, ParamForm, parseValues } from './ParamForm';
+
+// job ids with a live poll loop — module-level so remounts don't double-poll
+const watched = new Set<number>();
 
 function useAnalysisChoices() {
   const catalog = useStore((s) => s.catalog);
@@ -34,6 +37,23 @@ export function AnalysisPanel() {
     setError(null);
   }, [choice?.key]);
 
+  // Re-attach to jobs already running server-side (page reload, second tab):
+  // without this the progress display freezes on whatever was last seen even
+  // though the worker is still computing.
+  useEffect(() => {
+    if (!partId) return;
+    let cancelled = false;
+    void fetchJobs(partId).then((serverJobs) => {
+      if (cancelled) return;
+      const others = useStore.getState().jobs.filter((j) => j.part_id !== partId);
+      useStore.getState().set({ jobs: [...serverJobs, ...others] });
+      for (const j of serverJobs) {
+        if (j.status === 'queued' || j.status === 'running') void watch(j);
+      }
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [partId]);
+
   async function run() {
     if (!partId || !choice) return;
     setError(null);
@@ -49,18 +69,34 @@ export function AnalysisPanel() {
   }
 
   async function watch(job: Job) {
-    let current = job;
-    while (current.status === 'queued' || current.status === 'running') {
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      current = await fetchJob(job.id);
-      useStore.getState().set({
-        jobs: useStore.getState().jobs.map((j) => (j.id === current.id ? current : j)),
-      });
-    }
-    if (current.status === 'done') {
-      await refreshParts();
-      await refreshManifest();
-      schedulePaint(true);
+    if (watched.has(job.id)) return;
+    watched.add(job.id);
+    try {
+      let current = job;
+      let misses = 0;
+      while (current.status === 'queued' || current.status === 'running') {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        try {
+          current = await fetchJob(job.id);
+          misses = 0;
+        } catch {
+          // transient poll failure (sleep, hiccup) must not orphan a job
+          // that is still running server-side; a restarted server forgets
+          // its jobs, so persistent failures mean the job is gone
+          if (++misses >= 30) break;
+          continue;
+        }
+        useStore.getState().set({
+          jobs: useStore.getState().jobs.map((j) => (j.id === current.id ? current : j)),
+        });
+      }
+      if (current.status === 'done') {
+        await refreshParts();
+        await refreshManifest();
+        schedulePaint(true);
+      }
+    } finally {
+      watched.delete(job.id);
     }
   }
 

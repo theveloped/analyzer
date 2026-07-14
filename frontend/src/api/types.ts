@@ -45,6 +45,8 @@ export interface Manifest {
     normals_url: string;
   } | null;
   directions: number[][];
+  /** directions were computed on an older mesh — re-run prep/directions */
+  directions_stale?: boolean;
   fields: FieldDescriptor[];
   results: ResultEntry[];
   highlights_url: string | null;

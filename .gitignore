@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 zcache/
+/parts/
 /testpart_42/
 /aligator/
 results/
