@@ -312,8 +312,15 @@ built from two maps that already exist in the pipeline: the **inverse tool offse
 `tip_position_map` (the grey dilation that is the first half of the closing) and the
 per-radius clearance dilation. Contact offsets are ring/angle *sampled* (constant
 budget, ~1k samples regardless of tool size; skipping candidates is strictly
-conservative), so each field costs O(samples × verts) — ~0.7 s at 34k verts —
-independent of the tool diameter. Both dilations are decomposed by the same
+conservative), so each field costs O(samples × verts) — independent of the tool
+diameter. The vertex term is the one that bites on real parts, so the sampling
+loop is engineered to the memory floor: both maps edge-padded and interleaved
+into one complex64 plane (a single 8-byte gather per axis candidate through a
+shifted view), offsets grouped into equal-profile rings whose feasibility
+threshold hoists out of the inner loop, and vertices processed in spatially
+sorted chunks that keep the gather footprint cache-resident — ~15 s at 880k
+verts where the direct loop takes ~4 min (a reference implementation stays in
+zmap.py; test_zmap.py A/B-checks the two to float32 noise). Both dilations are decomposed by the same
 Minkowski identity as the 3D path (tool bottom = disk ⊕ sphere → row-decomposed
 flat dilation + chunked spherical dilations, `ball(r1) ⊕ ball(r2) = ball(r1+r2)`),
 which turns the naive O((D/pixel)²) structuring elements into ~O(D/pixel): a D16

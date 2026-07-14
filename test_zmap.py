@@ -231,6 +231,48 @@ def main():
         check("vertex-centred wall estimate (for contrast)", abs(value - 2.5) < 0.2,
               f"{value:.3f} expected 2.5 (underestimates flank contact by rc)")
 
+        # --- the chunked fast path must match the reference offset loop to
+        # float32 noise, on the real fixture and on randomized micro maps
+        # (borders, brackets outside the map, all-infeasible fallback)
+        print("=== tip-aware stickout: fast path vs reference ===")
+        from zmap import (FREE_SPACE, _tip_aware_min_stickout_ref,
+                          tip_aware_min_stickout)
+
+        worst = 0.0
+        clear_map = cache._clearance_map(6.0)
+        for tip_d, tip_rc in [(4.0, 2.0), (4.0, 1.0), (4.0, 0.0)]:
+            tip_map = cache._tip_map(tip_d, tip_rc)
+            ref = _tip_aware_min_stickout_ref(
+                tip_map, clear_map, tip_d, tip_rc, PIXEL,
+                cache._fx, cache._fy, cache._vheight)
+            fast = tip_aware_min_stickout(
+                tip_map, clear_map, tip_d, tip_rc, PIXEL,
+                cache._fx, cache._fy, cache._vheight)
+            worst = max(worst, float(np.abs(ref - fast).max()))
+        check("fast stickout matches reference", worst <= 1e-3,
+              f"max |delta| = {worst:.2e}")
+
+        rng = np.random.default_rng(11)
+        micro_worst = 0.0
+        for _ in range(20):
+            heights_r = rng.uniform(-30.0, 30.0, size=(36, 48))
+            heights_r[rng.random((36, 48)) < 0.15] = FREE_SPACE
+            tip_r = heights_r + rng.uniform(0.0, 3.0, size=(36, 48))
+            clear_r = tip_r + rng.uniform(0.0, 20.0, size=(36, 48))
+            fx_r = rng.uniform(-2.0, 50.0, size=400)
+            fy_r = rng.uniform(-2.0, 38.0, size=400)
+            h_r = rng.uniform(-32.0, 32.0, size=400)
+            for rc in (0.0, 1.0, 2.5):
+                ref = _tip_aware_min_stickout_ref(
+                    tip_r, clear_r, 5.0, rc, 0.1, fx_r, fy_r, h_r)
+                fast = tip_aware_min_stickout(
+                    tip_r, clear_r, 5.0, rc, 0.1, fx_r, fy_r, h_r)
+                scale = np.maximum(np.abs(ref), 1.0)  # FREE_SPACE magnitudes
+                micro_worst = max(
+                    micro_worst, float((np.abs(ref - fast) / scale).max()))
+        check("fast stickout micro A/B (60 cases)", micro_worst <= 1e-4,
+              f"max relative delta = {micro_worst:.2e}")
+
         # --- a tool assembled from cached fields (new stickout, new holder
         # stack) must be near-instant: pure numpy over stored scalars. The
         # per-(tip, radius) stickout fields are part of the cache, so warm

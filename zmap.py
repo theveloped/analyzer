@@ -435,6 +435,57 @@ def _contact_offsets(diameter, corner_radius, pixel, max_rings=24, max_angles=48
     return offsets
 
 
+def _tip_aware_min_stickout_ref(tip_map, clear_map, diameter, corner_radius,
+                                pixel, fx, fy, height):
+    """Reference implementation of tip_aware_min_stickout: the direct
+    offset-by-offset loop the fast path must match to float noise. Kept for
+    the A/B checks in test_zmap.py — O(offsets x verts) with two fancy-index
+    gathers per offset, ~1000x slower than the chunked path on big parts."""
+    eps = 1.5 * pixel
+
+    ix, iy = _bracket_corners(fx, fy, tip_map.shape)  # (4, V)
+
+    best = np.full(ix.shape, np.inf)
+    for dy, dx, prof in _contact_offsets(diameter, corner_radius, pixel):
+        ax = np.clip(ix - dx, 0, tip_map.shape[1] - 1)
+        ay = np.clip(iy - dy, 0, tip_map.shape[0] - 1)
+        tip_req = height - prof
+        feasible = tip_map[ay, ax] <= tip_req + eps
+        value = clear_map[ay, ax] - tip_req
+        np.minimum(best, np.where(feasible, value, np.inf), out=best)
+
+    # vertices no contact offset can touch are tip-blocked anyway; fall back
+    # to the vertex-centred estimate so the field stays finite
+    fallback = clear_map[iy, ix] - height
+    best = np.where(np.isfinite(best), best, fallback)
+    return np.maximum(best.min(axis=0), 0.0)
+
+
+def _contact_rings(diameter, corner_radius, pixel, padded_width):
+    """_contact_offsets grouped by profile value, linearized into a map with
+    `padded_width` columns. All offsets of one ring share one profile, so
+    the feasibility threshold and the profile term hoist out of the
+    per-offset loop (rc=0 collapses every offset into a single ring)."""
+    rings = {}
+    for dy, dx, prof in _contact_offsets(diameter, corner_radius, pixel):
+        rings.setdefault(prof, []).append(dy * padded_width + dx)
+    return [(prof, offsets) for prof, offsets in rings.items()]
+
+
+def _interleaved_padded_maps(tip_map, clear_map, pad):
+    """(tip, clear) edge-padded by `pad` pixels and interleaved into one
+    complex64 plane (real = tip, imag = clear), flattened. Edge padding
+    replicates exactly the border value np.clip indexing reads, and the
+    single 8-byte gather per axis candidate replaces two float64
+    fancy-index gathers. Returns (flat plane, padded width)."""
+    tip_pad = np.pad(tip_map.astype(np.float32), pad, mode="edge")
+    clear_pad = np.pad(clear_map.astype(np.float32), pad, mode="edge")
+    pair = np.empty(tip_pad.shape + (2,), dtype=np.float32)
+    pair[..., 0] = tip_pad
+    pair[..., 1] = clear_pad
+    return pair.reshape(-1).view(np.complex64), tip_pad.shape[1]
+
+
 @log_execution_time
 def tip_aware_min_stickout(tip_map, clear_map, diameter, corner_radius, pixel,
                            fx, fy, height):
@@ -466,25 +517,77 @@ def tip_aware_min_stickout(tip_map, clear_map, diameter, corner_radius, pixel,
     fall outside the map clamp to the border; with the rendered margin those
     are exterior-air columns whose dilated values only ever err conservative
     (over-required stickout for axes far outside the silhouette).
+
+    Implementation (matches _tip_aware_min_stickout_ref to float32 noise):
+    the maps are edge-padded (== the reference's np.clip border reads) and
+    interleaved as one complex64 plane so each offset is a single 8-byte
+    gather through a shifted view — no per-offset index arithmetic. Offsets
+    group into profile rings whose threshold hoists out of the inner loop,
+    the mask fuses into a where= minimum, and vertices run in spatially
+    sorted chunks so the gather footprint stays cache-resident across the
+    whole offset set.
     """
-    eps = 1.5 * pixel
+    eps = np.float32(1.5 * pixel)
+    n = int(np.ceil((diameter / 2.0) / pixel))
+    pad = n + 1
 
     ix, iy = _bracket_corners(fx, fy, tip_map.shape)  # (4, V)
+    flat, padded_width = _interleaved_padded_maps(tip_map, clear_map, pad)
+    rings = _contact_rings(diameter, corner_radius, pixel, padded_width)
 
-    best = np.full(ix.shape, np.inf)
-    for dy, dx, prof in _contact_offsets(diameter, corner_radius, pixel):
-        ax = np.clip(ix - dx, 0, tip_map.shape[1] - 1)
-        ay = np.clip(iy - dy, 0, tip_map.shape[0] - 1)
-        tip_req = height - prof
-        feasible = tip_map[ay, ax] <= tip_req + eps
-        value = clear_map[ay, ax] - tip_req
-        np.minimum(best, np.where(feasible, value, np.inf), out=best)
+    # flat_ext[omax - off:][g0] == map[clip(iy - dy), clip(ix - dx)]: the
+    # zero prefix absorbs the largest positive shift so every offset is a
+    # view, and padded bracket indices never reach the prefix or the end
+    omax = n * padded_width + n
+    flat_ext = np.concatenate([np.zeros(omax, dtype=np.complex64), flat])
 
-    # vertices no contact offset can touch are tip-blocked anyway; fall back
-    # to the vertex-centred estimate so the field stays finite
-    fallback = clear_map[iy, ix] - height
-    best = np.where(np.isfinite(best), best, fallback)
-    return np.maximum(best.min(axis=0), 0.0)
+    g0 = (iy.astype(np.intp) + pad) * padded_width + (ix + pad)
+    height32 = np.asarray(height, dtype=np.float32)
+
+    # spatial sort: each chunk gathers from a compact map region that stays
+    # L2/L3-resident across all offsets (pure permutation — exact)
+    order = np.argsort(g0[0], kind="stable")
+    g0 = g0[:, order]
+    height32 = height32[order]
+
+    count = g0.shape[1]
+    chunk = 32768
+    out = np.empty(count, dtype=np.float32)
+    pairbuf = np.empty((4, chunk), dtype=np.complex64)
+    feasible = np.empty((4, chunk), dtype=bool)
+    ringbest = np.empty((4, chunk), dtype=np.float32)
+    best = np.empty((4, chunk), dtype=np.float32)
+
+    for start in range(0, count, chunk):
+        stop = min(start + chunk, count)
+        size = stop - start
+        g = g0[:, start:stop]
+        h = height32[start:stop]
+        pb, fb = pairbuf[:, :size], feasible[:, :size]
+        rb, bb = ringbest[:, :size], best[:, :size]
+        tips, clears = pb.real, pb.imag
+
+        bb.fill(np.inf)
+        for prof, offsets in rings:
+            thr = h - np.float32(prof) + eps
+            rb.fill(np.inf)
+            for offset in offsets:
+                np.take(flat_ext[omax - offset:], g, out=pb, mode="clip")
+                np.less_equal(tips, thr, out=fb)
+                np.minimum(rb, clears, out=rb, where=fb)
+            np.add(rb, np.float32(prof), out=rb)
+            np.minimum(bb, rb, out=bb)
+
+        # vertices no contact offset can touch are tip-blocked anyway; fall
+        # back to the vertex-centred estimate so the field stays finite
+        np.take(flat, g, out=pb, mode="clip")  # zero offset: own columns
+        value = bb - h
+        np.copyto(value, clears - h, where=~np.isfinite(bb))
+        out[start:stop] = value.min(axis=0)
+
+    result = np.empty(count, dtype=np.float32)
+    result[order] = out
+    return np.maximum(result, 0.0)
 
 
 @log_execution_time
