@@ -87,7 +87,7 @@ def fixture_brep(check):
             n_brep += 1
             explorer.Next()
 
-        verts, faces, ids, types, params = brep.mesh_step(path, deflection=0.5)
+        verts, faces, ids, types, params, _ = brep.mesh_step(path, deflection=0.5)
         check("brep face count matches TopExp",
               len(types) == n_brep and len(np.unique(ids)) == n_brep,
               f"{len(np.unique(ids))} ids / {n_brep} BREP faces")
@@ -140,7 +140,7 @@ def fixture_brep(check):
     # real STEP: id count matches OCC's face count
     shape = brep.load_step_shape("tests/testpart_42.stp")
     n = sum(1 for _ in brep.iter_faces(shape))
-    _, _, ids, types, _ = brep.mesh_step("tests/testpart_42.stp", deflection=0.5)
+    _, _, ids, types, _, _ = brep.mesh_step("tests/testpart_42.stp", deflection=0.5)
     check("testpart_42.stp face count", len(types) == n, f"{len(types)} / {n}")
 
 

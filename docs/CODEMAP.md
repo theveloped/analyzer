@@ -34,10 +34,10 @@ folder and re-uploads dedupe; the human name stays in `part.json`.
 | `fine_mesh.obj` | mesh | canonical analysis mesh |
 | `fine_verts.npy` / `fine_faces.npy` | mesh | float32 `(V,3)` / int `(F,3)` — **face/vertex indexing is stable from here on** |
 | `mesh_meta.json` | mesh | resolved `resolution` / `deflection` / `subdivide` / `diagonal`; `resolution/5` is the default zmap pixel of every later stage |
-| `normals.npy` | mesh | per-face unit normals `(F,3)` used for classification: exact BREP surface normals on analytic faces (STEP, written eagerly), lazy facet fallback otherwise (gitignored, regenerated) |
+| `normals.npy` | mesh | per-face unit normals `(F,3)` used for classification: exact BREP surface normals on every STEP face (quadrics from analytic params, freeform via UV evaluation on the live shape; written eagerly), lazy facet fallback otherwise (gitignored, regenerated) |
 | `brep_faces.npy` | mesh (STEP only) | int `(F,)` — source BREP face id per fine triangle |
 | `brep_edges.npy` / `brep_edge_pairs.npy` | mesh (STEP only) | BREP edge polylines + the two BREP face ids adjacent to each edge (parting-line rendering) |
-| `brep_meta.json` | mesh (STEP only) | per-BREP-face surface types + analytic `surface_params` (plane/cylinder/cone/sphere/torus — the basis for exact normals) |
+| `brep_meta.json` | mesh (STEP only) | per-BREP-face surface types + analytic `surface_params` (plane/cylinder/cone/sphere/torus; freeform faces have `null` params — their exact normals are evaluated at mesh time) |
 | `directions.npy` | directions | float `(D,3)`, laid out as antipodal pairs `[d0,-d0,d1,-d1,...]`; `--axes` prepends ±X/±Y/±Z as indices 0–5 (+Z = 4) |
 | `accessibility.npy` | directions | bool `(D,F)` — face f visible from direction d |
 | `directions_meta.json` | directions | mesh fingerprint + pixel the accessibility was computed at; a re-meshed workdir flags `directions_stale` in the manifest |

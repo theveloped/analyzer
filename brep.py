@@ -114,8 +114,12 @@ def mesh_shape(shape, *, deflection=0.5, angular_deflection=0.5):
 
     Returns (verts float64[V,3], faces int32[F,3], face_ids int32[F],
     surface_types list[str] per BREP face, surface_params list per BREP
-    face). The mesh is conformal: vertices along shared BREP edges are
-    welded into single entries.
+    face, corner_uv float64[F,3,2]). The mesh is conformal: vertices along
+    shared BREP edges are welded into single entries. corner_uv holds each
+    triangle corner's surface parameters — per corner, not per vertex,
+    because welded BREP-edge vertices sit on faces with different
+    parametrizations. Only non-analytic faces (no surface_params) carry
+    UVs; quadric faces get NaN rows since their normals never need them.
     """
     from OCP.BRep import BRep_Tool
     from OCP.BRepAdaptor import BRepAdaptor_Surface
@@ -128,6 +132,7 @@ def mesh_shape(shape, *, deflection=0.5, angular_deflection=0.5):
 
     all_points = []
     all_triangles = []
+    all_uv = []
     face_ids = []
     surface_types = []
     surface_params = []
@@ -162,6 +167,15 @@ def mesh_shape(shape, *, deflection=0.5, angular_deflection=0.5):
         if face.Orientation() == TopAbs_Orientation.TopAbs_REVERSED:
             tris = tris[:, ::-1]
 
+        if surface_params[-1] is None and triangulation.HasUVNodes():
+            uv_nodes = np.empty((n_nodes, 2), dtype=np.float64)
+            for i in range(1, n_nodes + 1):
+                p2 = triangulation.UVNode(i)
+                uv_nodes[i - 1] = (p2.X(), p2.Y())
+            all_uv.append(uv_nodes[tris])  # post-flip: corner k = faces[:, k]
+        else:
+            all_uv.append(np.full((n_tris, 3, 2), np.nan))
+
         all_points.append(points)
         all_triangles.append(tris + offset)
         face_ids.append(np.full(n_tris, face_index, dtype=np.int32))
@@ -187,10 +201,22 @@ def mesh_shape(shape, *, deflection=0.5, angular_deflection=0.5):
              & (faces[:, 0] != faces[:, 2]))
     faces = faces[valid]
     ids = ids[valid]
+    corner_uv = np.concatenate(all_uv)[valid]
 
     logger.info(f"Tessellated {len(surface_types)} BREP faces into "
                 f"{len(faces)} triangles / {len(verts)} welded vertices")
-    return verts, faces, ids, surface_types, surface_params
+    return verts, faces, ids, surface_types, surface_params, corner_uv
+
+
+def _vote_sign(areas, candidate, current):
+    """One sign per BREP face: area-weighted agreement of the candidate
+    normals with the current (facet) normals. Returns +1.0 / -1.0, or 0.0
+    when the vote is ambiguous (keep the facet normals then)."""
+    vote = float(np.sum(
+        areas * np.einsum("ij,ij->i", candidate, current)))
+    if abs(vote) < 1e-12:
+        return 0.0
+    return 1.0 if vote > 0 else -1.0
 
 
 def analytic_face_normals(verts, faces, face_ids, surface_params,
@@ -204,7 +230,8 @@ def analytic_face_normals(verts, faces, face_ids, surface_params,
     exact at any subdivision level. The sign is chosen once per BREP face by
     an area-weighted vote against the facet normals (REVERSED faces and hole
     walls come out outward without trusting individual sliver triangles).
-    Non-analytic faces and degenerate evaluations keep their facet normals.
+    Non-analytic faces (handled by freeform_face_normals while the shape is
+    alive) and degenerate evaluations keep their facet normals.
     """
     verts = np.asarray(verts, dtype=np.float64)
     faces = np.asarray(faces)
@@ -264,16 +291,115 @@ def analytic_face_normals(verts, faces, face_ids, surface_params,
             continue
         candidate = candidate / np.maximum(length, 1e-30)
 
-        # one sign per BREP face: area-weighted agreement with the facets
-        vote = float(np.sum(
-            areas[idx[valid]]
-            * np.einsum("ij,ij->i", candidate[valid], normals[idx[valid]])))
-        if abs(vote) < 1e-12:
+        sign = _vote_sign(areas[idx[valid]], candidate[valid],
+                          normals[idx[valid]])
+        if sign == 0.0:
             continue  # ambiguous — keep facet normals for this face
-        if vote < 0:
-            candidate = -candidate
-        normals[idx[valid]] = candidate[valid]
+        normals[idx[valid]] = sign * candidate[valid]
 
+    return normals
+
+
+@log_execution_time
+def freeform_face_normals(shape, verts, faces, face_ids, surface_params,
+                          coarse_faces, corner_uv, parent_facets, normals):
+    """True surface normals on non-analytic BREP faces (bspline, bezier,
+    revolution, extrusion, offset), evaluated on the live shape.
+
+    The analytic path covers the five quadrics from JSON-safe params; every
+    other surface would keep its facet normal, frozen at the coarse
+    tessellation's chord planes. Midpoint subdivision is affine, so a fine
+    face's centroid maps to the barycentric blend of its parent coarse
+    facet's corner UVs — BRepAdaptor_Surface.D1 at that parameter gives the
+    exact tangent plane, at any subdivision level. Each triangulation facet
+    is continuous in its face's UV domain, so the interpolation never
+    crosses a parametric seam. The sign is the same area-weighted
+    per-BREP-face vote the analytic path uses. Degenerate parents, poles
+    (|dU x dV| ~ 0) and non-C1 evaluations keep their facet normals.
+
+    ``normals`` is the analytic_face_normals output; returns an updated
+    copy. The D1 loop is per fine face by necessity (OCP evaluates one
+    parameter at a time) but only runs on the freeform subset.
+    """
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.gp import gp_Pnt, gp_Vec
+
+    verts = np.asarray(verts, dtype=np.float64)
+    faces = np.asarray(faces)
+    normals = np.array(normals, dtype=np.float64, copy=True)
+
+    no_params = np.array([params is None for params in surface_params])
+    uv_known = np.isfinite(corner_uv).all(axis=(1, 2))  # per coarse facet
+    target = no_params[face_ids] & uv_known[parent_facets]
+    if not target.any():
+        return normals
+
+    idx = np.flatnonzero(target)
+    tri = verts[faces[idx]]
+    centroids = tri.mean(axis=1)
+    areas = np.linalg.norm(
+        np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+
+    # barycentric coordinates of each centroid in its parent coarse facet
+    # (children are coplanar with the parent, so the 2x2 solve is exact)
+    corners = verts[np.asarray(coarse_faces)[parent_facets[idx]]]
+    e0 = corners[:, 1] - corners[:, 0]
+    e1 = corners[:, 2] - corners[:, 0]
+    d = centroids - corners[:, 0]
+    d00 = np.einsum("ij,ij->i", e0, e0)
+    d01 = np.einsum("ij,ij->i", e0, e1)
+    d11 = np.einsum("ij,ij->i", e1, e1)
+    denom = d00 * d11 - d01 * d01
+    ok = denom > 1e-12 * np.maximum(d00 * d11, 1e-300)  # sliver parents out
+    safe = np.where(ok, denom, 1.0)
+    wb = (d11 * np.einsum("ij,ij->i", d, e0)
+          - d01 * np.einsum("ij,ij->i", d, e1)) / safe
+    wc = (d00 * np.einsum("ij,ij->i", d, e1)
+          - d01 * np.einsum("ij,ij->i", d, e0)) / safe
+    parent_uv = corner_uv[parent_facets[idx]]
+    uvs = (parent_uv[:, 0]
+           + wb[:, None] * (parent_uv[:, 1] - parent_uv[:, 0])
+           + wc[:, None] * (parent_uv[:, 2] - parent_uv[:, 0]))
+
+    brep_faces_list = list(iter_faces(shape))
+    fine_ids = face_ids[idx]
+    candidate = np.zeros((len(idx), 3))
+    evaluated = np.zeros(len(idx), dtype=bool)
+
+    point, du, dv = gp_Pnt(), gp_Vec(), gp_Vec()
+    for fid in np.unique(fine_ids):
+        rows = np.flatnonzero((fine_ids == fid) & ok)
+        if not rows.size:
+            continue
+        adaptor = BRepAdaptor_Surface(brep_faces_list[fid])
+        for row in rows:
+            try:
+                adaptor.D1(float(uvs[row, 0]), float(uvs[row, 1]),
+                           point, du, dv)
+            except Exception:
+                continue  # non-C1 interval: keep the facet normal
+            n = du.Crossed(dv)
+            candidate[row] = (n.X(), n.Y(), n.Z())
+            evaluated[row] = True
+
+    lengths = np.linalg.norm(candidate, axis=1, keepdims=True)
+    evaluated &= lengths[:, 0] > 1e-9
+    evaluated &= np.isfinite(candidate).all(axis=1)
+    candidate = candidate / np.maximum(lengths, 1e-30)
+
+    updated = 0
+    for fid in np.unique(fine_ids):
+        rows = np.flatnonzero((fine_ids == fid) & evaluated)
+        if not rows.size:
+            continue
+        sign = _vote_sign(areas[rows], candidate[rows], normals[idx[rows]])
+        if sign == 0.0:
+            continue  # ambiguous — keep facet normals for this face
+        normals[idx[rows]] = sign * candidate[rows]
+        updated += rows.size
+
+    logger.info(f"Evaluated true normals on {updated} of {len(idx)} fine "
+                f"faces across {int(no_params.sum())} freeform BREP faces")
     return normals
 
 
@@ -287,7 +413,9 @@ def subdivide_tagged(verts, faces, face_ids, max_edge_len, max_rounds=32):
     midpoint and re-triangulate each face by its split pattern (1→2, 2→3,
     3→4 children); children inherit the parent's tag. Edge split decisions
     are per unique edge, so adjacent faces stay conformal (shared vertices
-    along all edges, including BREP edges).
+    along all edges, including BREP edges). ``face_ids`` may be (F,) or
+    (F, K) — every operation is a row selection, so K tag columns (e.g.
+    BREP id + parent facet index) ride through unchanged.
     """
     verts = np.asarray(verts, dtype=np.float64)
     faces = np.asarray(faces, dtype=np.int64)

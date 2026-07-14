@@ -150,10 +150,10 @@ def _facet_normals(verts, faces):
 def load_face_normals(workdir):
     """Per-face unit normals for classification (facing/wall/draft tests).
 
-    mesh_part stores exact BREP surface normals for STEP parts (analytic
-    faces; facet fallback elsewhere) as normals.npy — served here when fresh.
-    Legacy/STL workdirs get facet cross-product normals, computed lazily and
-    cached in the same file.
+    mesh_part stores exact BREP surface normals for STEP parts (quadrics
+    analytically, freeform surfaces via UV evaluation on the live shape) as
+    normals.npy — served here when fresh. Legacy/STL workdirs get facet
+    cross-product normals, computed lazily and cached in the same file.
     """
     faces_path = os.path.join(workdir, FINE_FACES_FILE)
     normals_path = os.path.join(workdir, NORMALS_FILE)
@@ -261,13 +261,20 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
                     f"{deflection:.3f} mm, subdivide {subdivide:.2f} mm")
 
         _report(progress, 0.0, "tessellating BREP")
-        verts, faces, brep_ids, surface_types, surface_params = brep.mesh_shape(
-            shape, deflection=deflection)
+        (verts, faces, brep_ids, surface_types, surface_params,
+         corner_uv) = brep.mesh_shape(shape, deflection=deflection)
 
+        # parent-facet ids ride along with the BREP ids through subdivision:
+        # children stay coplanar with their parent, so the parent's corner
+        # UVs recover any child centroid's surface parameters exactly
+        coarse_faces = faces
+        parents = np.arange(len(faces), dtype=np.int32)
         if subdivide:
             _report(progress, 0.4, "subdividing mesh (tag preserving)")
-            verts, faces, brep_ids = brep.subdivide_tagged(
-                verts, faces, brep_ids, subdivide)
+            verts, faces, tags = brep.subdivide_tagged(
+                verts, faces, np.stack([brep_ids, parents], axis=1),
+                subdivide)
+            brep_ids, parents = tags[:, 0], tags[:, 1]
 
         verts = verts.astype(np.float32)
         mesh = mn.meshFromFacesVerts(faces, verts)
@@ -343,13 +350,17 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
         np.save(os.path.join(workdir, BREP_EDGE_PAIRS_FILE), id_pairs)
         counts["brep_edge_segments"] = int(len(segments))
 
-        # exact surface normals on analytic BREP faces (facet fallback for
-        # bspline etc.) — classification uses these, geometry stays facet.
+        # exact surface normals on every BREP face — quadrics from their
+        # analytic params, freeform (bspline etc.) via UV evaluation on the
+        # live shape. Classification uses these, geometry stays facet.
         # Written LAST so the normals cache is fresh by the mtime rule.
         _report(progress, 0.95, "computing exact surface normals")
         normals = brep.analytic_face_normals(
             verts, faces, brep_ids, surface_params,
             _facet_normals(verts, faces))
+        normals = brep.freeform_face_normals(
+            shape, verts, faces, brep_ids, surface_params,
+            coarse_faces, corner_uv, parents, normals)
         np.save(os.path.join(workdir, NORMALS_FILE),
                 normals.astype("<f4"))
 
@@ -1547,20 +1558,34 @@ def precompute_fields(workdir, *, directions, pixel=None, tips=(), clearances=()
     tips = [tips_entry if isinstance(tips_entry, tuple) else tuple(tips_entry)
             for tips_entry in tips]
 
+    # per-field progress: each field is minutes on a big part, so a
+    # per-direction report would freeze the UI bar for the whole run
+    per_direction = 1 + len(tips) + len(clearances) + len(tips) * len(clearances)
+    total = max(len(directions) * per_direction, 1)
+    done = 0
+
+    def _step(message):
+        nonlocal done
+        _report(progress, done / total, message)
+        done += 1
+
     computed = []
-    for step, direction_index in enumerate(directions):
+    for direction_index in directions:
         logger.info(f"Direction {direction_index}")
-        _report(progress, step / max(len(directions), 1),
-                f"direction {direction_index}")
+        _step(f"direction {direction_index}: height map")
         cache = DirectionCache(workdir, direction_index, verts=verts, faces=faces,
                                pixel=pixel, window=window)
         for diameter, corner_radius in tips:
+            _step(f"direction {direction_index}: tip {diameter:g}:{corner_radius:g}")
             cache.tip_gap(diameter, corner_radius)
         for radius in clearances:
+            _step(f"direction {direction_index}: clearance r={radius:g}")
             cache.clearance(radius)
         # tip-aware holder stickout fields per (tip, cylinder radius)
         for diameter, corner_radius in tips:
             for radius in clearances:
+                _step(f"direction {direction_index}: stickout "
+                      f"{diameter:g}:{corner_radius:g} r={radius:g}")
                 cache.tip_min_stickout(diameter, corner_radius, radius)
         computed.append(int(direction_index))
 
