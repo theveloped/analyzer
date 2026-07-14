@@ -98,7 +98,7 @@ def synthetic_mold_result(workdir, verts, faces, *, a_only_nx=False):
     membership[np.abs(normals[:, 2]) <= 0.5] |= 3
     if a_only_nx:
         membership[normals[:, 0] > 0.5] = 1
-    stats = {"schema": 2, "brep": False, "options": [{
+    stats = {"schema": pipeline.MOLD_STATS_SCHEMA, "brep": False, "options": [{
         "pair": [0, 1], "slides": [], "feasible": True, "coverage": 1.0,
         "arrows": [{"kind": "main_a", "direction": [0.0, 0.0, 1.0]},
                    {"kind": "main_b", "direction": [0.0, 0.0, -1.0]}],
@@ -189,8 +189,12 @@ def main():
                                     {**params, "schema": EJECTION_SCHEMA,
                                      "mesh": pipeline.mesh_fingerprint(workdir)})
         draft = arrays["draft_deg"]
-        normals, _ = ejection.face_geometry(verts,
-                                            faces.astype(np.int64))
+        # facet normals: the fixture is a synthetic BREP-less box, so the
+        # facets are the ground truth (same rule as load_face_normals)
+        tri = verts[faces.astype(np.int64)].astype(np.float64)
+        normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+        normals /= np.maximum(
+            np.linalg.norm(normals, axis=1, keepdims=True), 1e-30)
         walls = np.abs(normals[:, 2]) < 0.01
         tops = np.abs(normals[:, 2]) > 0.99
         check("draft ~0 on walls, ~90 on top/bottom",

@@ -42,6 +42,10 @@ BREP_EDGES_FILE = "brep_edges.npy"
 BREP_EDGE_PAIRS_FILE = "brep_edge_pairs.npy"
 HIGHLIGHT_FILE = "highlights.json"
 
+# mold_orientation stats schema — must track MOLD_SCHEMA in
+# processes/injection_molding.py (importing processes here would be circular)
+MOLD_STATS_SCHEMA = 3
+
 MESH_EXTENSIONS = [".stl", ".stp", ".step"]
 
 
@@ -67,6 +71,17 @@ def directions_fingerprint(workdir):
     caches instead of silently renumbering them.
     """
     return file_fingerprint(os.path.join(workdir, DIRECTIONS_FILE))
+
+
+def accessibility_fingerprint(workdir):
+    """Short content hash of accessibility.npy (None before prep/directions).
+
+    Re-running directions with different visibility parameters (tollerance,
+    pixel, chord_error) changes the matrix while directions.npy stays
+    byte-identical — results derived from the matrix salt this in too so
+    they aren't served stale.
+    """
+    return file_fingerprint(os.path.join(workdir, ACCESSIBILITY_FILE))
 
 
 def mesh_fingerprint(workdir):
@@ -210,6 +225,18 @@ def part_resolution(workdir):
     return float(resolution) if resolution else None
 
 
+def part_deflection(workdir):
+    """The BREP tessellation deflection the part was meshed at — the chord
+    error bound of the fine mesh. 0.0 for STL/heal meshes (their facets are
+    the ground truth) and legacy workdirs without mesh_meta.json."""
+    meta_path = os.path.join(workdir, MESH_META_FILE)
+    if not os.path.exists(meta_path):
+        return 0.0
+    with open(meta_path) as f:
+        deflection = json.load(f).get("deflection")
+    return float(deflection) if deflection else 0.0
+
+
 def resolve_pixel(workdir, pixel, fallback=1e-1):
     """Tool-field zmap pixel: explicit value, else resolution/5, else the
     legacy fixed default."""
@@ -224,14 +251,16 @@ def resolve_pixel(workdir, pixel, fallback=1e-1):
 
 
 def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
-              subdivide=None, deflection=None, progress=None):
+              subdivide=None, deflection=None, obj=False, progress=None):
     """Canonicalize an input STL/STEP into a part working directory.
 
-    Writes fine_mesh.obj + fine_verts.npy + fine_faces.npy (the stable face
-    indexing every later stage refers to). STEP input tessellates through
-    the BREP (brep.mesh_shape) so every fine face carries its source BREP
-    face id (brep_faces.npy) — healing destroys the surfaces and falls back
-    to the anonymous meshlib path, as does STL input.
+    Writes fine_verts.npy + fine_faces.npy (the stable face indexing every
+    later stage refers to). STEP input tessellates through the BREP
+    (brep.mesh_shape) so every fine face carries its source BREP face id
+    (brep_faces.npy) — healing destroys the surfaces and falls back to the
+    anonymous meshlib path, as does STL input. ``obj=True`` additionally
+    exports fine_mesh.obj for external tools — nothing in the pipeline or
+    viewer reads it, and at fine resolutions it costs real time and disk.
 
     ``resolution`` is the single analysis-resolution knob: it defaults the
     subdivide edge target (= resolution), the BREP tessellation sag
@@ -304,7 +333,6 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
         workdir = os.path.join(os.path.abspath("."), input_name)
 
     ensure_directory(workdir)
-    obj_path = os.path.join(workdir, FINE_MESH_FILE)
     verts_path = os.path.join(workdir, FINE_VERTS_FILE)
     faces_path = os.path.join(workdir, FINE_FACES_FILE)
 
@@ -315,8 +343,10 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
     logger.debug(f"Storing faces: {faces_path}")
     np.save(faces_path, faces)
 
-    logger.debug(f"Storing obj file: {obj_path}")
-    save_mesh(mesh, obj_path)
+    if obj:
+        obj_path = os.path.join(workdir, FINE_MESH_FILE)
+        logger.debug(f"Storing obj file: {obj_path}")
+        save_mesh(mesh, obj_path)
 
     mesh_meta = {
         "resolution": float(resolution),
@@ -355,14 +385,34 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
         # live shape. Classification uses these, geometry stays facet.
         # Written LAST so the normals cache is fresh by the mtime rule.
         _report(progress, 0.95, "computing exact surface normals")
-        normals = brep.analytic_face_normals(
+        normals, exact = brep.analytic_face_normals(
             verts, faces, brep_ids, surface_params,
             _facet_normals(verts, faces))
-        normals = brep.freeform_face_normals(
+        normals, freeform_exact = brep.freeform_face_normals(
             shape, verts, faces, brep_ids, surface_params,
             coarse_faces, corner_uv, parents, normals)
+        exact |= freeform_exact
         np.save(os.path.join(workdir, NORMALS_FILE),
                 normals.astype("<f4"))
+
+        # surface the survivors: fine faces whose classification normal is
+        # still the chord facet's (unhandled surface type, missing UVs,
+        # degeneracies, ambiguous sign votes) — silent chord-frozen normals
+        # are how near-tangent classification speckle sneaks back in
+        no_params_face = np.array(
+            [p is None for p in surface_params])[brep_ids]
+        no_uv = no_params_face & ~np.isfinite(corner_uv).all(
+            axis=(1, 2))[parents]
+        kept = ~exact
+        counts["normals_exact"] = int(exact.sum())
+        counts["normals_facet"] = int(kept.sum())
+        counts["normals_facet_no_uv"] = int((kept & no_uv).sum())
+        if kept.any():
+            logger.info(
+                f"{int(kept.sum())} of {len(faces)} fine faces kept facet "
+                f"normals ({int((kept & no_uv).sum())} on freeform faces "
+                f"without UV nodes, {int((kept & ~no_uv).sum())} degenerate "
+                f"or ambiguous)")
 
     return {"workdir": workdir, "counts": counts}
 
@@ -400,10 +450,12 @@ def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
     mesh = mn.meshFromFacesVerts(faces, verts)
 
     face_count = len(faces)
+    chord_error = part_deflection(workdir)
     _report(progress, 0.1, f"accessibility for {directions.shape[0]} directions")
     accessibility = compute_accessibility(mesh, directions, face_count,
                                           tolerance_deg=tollerance, pixel=pixel,
-                                          normals=load_face_normals(workdir))
+                                          normals=load_face_normals(workdir),
+                                          chord_error=chord_error)
 
     directions_path = os.path.join(workdir, DIRECTIONS_FILE)
     accessibility_path = os.path.join(workdir, ACCESSIBILITY_FILE)
@@ -418,7 +470,8 @@ def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
     # directions stale when the workdir is re-meshed afterwards
     with open(os.path.join(workdir, DIRECTIONS_META_FILE), "w") as f:
         json.dump({"mesh_fingerprint": mesh_fingerprint(workdir),
-                   "pixel": None if pixel is None else float(pixel)}, f)
+                   "pixel": None if pixel is None else float(pixel),
+                   "chord_error": float(chord_error)}, f)
 
     return {
         "directions": int(directions.shape[0]),
@@ -533,7 +586,7 @@ def mold_orientation(workdir, *, max_slides=2, slide_tollerance=2.0, count=10,
                 "role": "data", "dtype": "u1", "count": int(len(defaults))}
 
     stats = {
-        "schema": 2,
+        "schema": MOLD_STATS_SCHEMA,
         "face_count": int(accessibility.shape[1]),
         "direction_count": int(directions.shape[0]),
         "directions_fingerprint": directions_fingerprint(workdir),
@@ -832,12 +885,16 @@ def _in_sphere_settings(max_radius):
     return settings
 
 
-def _skeleton_centers(mesh, verts, faces, radii, settings, progress):
+def _skeleton_centers(verts, faces, radii, face_normals):
     """Inscribed-sphere centers per vertex.
 
     meshlib constrains each sphere's center to the inward normal at the
     vertex, so centers reconstruct vectorized as p - n*r — exact on smooth
-    regions. Two suspect classes are handled without meshlib's per-vertex
+    regions. The per-vertex normal is the area-weighted average of the
+    incident faces' exact surface normals (normals.npy): within a BREP face
+    those vary smoothly, so centers stop wobbling with the tessellation's
+    chord facets (the false creases facet-averaged normals paint into the
+    skeleton). Two suspect classes are handled without meshlib's per-vertex
     findInSphere (which can hang indefinitely on the degenerate, split
     topology of welded STEP meshes and cannot be interrupted from Python):
 
@@ -849,11 +906,16 @@ def _skeleton_centers(mesh, verts, faces, radii, settings, progress):
       the downstream absorption pass folds rim/crease nodes into their wall,
       so the estimate is kept as-is.
     """
-    from meshlib import mrmeshpy as mm
     from scipy.spatial import cKDTree
 
-    normals = _per_vertex(
-        mn.toNumpyArray(mm.computePerVertNormals(mesh)), len(verts))
+    tri = verts[faces].astype(np.float64)
+    face_weights = np.linalg.norm(
+        np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
+    accum = np.zeros((len(verts), 3))
+    np.add.at(accum, faces.reshape(-1),
+              np.repeat(face_normals * face_weights[:, None], 3, axis=0))
+    normals = accum / np.maximum(
+        np.linalg.norm(accum, axis=1, keepdims=True), 1e-30)
     centers = verts.astype(np.float64) - normals * radii[:, None]
 
     tri = verts[faces].astype(np.float64)
@@ -1006,7 +1068,7 @@ def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
 
     _report(progress, 0.3, "sphere centers")
     centers, radii, corrected = _skeleton_centers(
-        mesh, verts, faces, radii, settings, progress)
+        verts, faces, radii, load_face_normals(workdir).astype(np.float64))
     thickness = radii * 2.0
 
     # nodes: one per vertex with a meaningful sphere; tiny corner spheres
@@ -1139,7 +1201,7 @@ def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
 
 
 def _latest_mold_orientation(workdir):
-    """Newest schema-2 mold_orientation result: (hash, payload, npz) or Nones.
+    """Newest current-schema mold_orientation result: (hash, payload, npz) or Nones.
 
     "results" mirrors processes.base.RESULTS_DIR — importing processes here
     would be circular (processes imports pipeline).
@@ -1154,7 +1216,7 @@ def _latest_mold_orientation(workdir):
             continue
         with open(json_path) as f:
             payload = json.load(f)
-        if payload.get("stats", {}).get("schema") != 2:
+        if payload.get("stats", {}).get("schema") != MOLD_STATS_SCHEMA:
             continue
         mtime = os.path.getmtime(json_path)
         if best is None or mtime > best[0]:
@@ -1433,6 +1495,7 @@ def ejection_sticking(workdir, *, skeleton, skeleton_hash, mesh_spec=None,
     Returns (stats, arrays, field_meta) — storing is the caller's job.
     """
     import ejection
+    import machining
 
     verts, faces = load_mesh_arrays(workdir)
     faces = faces.astype(np.int64, copy=False)
@@ -1440,7 +1503,7 @@ def ejection_sticking(workdir, *, skeleton, skeleton_hash, mesh_spec=None,
     vert_node = np.asarray(skeleton["cluster_vert_node"])
 
     _report(progress, 0.1, "face geometry")
-    _, areas = ejection.face_geometry(verts, faces)
+    areas = machining.face_areas(verts, faces)
     normals = load_face_normals(workdir)
 
     # pull axis + B-side scope from the newest mold orientation, if any

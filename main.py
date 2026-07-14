@@ -42,6 +42,7 @@ if __name__ == "__main__":
     parser_mesh.add_argument("--deflection", help="override: BREP tessellation deflection for STEP input in mm (default: resolution/8)", type=float, default=None)
     parser_mesh.add_argument("--heal", help="heal the mesh before storing (voxel remesh at resolution/5 - for dirty STLs, NOT for clean STEP)", action="store_true")
     parser_mesh.add_argument("--subdivide", help="override: max edge length, refines without changing the shape (default: resolution, 0 disables)", type=float, default=None)
+    parser_mesh.add_argument("--obj", help="also export fine_mesh.obj for external tools (nothing in the pipeline reads it)", action="store_true")
     parser_mesh.add_argument("--serve", help="serve results in browser", action="store_true")
     
     # Create the parser for the "directions" command
@@ -148,7 +149,7 @@ if __name__ == "__main__":
 
         result = mesh_part(args.input, args.output, heal=args.heal,
                            resolution=args.resolution, subdivide=args.subdivide,
-                           deflection=args.deflection)
+                           deflection=args.deflection, obj=args.obj)
 
         if args.serve:
             serve_workdir(result["workdir"])

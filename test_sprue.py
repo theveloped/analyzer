@@ -78,7 +78,7 @@ def load_arrays(workdir, params):
 
 
 def synthetic_mold_result(workdir, verts, faces):
-    """Store a schema-2 mold_orientation result with membership derived
+    """Store a current-schema mold_orientation result with membership derived
     from face normals: A reaches +Z-facing faces, B reaches -Z-facing ones,
     near-vertical walls carry both bits (the STL / no-BREP fallback path)."""
     tri = verts[faces]
@@ -89,7 +89,8 @@ def synthetic_mold_result(workdir, verts, faces):
     membership[normals[:, 2] > 0.5] |= 1
     membership[normals[:, 2] < -0.5] |= 2
     membership[np.abs(normals[:, 2]) <= 0.5] |= 3
-    stats = {"schema": 2, "options": [], "brep": False}
+    stats = {"schema": pipeline.MOLD_STATS_SCHEMA, "options": [],
+             "brep": False}
     store_result(workdir, "injection_molding", "mold_orientation",
                  {"synthetic": True}, stats,
                  arrays={"membership_0": membership},

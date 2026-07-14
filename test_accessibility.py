@@ -130,6 +130,132 @@ def fixture_brep_curved(check):
               f"over {int(wall.sum())} faces")
 
 
+def fixture_fillet_coarse(check):
+    """Convex outer fillets must be fully accessible from the pull axis at
+    the default coarse resolution (0.5 mm). Regression for chord-recession
+    self-shadowing: the zmap height map is rendered from chord facets that
+    sit up to `deflection` inside the true surface, so near-tangent fillet
+    triangles read occluded at 0.5 mm (and only meshing at 0.1 mm hid it).
+    Geometry: box 20x20x10 (top at z=0) with r=2 fillets on the four top
+    edges — four cylinder faces plus four sphere corner patches."""
+    import json
+    import tempfile
+
+    import molding
+    import pipeline
+    from OCP.BRepAdaptor import BRepAdaptor_Curve
+    from OCP.BRepFilletAPI import BRepFilletAPI_MakeFillet
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_EDGE
+    from OCP.TopExp import TopExp
+    from OCP.TopoDS import TopoDS
+    from OCP.TopTools import TopTools_IndexedMapOfShape
+
+    box = BRepPrimAPI_MakeBox(gp_Pnt(-10.0, -10.0, -10.0), 20.0, 20.0,
+                              10.0).Shape()
+    edges = TopTools_IndexedMapOfShape()
+    TopExp.MapShapes_s(box, TopAbs_EDGE, edges)
+    fillet = BRepFilletAPI_MakeFillet(box)
+    added = 0
+    for i in range(1, edges.Extent() + 1):
+        edge = TopoDS.Edge_s(edges.FindKey(i))
+        curve = BRepAdaptor_Curve(edge)
+        mid = curve.Value(0.5 * (curve.FirstParameter()
+                                 + curve.LastParameter()))
+        if mid.Z() > -0.5:  # the four edges of the top face
+            fillet.Add(2.0, edge)
+            added += 1
+    check("fillet fixture: four top edges rounded", added == 4,
+          f"{added} edges")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = write_step(os.path.join(tmp, "rounded.stp"), fillet.Shape())
+        wd = os.path.join(tmp, "wd")
+        os.makedirs(wd)
+        pipeline.mesh_part(path, wd, resolution=0.5)
+        pipeline.compute_directions(wd, count=2, axes=True)
+
+        brep_ids = np.load(os.path.join(wd, "brep_faces.npy"))
+        with open(os.path.join(wd, "brep_meta.json")) as f:
+            types = json.load(f)["surface_types"]
+        rounded = np.isin(brep_ids, [i for i, t in enumerate(types)
+                                     if t in ("cylinder", "sphere")])
+        access = np.load(os.path.join(wd, "accessibility.npy"))
+
+        frac = access[4][rounded].mean()
+        check("fillets fully visible from +Z at 0.5 mm", frac == 1.0,
+              f"accessible {frac * 100:6.2f}%  "
+              f"faces {int(rounded.sum())}")
+
+        # the mold amplification: one bad triangle flips a whole BREP face
+        membership = molding.membership_field([4, 5], [], access)
+        valid = molding.brep_validity(membership, brep_ids, 2)
+        default = molding.brep_defaults(membership, valid, brep_ids)
+        bad = np.flatnonzero(default >= molding.DEFAULT_CONFLICT)
+        check("no conflict/internal BREP faces for the +-Z pull",
+              bad.size == 0,
+              f"{bad.size} of {len(default)} faces flipped "
+              f"({[types[b] for b in bad[:6]]})")
+
+
+def fixture_flush_ledge(check):
+    """A tangent wall next to a flush overhanging ledge must stay visible.
+
+    The height map samples rays at pixel centers, so an edge-on wall is
+    invisible to its own raster column — the column reads whatever surface
+    lies at that pixel center instead. When a down-facing ledge starts
+    (sub-pixel) flush with the wall, the one-pixel lateral push lands the
+    occlusion sample under the ledge and falsely occludes the wall, even
+    though the wall's own column proves the corridor is open (regression:
+    tangent slivers on outer corner rounds flipping whole BREP faces in the
+    mold view at coarse resolution). A wall under a genuinely wide overhang
+    must still read occluded.
+    """
+    from meshlib import mrmeshnumpy as mn
+
+    from zmap import face_visibility
+
+    pixel = 0.1
+
+    verts = []
+    faces = []
+    normals = []
+
+    def quad(p0, p1, p2, p3, normal):
+        base = len(verts)
+        verts.extend([p0, p1, p2, p3])
+        faces.append([base, base + 1, base + 2])
+        faces.append([base, base + 2, base + 3])
+        normals.extend([normal, normal])
+        return [len(faces) - 2, len(faces) - 1]
+
+    # back plate at z=0 behind the walls (their own columns read this)
+    quad([-5, -5, 0], [5, -5, 0], [5, 0, 0], [-5, 0, 0], [0, 0, -1])
+    # flush ledge in front of wall 1 (z=-3, closer to the -Z viewer),
+    # starting 0.03 mm outward of the wall plane — sub-pixel flush
+    quad([-5, 0.03, -3], [0, 0.03, -3], [0, 5, -3], [-5, 5, -3], [0, 0, -1])
+    # wide overhang covering wall 2's own column and both pushes
+    quad([1, -1, -3], [5, -1, -3], [5, 5, -3], [1, 5, -3], [0, 0, -1])
+
+    # wall 1 (flush case, must be visible): tangent to -Z, at y=0
+    w1 = quad([-4, 0, -2], [-1, 0, -2], [-1, 0, 0], [-4, 0, 0], [0, 1, 0])
+    # wall 2 (genuinely occluded, must stay occluded)
+    w2 = quad([1.5, 0, -2], [3.5, 0, -2], [3.5, 0, 0], [1.5, 0, 0], [0, 1, 0])
+
+    verts = np.asarray(verts, dtype=np.float32)
+    faces = np.asarray(faces, dtype=np.int32)
+    normals = np.asarray(normals, dtype=np.float64)
+    mesh = mn.meshFromFacesVerts(faces, verts)
+
+    vis = face_visibility(mesh, verts, faces, np.array([0.0, 0.0, -1.0]),
+                          pixel=pixel, normals=normals)
+    check("flush-ledge wall visible from -Z",
+          bool(vis[w1].all()), f"visible {vis[w1].tolist()}")
+    check("wall under wide overhang stays occluded",
+          bool(~vis[w2].any()), f"visible {vis[w2].tolist()}")
+
+
 def main():
     failures = []
     part = make_part()
@@ -163,6 +289,12 @@ def main():
 
     print("=== exact BREP normals on curved STEP faces ===")
     fixture_brep_curved(check)
+
+    print("=== coarse-resolution fillet accessibility ===")
+    fixture_fillet_coarse(check)
+
+    print("=== flush ledge / tangent wall ===")
+    fixture_flush_ledge(check)
 
     print("ALL CHECKS PASSED" if not failures else "FAILURES:\n  " + "\n  ".join(failures))
     return 1 if failures else 0

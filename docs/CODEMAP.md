@@ -31,8 +31,8 @@ folder and re-uploads dedupe; the human name stays in `part.json`.
 
 | File | Written by | Contents |
 |---|---|---|
-| `fine_mesh.obj` | mesh | canonical analysis mesh |
 | `fine_verts.npy` / `fine_faces.npy` | mesh | float32 `(V,3)` / int `(F,3)` — **face/vertex indexing is stable from here on** |
+| `fine_mesh.obj` | mesh (`--obj` only) | optional OBJ export for external tools; nothing in the pipeline or viewer reads it |
 | `mesh_meta.json` | mesh | resolved `resolution` / `deflection` / `subdivide` / `diagonal`; `resolution/5` is the default zmap pixel of every later stage |
 | `normals.npy` | mesh | per-face unit normals `(F,3)` used for classification: exact BREP surface normals on every STEP face (quadrics from analytic params, freeform via UV evaluation on the live shape; written eagerly), lazy facet fallback otherwise (gitignored, regenerated) |
 | `brep_faces.npy` | mesh (STEP only) | int `(F,)` — source BREP face id per fine triangle |
