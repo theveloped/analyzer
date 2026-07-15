@@ -74,6 +74,18 @@ if __name__ == "__main__":
     parser_options.add_argument("--min_slide_faces", help="minimum faces a slide must gain", type=int, default=50)
     parser_options.add_argument("--serve", help="serve results in browser", action="store_true")
     
+    # Create the parser for the "flow" command
+    parser_flow = subparsers.add_parser("flow", help="voxel/SDF flow analysis: interior voxelization and (with --gate) a Hele-Shaw fill with frozen-skin hesitation")
+    parser_flow.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_flow.add_argument("--voxel", help="voxel size in mm (default: auto from resolution)", type=float, default=None)
+    parser_flow.add_argument("--gate", help="gate point x y z - runs the fill solve from it", nargs=3, type=float, default=None)
+    parser_flow.add_argument("--delta0", help="initial frozen-skin thickness in mm", type=float, default=0.0)
+    parser_flow.add_argument("--skin_coef", help="frozen-skin growth coefficient in mm/sqrt(s) (0 = off)", type=float, default=0.12)
+    parser_flow.add_argument("--fill_time", help="nominal fill time in seconds", type=float, default=2.0)
+    parser_flow.add_argument("--iterations", help="frozen-skin fixed-point passes", type=int, default=3)
+    parser_flow.add_argument("--neighborhood", help="grid neighborhood: 26 (isotropic) or 6 (fast)", type=int, choices=[6, 26], default=26)
+    parser_flow.add_argument("--serve", help="serve results in browser", action="store_true")
+
     # Create the parser for the "setups" command
     parser_setups = subparsers.add_parser("setups", help="rank CNC setup combinations (3-axis / indexed 3+2)")
     parser_setups.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
@@ -230,6 +242,51 @@ if __name__ == "__main__":
                 f"{'FEASIBLE' if option['feasible'] else 'infeasible'}  "
                 f"coverage {option['coverage'] * 100:.1f}%  slides: {slides}  "
                 f"internal {option['counts']['internal']}")
+
+        if args.serve:
+            serve_workdir(args.directory)
+
+    elif args.command == "flow":
+        logger.info("Voxel/SDF flow analysis")
+
+        import processes
+        from processes.base import apply_defaults
+
+        if args.gate is None:
+            analysis = processes.get_analysis("injection_molding",
+                                              "flow_voxels")
+            merged = apply_defaults(analysis, {"voxel": args.voxel})
+            result = analysis.run(args.directory, merged, None)
+            spec = result.stats["resolution"]
+            logger.info(
+                f"grid {'x'.join(str(d) for d in result.stats['grid']['dims'])} "
+                f"at {result.stats['grid']['voxel']:.3f} mm, "
+                f"{result.stats['interior_voxels']} interior voxels, "
+                f"{result.stats['cells']} cells, "
+                f"resolution {spec['status']} "
+                f"({spec['voxels_through_thickness']:.1f} voxels through "
+                f"the median wall), sign check {result.stats['sign_check']}")
+        else:
+            analysis = processes.get_analysis("injection_molding",
+                                              "flow_fill")
+            merged = apply_defaults(analysis, {
+                "voxel": args.voxel,
+                "gate": list(args.gate),
+                "delta0": args.delta0,
+                "skin_coef": args.skin_coef,
+                "fill_time": args.fill_time,
+                "iterations": args.iterations,
+                "neighborhood": str(args.neighborhood),
+            })
+            result = analysis.run(args.directory, merged, None)
+            stats = result.stats
+            logger.info(
+                f"gate snapped {stats['gate']['snap_distance_mm']:.2f} mm, "
+                f"{stats['reached_volume_fraction'] * 100:.1f}% of voxels "
+                f"reached, freeze-off on "
+                f"{stats['freeze_off']['surface_fraction'] * 100:.1f}% of "
+                f"the judgeable surface, "
+                f"p95 pressure proxy {stats['p95_cost']:.3g}")
 
         if args.serve:
             serve_workdir(args.directory)

@@ -3,14 +3,11 @@
 // refresh the manifest so new fields appear in the view selectors.
 
 import { useEffect, useMemo, useState } from 'react';
-import { fetchJob, fetchJobs, submitJob } from '../api/client';
-import type { AnalysisInfo, Job } from '../api/types';
+import { fetchJobs } from '../api/client';
+import type { AnalysisInfo } from '../api/types';
 import { useStore } from '../state/store';
-import { refreshManifest, refreshParts, schedulePaint } from '../viewer/controller';
+import { runAnalysisJob, watchJob } from '../viewer/jobs';
 import { initialValues, ParamForm, parseValues } from './ParamForm';
-
-// job ids with a live poll loop — module-level so remounts don't double-poll
-const watched = new Set<number>();
 
 function useAnalysisChoices() {
   const catalog = useStore((s) => s.catalog);
@@ -48,7 +45,7 @@ export function AnalysisPanel() {
       const others = useStore.getState().jobs.filter((j) => j.part_id !== partId);
       useStore.getState().set({ jobs: [...serverJobs, ...others] });
       for (const j of serverJobs) {
-        if (j.status === 'queued' || j.status === 'running') void watch(j);
+        if (j.status === 'queued' || j.status === 'running') void watchJob(j);
       }
     }).catch(() => undefined);
     return () => { cancelled = true; };
@@ -58,45 +55,10 @@ export function AnalysisPanel() {
     if (!partId || !choice) return;
     setError(null);
     try {
-      const job = await submitJob(
-        partId, choice.process.id, choice.analysis.id,
-        parseValues(choice.analysis, values));
-      useStore.getState().set({ jobs: [job, ...useStore.getState().jobs] });
-      void watch(job);
+      await runAnalysisJob(partId, choice.process.id, choice.analysis.id,
+                           parseValues(choice.analysis, values));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function watch(job: Job) {
-    if (watched.has(job.id)) return;
-    watched.add(job.id);
-    try {
-      let current = job;
-      let misses = 0;
-      while (current.status === 'queued' || current.status === 'running') {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        try {
-          current = await fetchJob(job.id);
-          misses = 0;
-        } catch {
-          // transient poll failure (sleep, hiccup) must not orphan a job
-          // that is still running server-side; a restarted server forgets
-          // its jobs, so persistent failures mean the job is gone
-          if (++misses >= 30) break;
-          continue;
-        }
-        useStore.getState().set({
-          jobs: useStore.getState().jobs.map((j) => (j.id === current.id ? current : j)),
-        });
-      }
-      if (current.status === 'done') {
-        await refreshParts();
-        await refreshManifest();
-        schedulePaint(true);
-      }
-    } finally {
-      watched.delete(job.id);
     }
   }
 

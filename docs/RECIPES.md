@@ -12,6 +12,7 @@ in docs/CODEMAP.md; background in APPROACH.md.
 | `molding.py`, `brep.py`, mold assignment | `python test_mold.py` |
 | `pipeline.compute_thickness` / thickness analyses | `python test_thickness.py` |
 | `pipeline.wall_skeleton` | `python test_skeleton.py` |
+| `pipeline.flow_voxels` / `flow_fill` (voxel flow) | `python test_flow.py` |
 | Engine parity (zmap vs voxel) | `python benchmark_engines.py` |
 | Anything in `frontend/src/` | `cd frontend && npx tsc -b && npm run build`, then `node smoke.mjs` against a running server |
 | `api/`, `processes/` | smoke workflow below + open the viewer once |
