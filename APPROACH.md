@@ -428,6 +428,52 @@ render it as a 0–180° heatmap — a per-vertex trust layer for how wall-like
 each thickness/gap reading is. Costs one extra contact query pass, so it is
 off by default.
 
+### Auxiliary — voxel/SDF flow analysis (`flow`)
+
+The wall-skeleton graph doubles as a fill-flow *visualization*, but its
+connectivity is a tessellation artifact — nodes are per-vertex sphere
+centers wired by surface mesh adjacency, then edited by pruning/clustering
+heuristics — so numbers computed over it (path resistances, spring
+stiffness) change with meshing and have no continuum limit. The `flow`
+stage replaces the flow *numbers* with a voxel model whose only geometric
+input is a signed distance function:
+
+- **`flow_voxels`** rasterizes the part once through meshlib
+  (`meshToDistanceVolume`, HoleWindingRule signing, negative inside, voxel
+  centers at `origin + (i+0.5)·h`). Interior voxels carry their distance
+  to the mold wall d — the local half-thickness. No medial-axis
+  extraction, no inscribed spheres: connectivity is the grid itself.
+  Each surface vertex is mapped to a near-ridge voxel by probing the SDF
+  along the inward vertex normal (`vert_voxel`), which both paints voxel
+  results onto the mesh and sidesteps the near-wall singularity below.
+- **`flow_fill`** runs a multi-source Dijkstra over the implicit grid
+  (26-neighborhood by default; adjacency is 13 half-offsets solved
+  `directed=False`) with Hele-Shaw edge costs `step / v`,
+  `v = max(mean(d) − skin, ε·h)²`. Because speed grows as d², the front
+  self-selects mid-channel paths, so arrivals are governed by the ridge
+  distance without ever extracting the ridge. Accumulated cost reads as
+  the relative injection pressure to reach a voxel; `∫ds/d²` diverges at
+  the walls, which is why skin cells are excluded and surfaces paint
+  through ridge voxels only.
+- **Frozen skin / hesitation**: skin regrows per voxel as
+  `δ0 + c·√(min(t_arrival, t_fill))` — melt arriving late has cooled the
+  longest, so thin sections far from the gate hesitate and freeze while
+  the gate region stays fluid — iterated as a fixed point (2–3 passes,
+  monotone skin so the reached set only shrinks). Near-wall voxels
+  solidifying is ordinary skin, *not* a defect; freeze-off is judged where
+  it is physical: on ridge voxels behind the surface (`vert_frozen`), and
+  only where the channel spans ≥ 2 voxels (rim wedges below grid
+  resolution are marked unjudged, code 254). Cooling time falls out of
+  the same field: `t_cool ∝ half-thickness²`.
+- **Trust criterion**: `test_flow.py` asserts h-vs-h/2 convergence of the
+  normalized arrivals — the property the skeleton graph could never
+  satisfy. A resolution gate (voxels through the median wall, mirroring
+  the skeleton's mesh spec) warns when the grid under-resolves the walls.
+
+The skeleton stays for what it is good at — thickness measurement, gate
+candidate generation, packing blobs, and instant-click fill *ordering*
+visualization; the sprue screening still runs on it as a cheap pre-filter.
+
 ### Visualization & the web app
 
 Every CLI stage still ends the same way: dump flagged face indices to

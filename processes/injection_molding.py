@@ -22,9 +22,11 @@ MOLD_SCHEMA = 3  # result schema version, salted into the cache key
 SPRUE_SCHEMA = 2  # sprue_proposals schema version, salted into the cache key
 SKELETON_SCHEMA = 5  # wall_skeleton schema (5: unbounded-marker normalization)
 EJECTION_SCHEMA = 2  # ejection_sticking schema version, cache salt
+FLOW_SCHEMA = 1  # flow_voxels / flow_fill schema version, cache salt
 
 SKELETON_PARAMS = ("max_radius", "min_radius", "cluster_factor",
                    "absorb_factor")
+FLOW_VOXEL_PARAMS = ("voxel",)
 
 
 def _field_stats(values, max_radius, excluded):
@@ -219,6 +221,69 @@ def run_ejection_sticking(workdir, params, progress):
     return AnalysisResult(stats=stats, fields=list(arrays))
 
 
+def flow_voxel_cache_params(workdir, params):
+    """flow_voxels cache key: the voxel params + schema/mesh salts, so
+    flow_fill's extra params still share the voxel result."""
+    return {**{name: params[name] for name in FLOW_VOXEL_PARAMS},
+            "schema": FLOW_SCHEMA,
+            "mesh": pipeline.mesh_fingerprint(workdir)}
+
+
+def run_flow_voxels(workdir, params, progress):
+    cache_params = flow_voxel_cache_params(workdir, params)
+    cached = load_cached_result(workdir, "injection_molding",
+                                "flow_voxels", cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    stats, arrays, field_meta = pipeline.flow_voxels(
+        workdir, voxel=params["voxel"], progress=progress)
+
+    store_result(workdir, "injection_molding", "flow_voxels", cache_params,
+                 stats, arrays=arrays, field_meta=field_meta)
+    return AnalysisResult(stats=stats, fields=list(arrays))
+
+
+def run_flow_fill(workdir, params, progress):
+    if not params.get("gate"):
+        raise ValueError("flow_fill needs a gate point: gate = [x, y, z] "
+                         "(click the part in the flow fill view or pass "
+                         "--gate on the CLI)")
+    cache_params = {**params, "schema": FLOW_SCHEMA,
+                    "mesh": pipeline.mesh_fingerprint(workdir)}
+    cached = load_cached_result(workdir, "injection_molding",
+                                "flow_fill", cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    def scaled(lo, hi):
+        if progress is None:
+            return None
+        return lambda f, m: progress(lo + (hi - lo) * f, m)
+
+    # the voxel grid is a cache-aware sub-run: shared params -> shared result
+    voxel_result = run_flow_voxels(workdir, params, scaled(0.0, 0.4))
+    voxel_cache = flow_voxel_cache_params(workdir, params)
+    voxels = load_result_arrays(workdir, "injection_molding", "flow_voxels",
+                                voxel_cache)
+
+    stats, arrays, field_meta = pipeline.flow_fill(
+        workdir, voxels=voxels, grid=voxel_result.stats["grid"],
+        voxels_hash=params_hash(voxel_cache),
+        gate=params["gate"], delta0=params["delta0"],
+        skin_coef=params["skin_coef"], fill_time=params["fill_time"],
+        iterations=params["iterations"],
+        neighborhood=int(params["neighborhood"]),
+        resolution_spec=voxel_result.stats.get("resolution"),
+        progress=scaled(0.4, 1.0))
+
+    store_result(workdir, "injection_molding", "flow_fill", cache_params,
+                 stats, arrays=arrays, field_meta=field_meta)
+    return AnalysisResult(stats=stats, fields=list(arrays))
+
+
 PROCESS = ProcessDef(
     id="injection_molding",
     label="Injection molding",
@@ -336,6 +401,42 @@ PROCESS = ProcessDef(
                       label="Weight: air-trap indicator"),
             ],
             run=run_sprue_proposals,
+        ),
+        AnalysisDef(
+            id="flow_voxels",
+            label="Flow voxels (SDF)",
+            description="Signed-distance voxelization of the part interior — the mesh-independent basis for fill, freeze-off and cooling estimates.",
+            requires=[],
+            params=[
+                Param("voxel", "number", default=None, unit="mm", min=0.05,
+                      label="Voxel size (blank = auto from resolution)"),
+            ],
+            run=run_flow_voxels,
+        ),
+        AnalysisDef(
+            id="flow_fill",
+            label="Flow fill (voxel)",
+            description="Gate-seeded Hele-Shaw fill over the voxel grid with frozen-skin hesitation — arrival times, weld/short-shot risk regions.",
+            requires=[],  # flow_voxels computed internally
+            params=[
+                Param("voxel", "number", default=None, unit="mm", min=0.05,
+                      label="Voxel size (blank = auto from resolution)"),
+                Param("gate", "number_list", default=None,
+                      label="Gate point x, y, z (click in the fill view)"),
+                Param("delta0", "number", default=0.0, unit="mm", min=0,
+                      label="Initial skin thickness"),
+                Param("skin_coef", "number", default=0.12,
+                      unit="mm/sqrt(s)", min=0,
+                      label="Frozen-skin growth coefficient (0 = off)"),
+                Param("fill_time", "number", default=2.0, unit="s", min=0.01,
+                      label="Nominal fill time"),
+                Param("iterations", "int", default=3, min=1, max=8,
+                      label="Frozen-skin fixed-point passes"),
+                Param("neighborhood", "select", default="26",
+                      options=["26", "6"],
+                      label="Grid neighborhood (26 = isotropic, 6 = fast)"),
+            ],
+            run=run_flow_fill,
         ),
         AnalysisDef(
             id="ejection_sticking",

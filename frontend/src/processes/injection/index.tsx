@@ -25,6 +25,11 @@ import {
   loadSticking, simulateCached, stickingResults,
   type EjectorSimResponse, type Pin,
 } from './ejector';
+import {
+  flowFillResults, flowVoxelResults, FROZEN_OK, FROZEN_UNJUDGED, loadFill,
+  loadVertVoxel, loadVoxelGrid, voxelPositions, type FlowFill,
+} from './voxels';
+import { runAnalysisJob } from '../../viewer/jobs';
 
 const CONFLICT_FEATURE = 254;
 const INTERNAL_FEATURE = 255;
@@ -286,15 +291,22 @@ const assignmentMode: ViewMode = {
 const ISO_LEVELS = 12;
 const ISO_COLOR: RGB = [0.08, 0.09, 0.11];
 
+const FREEZE: RGB = [1, 0.2, 0.15];
+
 /** Fill-time surface plot, meshlib-style: per-vertex colors interpolated
  * smoothly across faces plus marching-triangle isolines at equal-time
  * levels. The node-quantized field is Laplacian-smoothed first so contours
- * read cleanly; NaN vertices (unreached / no skeleton node) stay grey. */
-function paintFillField(ctx: ViewCtx, vertexFill: Float32Array, tMax: number) {
+ * read cleanly; NaN vertices (unreached / no skeleton node) stay grey.
+ * `risk` optionally overrides vertices with the freeze-off color. */
+function paintFillField(
+  ctx: ViewCtx, vertexFill: Float32Array, tMax: number, risk?: Uint8Array,
+) {
   const { faces, verts } = ctx;
   const field = smoothVertexField(ctx, vertexFill, 3);
   ctx.paintCorners((f, k) => {
-    const v = field[faces[3 * f + k]];
+    const vert = faces[3 * f + k];
+    if (risk && risk[vert]) return FREEZE;
+    const v = field[vert];
     return isNaN(v) ? COL.inaccess : rampColor(Math.min(v / tMax, 1));
   });
 
@@ -515,6 +527,258 @@ const sprueMode: ViewMode = {
         { color: COL.inaccess, label: 'unreached / no skeleton node' },
       ],
       stats: `${reasons}${confidence}`,
+    };
+  },
+};
+
+/** Warning line when the voxel grid under-resolves the walls it measures
+ * (the flow_voxels resolution gate; flow_fill embeds the same spec). */
+function voxelSpecNote(stats: Record<string, any> | undefined): string {
+  const spec = stats?.resolution;
+  if (!spec || spec.status === 'ok') return '';
+  return `\nvoxel grid is ${spec.status} for the measured walls `
+    + `(${spec.voxels_through_thickness.toFixed(1)} voxels through the `
+    + `median wall) — decrease the voxel size`;
+}
+
+function bboxDiagonal(ctx: ViewCtx): number {
+  let min = Infinity;
+  let max = -Infinity;
+  for (let i = 0; i < ctx.verts.length; i++) {
+    if (ctx.verts[i] < min) min = ctx.verts[i];
+    if (ctx.verts[i] > max) max = ctx.verts[i];
+  }
+  return (max - min) * Math.sqrt(3);
+}
+
+/** One or two gate marker dots: the stored result's gate (white) plus the
+ * pending clicked gate (gold) when it differs. */
+function paintGateMarkers(
+  ctx: ViewCtx, key: string,
+  stored: number[] | null, pending: number[] | null,
+) {
+  const marker = Math.max(0.01 * bboxDiagonal(ctx), 1);
+  const points: number[] = [];
+  const colors: RGB[] = [];
+  if (stored) {
+    points.push(...stored);
+    colors.push(GATE);
+  }
+  const moved = pending && (!stored || Math.hypot(
+    pending[0] - stored[0], pending[1] - stored[1],
+    pending[2] - stored[2]) > 1e-6);
+  if (pending && moved) {
+    points.push(...pending);
+    colors.push([1, 0.8, 0.2]);
+  }
+  if (!points.length) return;
+  ctx.setGraph(`${key}:${points.join(',')}`, new Float32Array(points),
+               new Uint32Array(0),
+               new Float32Array(colors.map(() => marker)));
+  ctx.paintGraph((n) => colors[n]);
+}
+
+const flowFillMode: ViewMode = {
+  id: 'flowFill',
+  label: 'Flow fill (voxel)',
+  async paint(ctx): Promise<PaintInfo> {
+    const results = flowFillResults(ctx.manifest);
+    const result = pickResult(results, ctx.params.fillResult);
+    const gate = ctx.params.gate as [number, number, number] | null;
+
+    if (!result) {
+      ctx.paintFaces(() => COL.ok);
+      paintGateMarkers(ctx, 'flowgate', null, gate);
+      const haveVoxels = flowVoxelResults(ctx.manifest).length > 0;
+      return {
+        legend: gate ? [{ color: [1, 0.8, 0.2], label: 'pending gate' }] : [],
+        stats: (gate
+          ? 'gate placed — press "Compute fill" in the controls to run the solve'
+          : 'click the part to place an injection gate')
+          + (haveVoxels ? '' : '\nthe first run also voxelizes the part'),
+      };
+    }
+
+    const fill = await loadFill(ctx, result);
+    // freeze-off: ridge voxel not filled, on a channel the grid resolves
+    const risk = new Uint8Array(fill.vertFrozen.length);
+    let riskCount = 0;
+    for (let v = 0; v < risk.length; v++) {
+      const code = fill.vertFrozen[v];
+      if (code !== FROZEN_OK && code !== FROZEN_UNJUDGED) {
+        risk[v] = 1;
+        riskCount++;
+      }
+    }
+    const tMax = Math.max(percentile(fill.vertArrival, 0.98), 1e-12);
+    paintFillField(ctx, fill.vertArrival, tMax, riskCount ? risk : undefined);
+
+    const stats = result.stats;
+    paintGateMarkers(ctx, `flowgate:${result.hash}`,
+                     stats.gate?.position ?? null, gate);
+
+    const skin = stats.fill ?? {};
+    const legend: LegendEntry[] = [
+      { color: GATE, label: 'gate (click to move, then recompute)' },
+      { color: rampColor(0), label: 'fills early' },
+      { color: rampColor(1), label: `fills late (~${tMax.toFixed(2)} s)` },
+      { color: ISO_COLOR, label: 'isolines: equal fill time' },
+      ...(riskCount
+        ? [{ color: FREEZE, label: 'freeze-off / short-shot risk' }] : []),
+      { color: COL.inaccess, label: 'unreached / below grid resolution' },
+    ];
+    return {
+      legend,
+      stats: `${(stats.reached_volume_fraction * 100).toFixed(1)}% of the`
+        + ` interior reached · freeze-off on `
+        + `${(stats.freeze_off.surface_fraction * 100).toFixed(1)}% of the`
+        + ` judgeable surface\nskin ${skin.skin_coef} mm/√s over `
+        + `${skin.fill_time} s fill, ${skin.iterations} passes, `
+        + `${skin.neighborhood}-neighborhood · gate snapped `
+        + `${stats.gate.snap_distance_mm.toFixed(2)} mm`
+        + voxelSpecNote(stats),
+    };
+  },
+};
+
+const VOXEL_SCALARS = ['distance', 'arrival', 'frozen'] as const;
+
+const voxelFieldMode: ViewMode = {
+  id: 'voxelField',
+  label: 'Voxel fields (debug)',
+  async paint(ctx): Promise<PaintInfo> {
+    const results = flowVoxelResults(ctx.manifest);
+    const result = pickResult(results, ctx.params.flowResult);
+    if (!result) {
+      throw new Error('no flow_voxels result yet — run the analysis below');
+    }
+    const grid = await loadVoxelGrid(ctx, result);
+    const scalar = (VOXEL_SCALARS as readonly string[]).includes(
+      ctx.params.voxelScalar) ? ctx.params.voxelScalar : 'distance';
+
+    // fill-derived fields need a flow_fill result on this exact grid
+    let fill: FlowFill | null = null;
+    let fillStats: Record<string, any> | null = null;
+    if (scalar !== 'distance') {
+      const fills = flowFillResults(ctx.manifest)
+        .filter((r) => r.stats.voxels_hash === result.hash);
+      const fillResult = pickResult(fills, ctx.params.fillResult);
+      if (!fillResult) {
+        throw new Error('no flow_fill result on this voxel grid — place a '
+          + 'gate in the flow fill view and compute');
+      }
+      fill = await loadFill(ctx, fillResult);
+      fillStats = fillResult.stats;
+    }
+
+    ctx.setGraph(`voxels:${grid.key}`, voxelPositions(grid),
+                 new Uint32Array(0),
+                 new Float32Array(grid.index.length).fill(grid.h / 2));
+    ctx.setMeshOpacity(ctx.params.voxelSurface ? 0.35 : 0.15);
+
+    let legend: LegendEntry[];
+    if (scalar === 'distance') {
+      const dMax = Math.max(percentile(grid.dist, 0.98), 1e-12);
+      ctx.paintGraph((n) => rampColor(1 - grid.dist[n] / dMax));
+      legend = [
+        { color: rampColor(1), label: 'near the mold wall (thin)' },
+        { color: rampColor(0), label: `mid-channel (≥ ${dMax.toFixed(2)} mm)` },
+      ];
+    } else if (scalar === 'arrival') {
+      const arrival = fill!.arrival;
+      const aMax = Math.max(percentile(arrival, 0.98), 1e-12);
+      ctx.paintGraph((n) => (isFinite(arrival[n])
+        ? rampColor(Math.min(arrival[n] / aMax, 1)) : COL.inaccess));
+      legend = [
+        { color: rampColor(0), label: 'fills early' },
+        { color: rampColor(1), label: `fills late (~${aMax.toFixed(2)} s)` },
+        { color: COL.inaccess, label: 'never reached' },
+      ];
+    } else {
+      const frozen = fill!.frozen;
+      const passes = Math.max(fillStats!.fill?.iterations ?? 3, 2);
+      ctx.paintGraph((n) => {
+        const code = frozen[n];
+        if (code === FROZEN_OK) return COL.ok;
+        if (code === 0) return COL.inaccess;
+        return rampColor(1 - (code - 2) / Math.max(passes - 2, 1));
+      });
+      legend = [
+        { color: COL.ok, label: 'filled' },
+        { color: rampColor(1), label: 'frozen early (skin / hesitation)' },
+        { color: rampColor(0), label: 'frozen in a late pass' },
+        { color: COL.inaccess, label: 'never reached' },
+      ];
+    }
+
+    if (ctx.params.voxelSurface) {
+      // matching per-vertex projection painted on the (dimmed) surface
+      if (scalar === 'distance') {
+        const { vertHalf } = await loadVertVoxel(ctx, result);
+        const dMax = Math.max(percentile(vertHalf, 0.98), 1e-12);
+        ctx.paintCorners((f, k) => {
+          const v = vertHalf[ctx.faces[3 * f + k]];
+          return isNaN(v) ? COL.inaccess : rampColor(1 - v / dMax);
+        });
+      } else if (scalar === 'arrival') {
+        const aMax = Math.max(percentile(fill!.vertArrival, 0.98), 1e-12);
+        ctx.paintCorners((f, k) => {
+          const v = fill!.vertArrival[ctx.faces[3 * f + k]];
+          return isNaN(v) ? COL.inaccess : rampColor(Math.min(v / aMax, 1));
+        });
+      } else {
+        ctx.paintFaces((f) => {
+          const code = fill!.vertFrozen[ctx.faces[3 * f]];
+          if (code === FROZEN_OK) return COL.ok;
+          if (code === FROZEN_UNJUDGED) return fade(COL.ok);
+          return FREEZE;
+        });
+      }
+    } else {
+      ctx.paintFaces(() => COL.ok);
+    }
+
+    const stats = result.stats;
+    return {
+      legend,
+      stats: `${stats.interior_voxels} interior voxels · `
+        + `${stats.grid.dims.join('×')} grid at `
+        + `${stats.grid.voxel.toFixed(3)} mm · median half-thickness `
+        + `${stats.median_half_thickness.toFixed(2)} mm`
+        + (stats.sign_check !== 'ok'
+          ? '\nsign check suspect — the mesh may not be watertight' : '')
+        + voxelSpecNote(stats),
+    };
+  },
+};
+
+const coolingMode: ViewMode = {
+  id: 'cooling',
+  label: 'Cooling time',
+  async paint(ctx): Promise<PaintInfo> {
+    const results = flowVoxelResults(ctx.manifest);
+    const result = pickResult(results, ctx.params.flowResult);
+    if (!result) {
+      throw new Error('no flow_voxels result yet — run the analysis below');
+    }
+    const { vertHalf } = await loadVertVoxel(ctx, result);
+    const coef = parseFloat(ctx.params.coolCoef) || 1.0;
+    const field = new Float32Array(vertHalf.length);
+    for (let v = 0; v < field.length; v++) {
+      field[v] = coef * vertHalf[v] * vertHalf[v];
+    }
+    const tMax = Math.max(percentile(field, 0.98), 1e-12);
+    paintFillField(ctx, field, tMax);
+    return {
+      legend: [
+        { color: rampColor(0), label: 'cools fast (thin)' },
+        { color: rampColor(1), label: `cools slow (~${tMax.toFixed(1)} s)` },
+        { color: ISO_COLOR, label: 'isolines: equal cooling time' },
+        { color: COL.inaccess, label: 'below grid resolution' },
+      ],
+      stats: `cooling ∝ half-thickness² (coefficient ${coef} s/mm²) — `
+        + `slow-cooling thick spots drive cycle time and sink marks`
+        + voxelSpecNote(result.stats),
     };
   },
 };
@@ -781,6 +1045,12 @@ function NumberParam({ label, value, placeholder, onChange }: {
   );
 }
 
+/** Form-string to number with a fallback (0 is a valid value, so no ||). */
+function num(value: any, fallback: number): number {
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function InjectionControls() {
   const manifest = useStore((s) => s.manifest);
   const modeId = useStore((s) => s.modeId);
@@ -807,6 +1077,35 @@ function InjectionControls() {
       && r.analysis === 'ejection_sticking' && r.stats.schema === 2);
   const pins: Pin[] = params.pins ?? [];
   const ejSim = params.ejSim ?? null;
+
+  const partId = useStore((s) => s.partId);
+  const jobs = useStore((s) => s.jobs);
+  const busy = jobs.some((j) => j.part_id === partId
+    && (j.status === 'queued' || j.status === 'running'));
+  const flowList = manifest ? flowVoxelResults(manifest) : [];
+  const fillList = manifest ? flowFillResults(manifest) : [];
+
+  function submitFlow(analysis: 'flow_voxels' | 'flow_fill') {
+    if (!partId) return;
+    const voxel = Number.isFinite(parseFloat(params.flowVoxel))
+      ? parseFloat(params.flowVoxel) : null;
+    const jobParams: Record<string, any> = analysis === 'flow_voxels'
+      ? { voxel }
+      : {
+        voxel,
+        gate: params.gate,
+        delta0: num(params.flowDelta0, 0),
+        skin_coef: num(params.flowSkinCoef, 0.12),
+        fill_time: num(params.flowFillTime, 2),
+        iterations: Math.max(1, Math.round(num(params.flowIterations, 3))),
+        neighborhood: String(params.flowNeighborhood ?? '26'),
+      };
+    runAnalysisJob(partId, 'injection_molding', analysis, jobParams)
+      .then(() => set(analysis === 'flow_voxels' ? 'flowResult' : 'fillResult', -1))
+      .catch((err) => useStore.getState().set({
+        error: err instanceof Error ? err.message : String(err),
+      }));
+  }
 
   return (
     <>
@@ -995,6 +1294,140 @@ function InjectionControls() {
         </>
       )}
 
+      {modeId === 'flowFill' && (
+        <>
+          <label>Fill result</label>
+          <select
+            value={params.fillResult ?? -1}
+            onChange={(e) => set('fillResult', parseInt(e.target.value))}
+          >
+            {fillList.length > 0 && <option value={-1}>latest</option>}
+            {fillList.map((r, i) => (
+              <option key={r.hash} value={i}>
+                {`gate (${(r.stats.gate?.point ?? [])
+                  .map((c: number) => c.toFixed(0)).join(', ')})`
+                  + ` · skin ${r.stats.fill?.skin_coef} · ${r.hash}`}
+              </option>
+            ))}
+            {!fillList.length && <option value={-1}>no results yet</option>}
+          </select>
+
+          <div className="row">
+            <NumberParam
+              label="Voxel size (mm)" value={params.flowVoxel ?? ''}
+              placeholder="auto" onChange={(v) => set('flowVoxel', v)}
+            />
+            <NumberParam
+              label="Fill time (s)" value={params.flowFillTime ?? 2}
+              onChange={(v) => set('flowFillTime', v)}
+            />
+          </div>
+          <div className="row">
+            <NumberParam
+              label="Skin growth (mm/√s)" value={params.flowSkinCoef ?? 0.12}
+              onChange={(v) => set('flowSkinCoef', v)}
+            />
+            <NumberParam
+              label="Initial skin (mm)" value={params.flowDelta0 ?? 0}
+              onChange={(v) => set('flowDelta0', v)}
+            />
+          </div>
+          <div className="row">
+            <div>
+              <label>Neighborhood</label>
+              <select
+                value={params.flowNeighborhood ?? '26'}
+                onChange={(e) => set('flowNeighborhood', e.target.value)}
+              >
+                <option value="26">26 (isotropic)</option>
+                <option value="6">6 (fast)</option>
+              </select>
+            </div>
+            <NumberParam
+              label="Skin passes" value={params.flowIterations ?? 3}
+              onChange={(v) => set('flowIterations', v)}
+            />
+          </div>
+
+          <button
+            className="run" disabled={!params.gate || busy || !partId}
+            onClick={() => submitFlow('flow_fill')}
+          >
+            {busy ? 'computing…' : 'Compute fill'}
+          </button>
+          {params.gate && (
+            <button onClick={() => set('gate', null)}>clear gate</button>
+          )}
+          <div className="hint">
+            click the part to place or move the gate, then compute — each
+            parameter set is cached and selectable above
+          </div>
+        </>
+      )}
+
+      {modeId === 'voxelField' && (
+        <>
+          <label>Voxel result</label>
+          <select
+            value={params.flowResult ?? -1}
+            onChange={(e) => set('flowResult', parseInt(e.target.value))}
+          >
+            {flowList.length > 0 && <option value={-1}>latest</option>}
+            {flowList.map((r, i) => (
+              <option key={r.hash} value={i}>
+                {`${r.stats.grid?.voxel?.toFixed(2)} mm · `
+                  + `${r.stats.interior_voxels} voxels · ${r.hash}`}
+              </option>
+            ))}
+            {!flowList.length && <option value={-1}>no results yet</option>}
+          </select>
+
+          <label>Field</label>
+          <select
+            value={params.voxelScalar ?? 'distance'}
+            onChange={(e) => set('voxelScalar', e.target.value)}
+          >
+            <option value="distance">wall distance (SDF)</option>
+            <option value="arrival">fill arrival (needs a fill result)</option>
+            <option value="frozen">frozen state (needs a fill result)</option>
+          </select>
+
+          <label className="check">
+            <input
+              type="checkbox" checked={params.voxelSurface === true}
+              onChange={(e) => set('voxelSurface', e.target.checked)}
+            />
+            project onto the surface
+          </label>
+
+          <div className="row">
+            <NumberParam
+              label="Voxel size (mm)" value={params.flowVoxel ?? ''}
+              placeholder="auto" onChange={(v) => set('flowVoxel', v)}
+            />
+          </div>
+          <button
+            className="run" disabled={busy || !partId}
+            onClick={() => submitFlow('flow_voxels')}
+          >
+            {busy ? 'computing…' : 'Compute voxels'}
+          </button>
+        </>
+      )}
+
+      {modeId === 'cooling' && (
+        <>
+          <NumberParam
+            label="Cooling coefficient (s/mm²)" value={params.coolCoef ?? 1}
+            onChange={(v) => set('coolCoef', v)}
+          />
+          <div className="hint">
+            cooling time ∝ half-thickness² from the flow voxelization —
+            run "Flow voxels (SDF)" below if the view is empty
+          </div>
+        </>
+      )}
+
       {modeId === 'assignment' && (
         <>
           <label>Result (parameter set)</label>
@@ -1112,9 +1545,9 @@ function InjectionControls() {
 export const injectionPlugin: ProcessPlugin = {
   processId: 'injection_molding',
   label: 'Injection molding',
-  modes: [assignmentMode, sprueMode, ejectorMode, thicknessMode, gapsMode,
-          thicknessAngleMode, gapAngleMode, skeletonMode, brepFacesMode,
-          highlightsMode],
+  modes: [assignmentMode, sprueMode, flowFillMode, coolingMode, ejectorMode,
+          thicknessMode, gapsMode, thicknessAngleMode, gapAngleMode,
+          skeletonMode, voxelFieldMode, brepFacesMode, highlightsMode],
   defaults: () => ({
     result: -1, option: 0,
     showLines: true, showArrows: true,
@@ -1125,12 +1558,16 @@ export const injectionPlugin: ProcessPlugin = {
     sprueResult: -1, proposal: null, showCandidates: false, showWeld: true,
     stickResult: -1, pins: [], pinDiameter: 3, ejE: 2000, ejAllow: 80,
     ejShowDraft: false, ejSim: null,
+    flowResult: -1, fillResult: -1, voxelScalar: 'distance',
+    voxelSurface: false, flowVoxel: '', flowDelta0: '0',
+    flowSkinCoef: '0.12', flowFillTime: '2', flowIterations: '3',
+    flowNeighborhood: '26', coolCoef: '1',
   }),
   Controls: InjectionControls,
   inspect,
   onPick(face, point, ctx) {
     const { modeId, setViewerParam } = useStore.getState();
-    if (modeId === 'skeleton') {
+    if (modeId === 'skeleton' || modeId === 'flowFill') {
       setViewerParam('injection_molding', 'gate', point);
       return true;
     }

@@ -1490,6 +1490,456 @@ def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
     return stats, arrays, field_meta
 
 
+# --------------------------------------------------------------------------
+# voxel/SDF flow analysis
+#
+# The wall skeleton's graph connectivity is a tessellation artifact, so it
+# cannot carry trustworthy flow numbers. The voxel model replaces it for
+# fill physics: one signed-distance volume of the part, Hele-Shaw front
+# propagation over the implicit grid (speed ~ wall-distance^2 self-selects
+# mid-channel paths — no medial-axis extraction needed), plus a frozen-skin
+# fixed point that closes thin late-filling walls (short-shot risk).
+
+FLOW_MAX_CELLS = 32_000_000
+
+# half offsets: each undirected neighbor pair once (dijkstra directed=False)
+_FLOW_OFFSETS_6 = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.int64)
+_FLOW_OFFSETS_26 = np.array(
+    [[dx, dy, dz]
+     for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+     if (dx, dy, dz) > (0, 0, 0)], dtype=np.int64)
+
+
+def _flow_voxel_size(workdir, voxel, diagonal):
+    """Explicit voxel size, else the part's single analysis resolution,
+    else a bbox-derived legacy fallback."""
+    if voxel is not None:
+        return float(voxel)
+    resolution = part_resolution(workdir)
+    if resolution:
+        logger.info(f"flow voxel {resolution:.3f} mm from part resolution")
+        return resolution
+    return float(np.clip(diagonal / 192.0, 0.15, 1.5))
+
+
+def _flow_grid(vmin, vmax, voxel, pad_voxels, max_cells):
+    """(origin, h, dims, adjusted) with the max_cells cap applied."""
+    extent = np.asarray(vmax, dtype=np.float64) - np.asarray(vmin,
+                                                             dtype=np.float64)
+    h = float(voxel)
+    adjusted = False
+    for _ in range(8):
+        dims = np.maximum(
+            np.ceil((extent + 2 * pad_voxels * h) / h).astype(np.int64), 1)
+        if int(dims.prod()) <= max_cells:
+            break
+        h *= float((dims.prod() / max_cells) ** (1.0 / 3.0)) * 1.01
+        adjusted = True
+    origin = np.asarray(vmin, dtype=np.float64) - pad_voxels * h
+    return origin, h, dims, adjusted
+
+
+def flow_voxels(workdir, *, voxel=None, pad_voxels=2, max_cells=FLOW_MAX_CELLS,
+                probe_depth=8, progress=None):
+    """SDF voxelization of the part interior for flow/cooling analysis.
+
+    One meshlib signed-distance volume (negative inside, voxel centers at
+    origin + (i + 0.5) * h, C-order linear indexing) is the only geometry
+    pass; everything downstream is numpy over the interior voxel set. Each
+    interior voxel carries its distance to the mold wall — the local
+    half-thickness both the Hele-Shaw fill solve and the cooling estimate
+    key on. Every surface vertex maps to a near-ridge interior voxel by
+    probing the SDF along the inward vertex normal (deepest interior
+    sample within probe_depth * h wins), so per-voxel results paint onto
+    the mesh without near-wall arrival artifacts; the probed depth doubles
+    as the per-vertex half-thickness (saturating at probe_depth * h on
+    very thick sections). Returns (stats, arrays, field_meta) — storing
+    is the caller's job.
+    """
+    verts, faces = load_mesh_arrays(workdir)
+    faces = faces.astype(np.int64, copy=False)
+    vert_count = len(verts)
+    vmin = verts.min(axis=0).astype(np.float64)
+    vmax = verts.max(axis=0).astype(np.float64)
+    diagonal = float(np.linalg.norm(vmax - vmin))
+    requested = _flow_voxel_size(workdir, voxel, diagonal)
+    origin, h, dims, adjusted = _flow_grid(vmin, vmax, requested,
+                                           pad_voxels, max_cells)
+    nx, ny, nz = (int(d) for d in dims)
+    if adjusted:
+        logger.warning(f"flow grid capped at {max_cells} cells: "
+                       f"voxel {requested:g} -> {h:g} mm")
+
+    _report(progress, 0.05, "signed distance volume")
+    mesh = mn.meshFromFacesVerts(faces, verts)
+    mesh_volume = float(mesh.volume())
+    params = mm.MeshToDistanceVolumeParams()
+    params.vol.origin = mm.Vector3f(*origin)
+    params.vol.voxelSize = mm.Vector3f(h, h, h)
+    params.vol.dimensions = mm.Vector3i(nx, ny, nz)
+    params.dist.signMode = mm.SignDetectionMode.HoleWindingRule
+    params.dist.maxDistSq = max(diagonal ** 2, 1.0)
+    if progress is not None:
+        params.vol.cb = lambda f: (
+            progress(0.05 + 0.55 * f, "signed distance volume"), True)[1]
+    volume = mm.meshToDistanceVolume(mesh, params)
+    sdf = np.ascontiguousarray(mn.getNumpy3Darray(volume),
+                               dtype=np.float32).ravel()
+    del volume, mesh
+
+    _report(progress, 0.65, "extracting interior voxels")
+    inside = sdf < 0.0
+    voxel_index = np.flatnonzero(inside).astype(np.uint32)
+    voxel_dist = -sdf[voxel_index.astype(np.int64)]
+    interior_volume = float(len(voxel_index)) * h ** 3
+    ratio = interior_volume / max(mesh_volume, 1e-30)
+    sign_check = "ok" if 0.5 <= ratio <= 1.5 else "suspect"
+
+    _report(progress, 0.7, "mapping vertices to ridge voxels")
+    normals = _vertex_normals(verts, faces,
+                              load_face_normals(workdir).astype(np.float64))
+    depths = np.arange(1, 2 * probe_depth + 1) * (0.5 * h)
+    dims64 = np.array([nx, ny, nz], dtype=np.int64)
+    vert_voxel = np.full(vert_count, NODE_SENTINEL, dtype=np.uint32)
+    vert_half = np.full(vert_count, np.nan, dtype=np.float32)
+    chunk = 100_000
+    for start in range(0, vert_count, chunk):
+        stop = min(start + chunk, vert_count)
+        pos = (verts[start:stop, None, :].astype(np.float64)
+               - normals[start:stop, None, :] * depths[None, :, None])
+        ijk = np.floor((pos - origin) / h).astype(np.int64)
+        ok = ((ijk >= 0) & (ijk < dims64)).all(axis=2)
+        lin = (ijk[..., 0] * ny + ijk[..., 1]) * nz + ijk[..., 2]
+        lin[~ok] = 0
+        depth = np.where(ok & inside[lin], -sdf[lin], -np.inf)
+        best = np.argmax(depth, axis=1)
+        rows = np.arange(stop - start)
+        best_depth = depth[rows, best]
+        mapped = best_depth > 0.0
+        compact = np.searchsorted(voxel_index,
+                                  lin[rows, best][mapped].astype(np.uint32))
+        vert_voxel[start:stop][mapped] = compact.astype(np.uint32)
+        vert_half[start:stop][mapped] = best_depth[mapped]
+    unmapped = float((vert_voxel == NODE_SENTINEL).sum() / max(vert_count, 1))
+
+    finite_half = vert_half[np.isfinite(vert_half)]
+    median_half = float(np.median(finite_half)) if len(finite_half) else 0.0
+    through = 2.0 * median_half / h
+    spec = {
+        "h_mm": h,
+        "median_half_thickness_mm": median_half,
+        "voxels_through_thickness": through,
+        "status": "ok" if through >= 3.0 else
+                  "marginal" if through >= 2.0 else "coarse",
+    }
+    grid = {"origin": [float(c) for c in origin], "voxel": h,
+            "dims": [nx, ny, nz]}
+
+    def voxel_meta(array, dtype, **extra):
+        return {"kind": "flow_voxels", "association": "none", "role": "data",
+                "dtype": dtype, "length": int(array.size),
+                "count": int(array.shape[0]), "grid": grid, **extra}
+
+    arrays = {
+        "voxel_index": voxel_index,
+        "voxel_dist": voxel_dist.astype("f4"),
+        "vert_voxel": vert_voxel,
+        "vert_half_thickness": vert_half.astype("f4"),
+    }
+    field_meta = {
+        "voxel_index": voxel_meta(voxel_index, "u4"),
+        "voxel_dist": voxel_meta(voxel_dist, "f4", units="mm"),
+        "vert_voxel": {"kind": "flow_voxels", "association": "vertex",
+                       "role": "data", "dtype": "u4"},
+        "vert_half_thickness": {"kind": "flow_voxels",
+                                "association": "vertex", "role": "scalar",
+                                "dtype": "f4", "units": "mm"},
+    }
+    stats = {
+        "grid": grid,
+        "cells": int(nx * ny * nz),
+        "interior_voxels": int(len(voxel_index)),
+        "interior_volume_mm3": interior_volume,
+        "mesh_volume_mm3": mesh_volume,
+        "voxel_adjusted": bool(adjusted),
+        "resolution": spec,
+        "sign_check": sign_check,
+        "unmapped_vertex_fraction": unmapped,
+        "median_half_thickness": median_half,
+        "max_half_thickness": (float(voxel_dist.max())
+                               if len(voxel_dist) else None),
+    }
+    logger.info(
+        f"flow voxels: {nx}x{ny}x{nz} grid at {h:.3f} mm, "
+        f"{len(voxel_index)} interior voxels, resolution {spec['status']}")
+    return stats, arrays, field_meta
+
+
+def _flow_adjacency(voxel_index, dims, h, neighborhood=26):
+    """Half-edge arrays (a, b, step_mm) between interior grid voxels.
+
+    a/b are compact indices into voxel_index; each undirected pair appears
+    once (the solve runs dijkstra directed=False). Peak memory is the dense
+    grid->compact id map (4 bytes/cell) plus ~13 int32 pairs per voxel at
+    the 26-neighborhood default.
+    """
+    nx, ny, nz = (int(d) for d in dims)
+    offsets = _FLOW_OFFSETS_26 if int(neighborhood) == 26 else _FLOW_OFFSETS_6
+    id_map = np.full(nx * ny * nz, -1, dtype=np.int32)
+    lin = voxel_index.astype(np.int64)
+    id_map[lin] = np.arange(len(lin), dtype=np.int32)
+    ix = lin // (ny * nz)
+    iy = (lin // nz) % ny
+    iz = lin % nz
+    edges_a, edges_b, steps = [], [], []
+    for dx, dy, dz in offsets:
+        valid = np.ones(len(lin), dtype=bool)
+        if dx:
+            valid &= (ix + dx >= 0) & (ix + dx < nx)
+        if dy:
+            valid &= (iy + dy >= 0) & (iy + dy < ny)
+        if dz:
+            valid &= (iz + dz >= 0) & (iz + dz < nz)
+        src = np.flatnonzero(valid).astype(np.int32)
+        neighbor = id_map[lin[src] + (dx * ny + dy) * nz + dz]
+        hit = neighbor >= 0
+        edges_a.append(src[hit])
+        edges_b.append(neighbor[hit])
+        steps.append(np.full(int(hit.sum()),
+                             h * float(np.sqrt(dx * dx + dy * dy + dz * dz)),
+                             dtype=np.float32))
+    return (np.concatenate(edges_a), np.concatenate(edges_b),
+            np.concatenate(steps))
+
+
+def flow_fill_solve(voxel_index, voxel_dist, dims, h, *, sources, delta=0.0,
+                    eps_factor=0.1, neighborhood=26, adjacency=None):
+    """Arrival cost per interior voxel: multi-source Dijkstra over the grid.
+
+    Edge cost is step / v with the Hele-Shaw front speed
+    v = max(mean(d_a, d_b) - mean(delta_a, delta_b), eps_factor * h)^2 —
+    the accumulated cost reads as the relative injection pressure needed
+    to push the front there, and the d^2 speed makes the front self-select
+    mid-channel paths. Cells inside the frozen skin (d <= delta + eps) are
+    closed. ``delta`` is scalar or per-voxel. Returns f8 (N,) arrival with
+    inf = unreached; pass a precomputed ``adjacency`` to reuse it across
+    skin iterations.
+    """
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import dijkstra
+
+    count = len(voxel_index)
+    dist = np.asarray(voxel_dist, dtype=np.float64)
+    delta = np.broadcast_to(np.asarray(delta, dtype=np.float64), (count,))
+    eps = eps_factor * float(h)
+    if adjacency is None:
+        adjacency = _flow_adjacency(voxel_index, dims, h, neighborhood)
+    a, b, step = adjacency
+    open_cell = dist > delta + eps
+    keep = open_cell[a] & open_cell[b]
+    ea = a[keep].astype(np.int64)
+    eb = b[keep].astype(np.int64)
+    speed = np.maximum(0.5 * (dist[ea] + dist[eb])
+                       - 0.5 * (delta[ea] + delta[eb]), eps) ** 2
+    matrix = csr_matrix((step[keep].astype(np.float64) / speed, (ea, eb)),
+                        shape=(count, count))
+    sources = np.atleast_1d(np.asarray(sources, dtype=np.int64))
+    arrival = dijkstra(matrix, directed=False, indices=sources, min_only=True)
+    arrival[~open_cell] = np.inf
+    return arrival
+
+
+def flow_frozen_skin(voxel_index, voxel_dist, dims, h, *, sources, delta0=0.0,
+                     skin_coef=0.12, fill_time=2.0, iterations=3,
+                     eps_factor=0.1, neighborhood=26, progress=None):
+    """Fill arrival with the frozen-skin (hesitation) fixed point.
+
+    Pass 1 solves with a uniform starting skin delta0 (default 0 — skin
+    at first melt contact) and pins the time axis: its last-filled voxel
+    defines fill_time seconds. The skin then regrows per voxel as
+    delta0 + skin_coef * sqrt(min(t_arrival, fill_time)) — melt reaching
+    a wall late has been cooling against mold walls the whole way, so
+    thin sections far from the gate hesitate and freeze while the gate
+    region stays fluid — and the solve repeats on the same adjacency.
+    Clamping the growth time at the fill window keeps slowed-but-filling
+    channels from feeding back into runaway skin; the skin is also kept
+    monotone non-decreasing so the reached set only shrinks and the
+    iteration converges. skin_coef defaults to ~a third of the polymer
+    thermal penetration coefficient sqrt(alpha) (~0.1 mm/sqrt(s)). Note
+    the per-voxel reading: near-wall voxels turning solid is ordinary
+    skin formation, not a defect — freeze-off is only meaningful where
+    mid-channel (ridge) voxels close. Returns (arrival, frozen, scale):
+    raw final-pass arrival cost (inf = unreached), frozen u1 per voxel
+    (255 = filled, 0 = never reached, k = lost to skin growth at pass k),
+    and the pass-1 cost-to-seconds scale.
+    """
+    count = len(voxel_index)
+    adjacency = _flow_adjacency(voxel_index, dims, h, neighborhood)
+    delta = np.full(count, float(delta0))
+    frozen = np.zeros(count, dtype=np.uint8)
+    arrival = np.full(count, np.inf)
+    scale = 0.0
+    rounds = max(int(iterations), 1)
+    for iteration in range(1, rounds + 1):
+        _report(progress, (iteration - 1) / rounds,
+                f"fill pass {iteration}/{rounds}")
+        arrival = flow_fill_solve(voxel_index, voxel_dist, dims, h,
+                                  sources=sources, delta=delta,
+                                  eps_factor=eps_factor,
+                                  neighborhood=neighborhood,
+                                  adjacency=adjacency)
+        reached = np.isfinite(arrival)
+        if iteration == 1:
+            frozen[reached] = 255
+            scale = (float(fill_time)
+                     / max(float(arrival[reached].max()), 1e-30)
+                     if reached.any() else 0.0)
+        else:
+            frozen[(frozen == 255) & ~reached] = iteration
+        if iteration >= rounds or skin_coef <= 0 or not reached.any():
+            break
+        growth = np.zeros(count)
+        growth[reached] = skin_coef * np.sqrt(
+            np.minimum(arrival[reached] * scale, float(fill_time)))
+        delta = np.maximum(delta, float(delta0) + growth)
+    return arrival, frozen, scale
+
+
+def flow_fill(workdir, *, voxels, grid, voxels_hash, gate, delta0=0.0,
+              skin_coef=0.12, fill_time=2.0, iterations=3, neighborhood=26,
+              eps_factor=0.1, resolution_spec=None, progress=None):
+    """Gate-seeded voxel fill with freeze-off detection.
+
+    ``voxels`` maps the flow_voxels result arrays, ``grid`` its grid meta
+    and ``voxels_hash`` its cache hash so the viewer binds the identical
+    voxel set. The gate point snaps to the nearest interior voxel (the
+    snap distance is reported — a large one means the click missed the
+    material). Arrival is stored in seconds on the pass-1 time axis
+    (last optimistic fill = fill_time); raw Dijkstra costs (the pressure
+    proxy) are summarized in stats. Freeze-off is judged where it is
+    physical: on the ridge voxels behind the surface (vert_frozen), while
+    per-voxel skin solidification is reported separately. Returns
+    (stats, arrays, field_meta) — storing is the caller's job.
+    """
+    voxel_index = np.asarray(voxels["voxel_index"], dtype=np.uint32)
+    voxel_dist = np.asarray(voxels["voxel_dist"], dtype=np.float64)
+    vert_voxel = np.asarray(voxels["vert_voxel"], dtype=np.uint32)
+    vert_half = np.asarray(voxels["vert_half_thickness"], dtype=np.float64)
+    if not len(voxel_index):
+        raise ValueError("flow_voxels found no interior voxels — "
+                         "decrease the voxel size")
+    origin = np.asarray(grid["origin"], dtype=np.float64)
+    h = float(grid["voxel"])
+    dims = [int(d) for d in grid["dims"]]
+    nx, ny, nz = dims
+    gate = np.asarray(gate, dtype=np.float64).reshape(3)
+
+    _report(progress, 0.02, "snapping gate to the interior")
+    lin = voxel_index.astype(np.int64)
+    centers = origin + (np.stack(
+        [lin // (ny * nz), (lin // nz) % ny, lin % nz],
+        axis=1).astype(np.float64) + 0.5) * h
+    source = int(np.argmin(((centers - gate) ** 2).sum(axis=1)))
+    gate_position = centers[source].copy()
+    snap = float(np.linalg.norm(gate_position - gate))
+    del centers
+    if snap > 4.0 * h:
+        logger.warning(f"gate snapped {snap:.2f} mm to the nearest interior "
+                       "voxel — the click may have missed the material")
+
+    arrival, frozen, scale = flow_frozen_skin(
+        voxel_index, voxel_dist, dims, h, sources=[source], delta0=delta0,
+        skin_coef=skin_coef, fill_time=fill_time, iterations=iterations,
+        eps_factor=eps_factor, neighborhood=neighborhood,
+        progress=lambda f, m: _report(progress, 0.05 + 0.85 * f, m))
+
+    _report(progress, 0.92, "mapping fill onto the surface")
+    reached = np.isfinite(arrival)
+    max_cost = float(arrival[reached].max()) if reached.any() else 0.0
+    p95_cost = (float(np.percentile(arrival[reached], 95))
+                if reached.any() else 0.0)
+    # seconds on the pass-1 time axis; late passes can exceed fill_time
+    scaled = np.full(len(arrival), np.inf)
+    scaled[reached] = arrival[reached] * scale
+    scaled = scaled.astype("f4")
+
+    # surface fields read through the ridge voxels (vert_voxel), so skin
+    # solidifying against the walls never shows as unreached surface —
+    # only a closed mid-channel (real freeze-off) does
+    mapped = vert_voxel != NODE_SENTINEL
+    idx = vert_voxel[mapped].astype(np.int64)
+    vert_arrival = np.full(len(vert_voxel), np.nan, dtype=np.float32)
+    vert_arrival[mapped] = np.where(np.isfinite(scaled[idx]), scaled[idx],
+                                    np.nan)
+    # unmapped vertices start at 254 = unjudged, not 0 = never reached
+    vert_frozen = np.full(len(vert_voxel), 254, dtype=np.uint8)
+    vert_frozen[mapped] = frozen[idx]
+
+    lost = (frozen > 0) & (frozen < 255)
+    lost_per_pass = {int(code): int((frozen == code).sum())
+                     for code in np.unique(frozen[lost])}
+    # freeze-off risk is only judgeable where the local channel spans at
+    # least two voxels — rim wedges taper below grid resolution and their
+    # shallow ridge voxels would flag every healthy plate edge
+    with np.errstate(invalid="ignore"):
+        resolvable = mapped & (vert_half >= 2.0 * h)
+    risk = resolvable & (vert_frozen != 255)
+    risk_verts = int(risk.sum())
+    resolvable_count = int(resolvable.sum())
+    # 254 = unjudged (channel below grid resolution) so the viewer can
+    # paint risk as any code below 254 without re-deriving the gate
+    vert_frozen[mapped & ~resolvable & (vert_frozen != 255)] = 254
+
+    def voxel_meta(array, dtype, **extra):
+        return {"kind": "flow_fill", "association": "none", "role": "data",
+                "dtype": dtype, "length": int(array.size),
+                "count": int(array.shape[0]), "grid": grid, **extra}
+
+    arrays = {
+        "arrival": scaled,
+        "frozen": frozen,
+        "vert_arrival": vert_arrival,
+        "vert_frozen": vert_frozen,
+    }
+    field_meta = {
+        "arrival": voxel_meta(scaled, "f4", units="s"),
+        "frozen": voxel_meta(frozen, "u1"),
+        "vert_arrival": {"kind": "flow_fill", "association": "vertex",
+                         "role": "scalar", "dtype": "f4", "units": "s"},
+        "vert_frozen": {"kind": "flow_fill", "association": "vertex",
+                        "role": "mask", "dtype": "u1"},
+    }
+    stats = {
+        "voxels_hash": voxels_hash,
+        "grid": grid,
+        "gate": {"point": [float(c) for c in gate],
+                 "voxel": source,
+                 "position": [float(c) for c in gate_position],
+                 "snap_distance_mm": snap},
+        "reached_volume_fraction": float(reached.sum() / len(arrival)),
+        "unreached_volume_mm3": float((~reached).sum()) * h ** 3,
+        "skin": {"solidified_volume_mm3": float(lost.sum()) * h ** 3,
+                 "lost_per_pass": lost_per_pass},
+        "freeze_off": {"surface_fraction": (risk_verts / resolvable_count
+                                            if resolvable_count else 0.0),
+                       "risk_vertices": risk_verts,
+                       "resolvable_vertices": resolvable_count},
+        "p95_cost": p95_cost,
+        "max_cost": max_cost,
+        "fill": {"delta0": float(delta0), "skin_coef": float(skin_coef),
+                 "fill_time": float(fill_time),
+                 "iterations": int(iterations),
+                 "neighborhood": int(neighborhood)},
+        "resolution": resolution_spec,
+    }
+    logger.info(
+        f"flow fill: {100 * stats['reached_volume_fraction']:.1f}% of voxels "
+        f"reached, freeze-off on "
+        f"{100 * stats['freeze_off']['surface_fraction']:.1f}% of the "
+        f"surface, gate snap {snap:.2f} mm")
+    return stats, arrays, field_meta
+
+
 def _latest_mold_orientation(workdir):
     """Newest current-schema mold_orientation result: (hash, payload, npz) or Nones.
 
