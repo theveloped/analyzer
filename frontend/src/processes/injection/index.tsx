@@ -962,6 +962,19 @@ const gapsMode = heatmapMode(
     maskParam: 'maskExplained',
   });
 
+// pocket depth/width ratio along the pull direction — the slenderness of
+// the mold-steel core each pocket needs (thin steel above ~2-3×)
+const slendernessMode = heatmapMode(
+  'slenderness', 'Steel slenderness heatmap',
+  (ctx) => scalarField(ctx, 'slenderness', 'slenderness'),
+  {
+    flagDirection: 'above',
+    thresholdParam: 'maxSlenderness',
+    scaleParam: 'slendernessScale',
+    units: '×',
+    okLabel: 'stocky steel — ok',
+  });
+
 // separation angle per ball (requires the "Store contact angles" analysis
 // param): wall ~180°, N-degree corner ~N, edge-collapsed ~0, saturated NaN
 const thicknessAngleMode = heatmapMode(
@@ -1526,6 +1539,19 @@ function InjectionControls() {
         </>
       )}
 
+      {modeId === 'slenderness' && (
+        <div className="row">
+          <NumberParam
+            label="Max depth/width (×)" value={params.maxSlenderness ?? 2.0}
+            onChange={(v) => set('maxSlenderness', v)}
+          />
+          <NumberParam
+            label="Heatmap max (×)" value={params.slendernessScale ?? ''}
+            placeholder="auto" onChange={(v) => set('slendernessScale', v)}
+          />
+        </div>
+      )}
+
       {(modeId === 'thicknessAngle' || modeId === 'gapAngle') && (
         <div className="row">
           <NumberParam
@@ -1546,13 +1572,15 @@ export const injectionPlugin: ProcessPlugin = {
   processId: 'injection_molding',
   label: 'Injection molding',
   modes: [assignmentMode, sprueMode, flowFillMode, coolingMode, ejectorMode,
-          thicknessMode, gapsMode, thicknessAngleMode, gapAngleMode,
+          thicknessMode, gapsMode, slendernessMode,
+          thicknessAngleMode, gapAngleMode,
           skeletonMode, voxelFieldMode, brepFacesMode, highlightsMode],
   defaults: () => ({
     result: -1, option: 0,
     showLines: true, showArrows: true,
     minThickness: 1.0, thicknessScale: '',
     minGap: 0.5, gapScale: '', maskExplained: true,
+    maxSlenderness: 2.0, slendernessScale: '',
     minAngle: 60, angleScale: 180,
     skelResult: -1, graph: 'cluster', gate: null,
     sprueResult: -1, proposal: null, showCandidates: false, showWeld: true,

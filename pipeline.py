@@ -2454,3 +2454,66 @@ def compose_tool(workdir, direction, *, pixel=None, tollerance=1e-1, diameter=2.
         "sweep": sweep_results,
         "faces": unreachable_faces,
     }
+
+
+def pocket_slenderness(workdir, *, direction, max_diameter=None, ladder=1.5,
+                       pixel=None, window=0.3, progress=None):
+    """Per-vertex pocket depth/width ratio along one pull direction: the
+    slenderness of the steel core the mold half needs to fill each pocket
+    (thin-steel risk when it exceeds ~2-3). One closing ladder covers all
+    pocket widths up to ``max_diameter`` — see zmap.slenderness_ladder.
+
+    ``ladder`` is the geometric step between swept pocket widths: the ratio
+    field is quantized to it (finer = smoother, cost ~ladder/(ladder-1));
+    ``pixel`` None = resolution/5 from mesh_meta (legacy fallback 0.1 mm);
+    ``max_diameter`` None = half the smallest bounding box extent (the same
+    auto convention as the thickness fields' sphere radius cap).
+    """
+    from zmap import DirectionCache, slenderness_ladder
+
+    pixel = resolve_pixel(workdir, pixel)
+    verts, faces = load_mesh_arrays(workdir)
+    if max_diameter is None:
+        extents = verts.max(axis=0) - verts.min(axis=0)
+        max_diameter = 0.5 * float(extents.min())
+        logger.info(f"max pocket width {max_diameter:.2f} mm from bounding box")
+
+    _report(progress, 0.1, "rendering height map")
+    cache = DirectionCache(workdir, direction, verts=verts, faces=faces,
+                           pixel=pixel, window=window)
+
+    _report(progress, 0.4, "closing ladder")
+    fx, fy, vheight = cache.vertex_projection()
+    window_px = max(2, int(np.ceil(cache.window / pixel)))
+    ratio, width, diameters = slenderness_ladder(cache.heights, fx, fy,
+                                                 vheight, pixel, max_diameter,
+                                                 ladder=ladder,
+                                                 window_px=window_px)
+
+    # vertices the pull direction cannot see belong to the other mold half
+    # (or a slide): their depth below the closing is the part itself, not a
+    # pocket this half's steel fills. A vertex counts as this half's only if
+    # ALL its faces are accessible — any-face membership would keep e.g. the
+    # bottom rim ring of a vertical wall (shared with the visible wall) and
+    # read the whole part height as pocket depth at the smallest scale
+    accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))
+    visible = np.ones(len(verts), dtype=bool)
+    visible[faces[~accessibility[direction]].ravel()] = False
+    ratio[~visible] = 0.0
+    width[~visible] = 0.0
+
+    stats = {
+        "direction": int(direction),
+        "direction_vector": [float(c) for c in cache.direction],
+        "pixel": float(pixel),
+        "max_diameter": float(max_diameter),
+        "ladder": float(ladder),
+        "scales": len(diameters),
+        "verts": int(ratio.size),
+        "p50": float(np.percentile(ratio, 50)),
+        "p95": float(np.percentile(ratio, 95)),
+        "max": float(ratio.max()),
+        "above_2": float(np.mean(ratio > 2.0)),
+        "visible_fraction": float(visible.mean()),
+    }
+    return ratio, width, stats
