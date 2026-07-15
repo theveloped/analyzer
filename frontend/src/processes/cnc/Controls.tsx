@@ -21,6 +21,29 @@ export function CncControls() {
   // the setups mode works on the setups result, not the tool-field caches
   if (modeId === 'setups') return <SetupsControls />;
 
+  // thin span reads the direction-free stiffness proxy result, not the
+  // per-direction tool fields
+  if (modeId === 'thinSpan') {
+    return (
+      <div className="row">
+        <div>
+          <label>Max span/thickness (×)</label>
+          <input
+            type="number" min={0} step={0.5} value={params.maxSpanRatio ?? 5.0}
+            onChange={(e) => set('maxSpanRatio', e.target.value)}
+          />
+        </div>
+        <div>
+          <label>Heatmap max (×)</label>
+          <input
+            type="number" placeholder="auto" value={params.spanScale ?? ''}
+            onChange={(e) => set('spanScale', e.target.value)}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       <label>Direction</label>

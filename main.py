@@ -66,6 +66,17 @@ if __name__ == "__main__":
     parser_slender.add_argument("--min_ratio", help="flag faces with all vertices above this depth/width ratio", type=float, default=2.0)
     parser_slender.add_argument("--serve", help="serve results in browser", action="store_true")
 
+    # Create the parser for the "span" command
+    parser_span = subparsers.add_parser("span", help="thin-span / normal-stiffness proxy field: distance to supporting thick material over thickness scale, direction-free")
+    parser_span.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_span.add_argument("--max_radius", help="inscribed sphere radius cap for the thickness sub-run (default: auto from bounding box)", type=float, default=None)
+    parser_span.add_argument("--max_thickness", help="thickness above which material counts as bulk support in mm (default: auto p99 of the field)", type=float, default=None)
+    parser_span.add_argument("--ladder", help="geometric step between swept thickness scales (finer = smoother, slower)", type=float, default=None)
+    parser_span.add_argument("--contrast", help="support must be at least this factor thicker than the vertex itself", type=float, default=None)
+    parser_span.add_argument("--max_span", help="distance saturation in mm (default: bounding box diagonal)", type=float, default=None)
+    parser_span.add_argument("--min_ratio", help="flag faces with all vertices above this span/thickness ratio", type=float, default=5.0)
+    parser_span.add_argument("--serve", help="serve results in browser", action="store_true")
+
     # Create the parser for the "directions" command
     parser_directions = subparsers.add_parser("directions", help="directions a file and derive the mesh")
     parser_directions.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
@@ -250,6 +261,39 @@ if __name__ == "__main__":
         flagged = np.all(ratio[faces] > args.min_ratio, axis=1)
         indices = np.flatnonzero(flagged).tolist()
         logger.info(f"Flagging {len(indices)} faces above depth/width "
+                    f"ratio {args.min_ratio}")
+        write_highlights(args.directory, indices)
+
+        if args.serve:
+            serve_workdir(args.directory)
+
+    elif args.command == "span":
+        logger.info("Computing thin-span stiffness proxy field")
+
+        import processes
+        from processes.base import apply_defaults, load_result_arrays
+        from processes.injection_molding import span_cache_params
+
+        analysis = processes.get_analysis("injection_molding", "thin_span")
+        params = {}
+        for name in ("max_radius", "max_thickness", "ladder", "contrast",
+                     "max_span"):
+            value = getattr(args, name)
+            if value is not None:
+                params[name] = value
+        merged = apply_defaults(analysis, params)
+        result = analysis.run(args.directory, merged, None)
+        logger.info(f"thin_span stats: {result.stats}")
+
+        cache_key = span_cache_params(args.directory, merged)
+        arrays = load_result_arrays(args.directory, "injection_molding",
+                                    "thin_span", cache_key)
+        ratio = arrays["span_ratio"]
+
+        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
+        flagged = np.all(ratio[faces] > args.min_ratio, axis=1)
+        indices = np.flatnonzero(flagged).tolist()
+        logger.info(f"Flagging {len(indices)} faces above span/thickness "
                     f"ratio {args.min_ratio}")
         write_highlights(args.directory, indices)
 
