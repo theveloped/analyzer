@@ -369,6 +369,65 @@ dimension), so a saturated gap reads as "no opposing wall worth considering".
 The `thickness` CLI command flags faces below `--min` (and below `--min_gap`
 with `--both`) into `highlights.json`.
 
+**Edge-explainable limits.** meshlib's probe is tangent *at* each vertex
+with the center forced along the vertex normal, which reads falsely LOW
+near sharp convex edges/corners (the tangent ball is limited by the edge,
+not an opposing wall), near concave edges for the gap field (convex in the
+complement), and on chord creases of C1-continuous BREP faces (normal
+wobble). Crucially the readings are never falsely HIGH — every reading is
+a valid empty ball, a trustworthy lower bound — so the field itself stays
+the raw probe (thick regions, e.g. rib junctions, are exactly where the
+biggest tangent balls sit and must never be second-guessed). The artifacts
+are captured in per-vertex masks instead, and thin-flagging becomes cheap
+array logic in the repo's mask-combination style: near a wedge of interior
+opening Ω the tangent ball is limited to exactly `r = d·tan(Ω/2)` (d =
+distance to the edge), so `_sharp_edge_vertices` extracts the matching-sign
+sharp edges (exact-normal dihedral ≥ `sharp_deg`, default 25°; convex for
+thickness, part-concave for gaps; on STEP additionally gated to
+different-BREP-id edges so chord steps on coarse curved tessellation never
+qualify) and `_edge_band` stores per vertex the **explainable diameter**
+`2·d·tan(Ω/2)` from the nearest such edge. Wedges tighter than 60° are
+never sources — a knife/V-edge's low readings are true thin walls. A
+reading is excluded from thin flags (`edge_excluded`, mirrored client-side)
+iff it falls inside a per-vertex band `[band_lo, band_hi]` around the limit
+— the wedge alone explains it — or its reconstructed center (`p ∓ n·r` on
+exact normals) penetrates the surface (`suspect`: the C1-crease wobble
+detector). The band is asymmetric (`_edge_band`): the KD distance to
+sampled edge vertices never underestimates the true edge distance, so
+`band_lo = limit/1.3 − floor` carries no mesh term (widening it would
+swallow genuinely tight walls/gaps near corners), while the discrete probe
+at on-edge vertices is limited by the first ring of triangles instead of
+shrinking to the theoretical zero, so `band_hi = 1.3·(limit +
+mean_edge·tan(Ω/2)) + floor` — and vertices lying ON a sharp feature are
+excluded outright (their tangent ball is edge-dominated by construction).
+Readings below the band are genuinely thinner than the edge explains and
+stay flaggable. The `thickness`/`gaps` results store `limit`, `band_lo`,
+`band_hi` and `suspect` alongside the field, so the viewer's interactive
+thresholds and the CLI `--min`/`--min_gap` highlights apply the identical
+two-comparison exclusion with no recompute; `sharp_deg=0` disables the
+masks. Known limitations:
+filleted/rounded rims have no sharp edge and keep their raw ramp (a
+follow-up can source limits from small-radius quadric faces via
+`surface_params` in brep_meta.json); STL curved meshes at coarse resolution
+can produce spurious sharp edges and over-exclude locally. The skeleton is
+untouched by all of this: `wall_skeleton` keeps every measured ball
+(penetration drop + `min_radius` + `_absorb_clusters` only) — its schema 5
+covers normalizing meshlib's inconsistent unbounded-ball markers
+(FLT_MAX-scale finite values on welded STEP meshes) to `inf` so they drop
+like the documented `inf` case instead of polluting nodes and stats.
+
+An opt-in diagnostic rides the same machinery: `contact_angles`
+(`_contact_angles`, analysis param / `--contact_angles`) stores each ball's
+separation angle — the largest angle any surface contact subtends at the
+center against the tangency direction. A wall reads ~180°, a ball bound by
+an N-degree corner reads ~N, edge-collapsed balls ~0, saturated and
+sub-resolution balls NaN; a thick rib-crossing junction reads 180° (doubly
+tangent through the center), which distinguishes it from a corner reading
+of the same magnitude. The `thickness`/`gap contact angle` view modes
+render it as a 0–180° heatmap — a per-vertex trust layer for how wall-like
+each thickness/gap reading is. Costs one extra contact query pass, so it is
+off by default.
+
 ### Visualization & the web app
 
 Every CLI stage still ends the same way: dump flagged face indices to

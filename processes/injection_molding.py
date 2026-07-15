@@ -20,14 +20,14 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
 ASSIGNMENT_OPTIONS = 3  # options that get per-face assignment fields
 MOLD_SCHEMA = 3  # result schema version, salted into the cache key
 SPRUE_SCHEMA = 2  # sprue_proposals schema version, salted into the cache key
-SKELETON_SCHEMA = 4  # wall_skeleton schema (4: sphere centers on exact normals)
+SKELETON_SCHEMA = 5  # wall_skeleton schema (5: unbounded-marker normalization)
 EJECTION_SCHEMA = 2  # ejection_sticking schema version, cache salt
 
 SKELETON_PARAMS = ("max_radius", "min_radius", "cluster_factor",
                    "absorb_factor")
 
 
-def _field_stats(values, max_radius):
+def _field_stats(values, max_radius, excluded):
     cap = 2.0 * max_radius
     return {
         "max_radius": max_radius,
@@ -39,6 +39,7 @@ def _field_stats(values, max_radius):
         "p50": float(np.percentile(values, 50)),
         "p95": float(np.percentile(values, 95)),
         "saturated_fraction": float(np.mean(values >= cap * (1 - 1e-4))),
+        "excluded_fraction": float(np.mean(excluded)),
     }
 
 
@@ -50,17 +51,42 @@ def _run_sphere_field(workdir, analysis_id, member, kind, inverted, params,
     if cached is not None:
         return AnalysisResult(stats=cached["stats"], fields=list(cached["arrays"]))
 
-    values, max_radius = pipeline.compute_thickness(
+    values, max_radius, masks = pipeline.compute_thickness(
         workdir, max_radius=params["max_radius"], inverted=inverted,
-        progress=progress)
+        sharp_deg=params["sharp_deg"],
+        contact_angles=params["contact_angles"], progress=progress)
 
-    stats = _field_stats(values, max_radius)
+    excluded = pipeline.edge_excluded(values, masks["band_lo"],
+                                      masks["band_hi"], masks["suspect"])
+    stats = _field_stats(values, max_radius, excluded)
+    stats["edge_floor"] = masks["floor"]
+    stats["edge_tol"] = masks["tol"]
+    data_meta = {"kind": kind, "association": "vertex", "role": "data",
+                 "units": "mm"}
     field_meta = {member: {"kind": kind, "association": "vertex",
                            "role": "scalar", "units": "mm",
-                           "max_radius": max_radius}}
+                           "max_radius": max_radius},
+                  # edge-explainable band: readings inside [lo, hi] are what
+                  # the nearest sharp edge alone would produce (excluded
+                  # from thin flags); limit is the nominal 2*d*tan(Omega/2)
+                  # for display (-1 = no sharp features)
+                  "limit": data_meta, "band_lo": data_meta,
+                  "band_hi": data_meta,
+                  # penetrating-center crease mask (u1 per vertex)
+                  "suspect": {"kind": kind, "association": "vertex",
+                              "role": "mask", "dtype": "u1"}}
+    arrays = {member: values, "limit": masks["limit"],
+              "band_lo": masks["band_lo"], "band_hi": masks["band_hi"],
+              "suspect": masks["suspect"].astype(np.uint8)}
+    if masks["angle"] is not None:
+        # separation angle per ball: wall ~180 deg, N-degree corner ~N,
+        # edge ~0, saturated NaN — the contact-angle view modes' field
+        arrays["contact_angle"] = masks["angle"]
+        field_meta["contact_angle"] = {"kind": kind, "association": "vertex",
+                                       "role": "data", "units": "deg"}
     store_result(workdir, "injection_molding", analysis_id, cache_params,
-                 stats, arrays={member: values}, field_meta=field_meta)
-    return AnalysisResult(stats=stats, fields=[member])
+                 stats, arrays=arrays, field_meta=field_meta)
+    return AnalysisResult(stats=stats, fields=list(arrays))
 
 
 def run_thickness(workdir, params, progress):
@@ -222,6 +248,11 @@ PROCESS = ProcessDef(
             params=[
                 Param("max_radius", "number", default=None, unit="mm", min=0,
                       label="Max sphere radius (blank = auto from bbox)"),
+                Param("sharp_deg", "number", default=25.0, unit="deg",
+                      min=0, max=90,
+                      label="Sharp edge threshold (0 = no exclusions)"),
+                Param("contact_angles", "bool", default=False,
+                      label="Store contact angles"),
             ],
             run=run_thickness,
         ),
@@ -233,6 +264,11 @@ PROCESS = ProcessDef(
             params=[
                 Param("max_radius", "number", default=None, unit="mm", min=0,
                       label="Max sphere radius (blank = auto from bbox)"),
+                Param("sharp_deg", "number", default=25.0, unit="deg",
+                      min=0, max=90,
+                      label="Sharp edge threshold (0 = no exclusions)"),
+                Param("contact_angles", "bool", default=False,
+                      label="Store contact angles"),
             ],
             run=run_gaps,
         ),

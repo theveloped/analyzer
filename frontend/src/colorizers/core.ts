@@ -336,6 +336,14 @@ export interface HeatmapOpts {
   autoFloor?: number; // lower bound for the percentile auto-max
   okLabel?: string;
   maskedLabel?: string;
+  /** Per-VERTEX mask (1 = reading explainable by local sharp geometry).
+      Faces touching an excluded vertex never count as flagged (matching
+      the CLI's all-verts-thin rule, where one excluded vertex vetoes the
+      face). */
+  exclusion?: (ctx: ViewCtx) => Promise<Uint8Array | null>;
+  /** ctx.params key of a boolean: when true, excluded below-threshold
+      faces are painted in the ok color instead of their heatmap color. */
+  maskParam?: string;
 }
 
 /**
@@ -364,19 +372,36 @@ export function heatmapMode(
       const raw = await ctx.getField(desc) as Float32Array;
       const field = opts.transform ? Float32Array.from(raw, opts.transform) : raw;
       const vals = faceValues(ctx, field, null);
+      const excluded = opts.exclusion ? await opts.exclusion(ctx) : null;
       const thr = parse(ctx.params[opts.thresholdParam ?? 'threshold']) || 0;
       const auto = Math.max(percentile(vals, 0.98), opts.autoFloor ?? thr * 3, 1e-6);
       const max = parse(ctx.params[opts.scaleParam ?? 'scale']) || auto;
       const below = opts.flagDirection === 'below';
       const span = Math.max(max - thr, 1e-9);
       const units = opts.units ?? 'mm';
+      const maskOn = opts.maskParam ? ctx.params[opts.maskParam] !== false : false;
       let flagged = 0;
+      let explained = 0;
       let painted = 0;
       ctx.paintFaces((f) => {
         const v = vals[f];
         if (isNaN(v)) return COL.inaccess;
         painted++;
-        if (below ? v <= thr : v > thr) flagged++;
+        if (below ? v <= thr : v > thr) {
+          // one excluded vertex vetoes the face — same as the CLI's
+          // all-verts-thin flag rule, and it dilates the mask by the one
+          // boundary facet the vertex mask alone would miss
+          const skip = excluded
+            && (excluded[ctx.faces[3 * f]]
+              || excluded[ctx.faces[3 * f + 1]]
+              || excluded[ctx.faces[3 * f + 2]]);
+          if (skip) {
+            explained++;
+            if (maskOn) return COL.below;
+          } else {
+            flagged++;
+          }
+        }
         const badness = below ? (max - v) / span : (v - thr) / span;
         return badness <= 0 ? COL.below : rampColor(Math.min(1, badness));
       });
@@ -390,11 +415,16 @@ export function heatmapMode(
           color: rampColor(1),
           label: below ? `≤ ${thr.toFixed(2)} ${units} — flagged` : `≥ ${max.toFixed(2)} ${units}`,
         },
+        ...(opts.exclusion && maskOn ? [{
+          color: COL.below,
+          label: 'explained by sharp edges — shown as ok',
+        }] : []),
         { color: COL.inaccess, label: opts.maskedLabel ?? 'no data' },
       ];
       return {
         legend,
         stats: `${flagged} of ${painted} faces ${below ? 'below' : 'above'} ${thr} ${units}`
+          + (explained ? ` (${explained} more explained by sharp edges — not flagged)` : '')
           + ` · auto max ${auto.toFixed(2)} ${units}`,
       };
     },

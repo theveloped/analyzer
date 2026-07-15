@@ -7,6 +7,7 @@ from pipeline import (
     FINE_FACES_FILE,
     mesh_part, compute_directions, highlight_union, mesh_fingerprint,
     precompute_fields, compose_tool, parse_tips, parse_holder, write_highlights,
+    edge_excluded,
 )
 
 
@@ -50,6 +51,8 @@ if __name__ == "__main__":
     parser_thickness.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
     parser_thickness.add_argument("--min", help="flag faces with all vertices thinner than this (mm)", type=float, default=1.0)
     parser_thickness.add_argument("--max_radius", help="inscribed sphere radius cap (default: auto from bounding box)", type=float, default=None)
+    parser_thickness.add_argument("--sharp_deg", help="dihedral angle above which an edge is sharp; readings explainable by such edges are excluded from the thin flags (0 = no exclusions, default: 25)", type=float, default=None)
+    parser_thickness.add_argument("--contact_angles", help="also store each sphere's contact separation angle (wall ~180 deg, N-degree corner ~N, edge ~0) as a plottable field", action="store_true")
     parser_thickness.add_argument("--both", help="also compute the gaps/clearance field on the inverted shape", action="store_true")
     parser_thickness.add_argument("--min_gap", help="with --both: also flag faces with wall-to-wall clearance below this (mm)", type=float, default=0.5)
     parser_thickness.add_argument("--serve", help="serve results in browser", action="store_true")
@@ -163,28 +166,35 @@ if __name__ == "__main__":
         params = {}
         if args.max_radius is not None:
             params["max_radius"] = args.max_radius
+        if args.sharp_deg is not None:
+            params["sharp_deg"] = args.sharp_deg
+        if args.contact_angles:
+            params["contact_angles"] = True
 
-        analysis = processes.get_analysis("injection_molding", "thickness")
-        merged = apply_defaults(analysis, params)
-        result = analysis.run(args.directory, merged, None)
-        logger.info(f"thickness stats: {result.stats}")
-
-        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
-        cache_key = {**merged, "mesh": mesh_fingerprint(args.directory)}
-        thickness = load_result_arrays(args.directory, "injection_molding",
-                                       "thickness", cache_key)["thickness"]
-        flagged = np.all(thickness[faces] < args.min, axis=1)
-
-        if args.both:
-            analysis = processes.get_analysis("injection_molding", "gaps")
+        def thin_vertices(analysis_id, member, threshold):
+            """Below-threshold vertices, minus edge-explainable readings."""
+            analysis = processes.get_analysis("injection_molding",
+                                              analysis_id)
             merged = apply_defaults(analysis, params)
             result = analysis.run(args.directory, merged, None)
-            logger.info(f"gaps stats: {result.stats}")
+            logger.info(f"{analysis_id} stats: {result.stats}")
 
             cache_key = {**merged, "mesh": mesh_fingerprint(args.directory)}
-            gap = load_result_arrays(args.directory, "injection_molding",
-                                     "gaps", cache_key)["gap"]
-            flagged |= np.all(gap[faces] < args.min_gap, axis=1)
+            arrays = load_result_arrays(args.directory, "injection_molding",
+                                        analysis_id, cache_key)
+            values = arrays[member]
+            excluded = edge_excluded(values, arrays["band_lo"],
+                                     arrays["band_hi"],
+                                     arrays["suspect"].astype(bool))
+            return (values < threshold) & ~excluded
+
+        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
+        thin = thin_vertices("thickness", "thickness", args.min)
+        flagged = np.all(thin[faces], axis=1)
+
+        if args.both:
+            thin = thin_vertices("gaps", "gap", args.min_gap)
+            flagged |= np.all(thin[faces], axis=1)
 
         indices = np.flatnonzero(flagged).tolist()
         logger.info(f"Flagging {len(indices)} faces below the thresholds")

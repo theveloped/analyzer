@@ -56,6 +56,13 @@ function resolveField(ctx: ViewCtx, result: ResultEntry, member: string) {
   return fieldId ? ctx.manifest.fields.find((f) => f.id === fieldId) ?? null : null;
 }
 
+/** Result by selector index; -1 / unset = latest (the manifest lists
+    results oldest -> newest, so a recompute lands last). */
+function pickResult<T>(list: T[], index: number | null | undefined): T | undefined {
+  if (index != null && index >= 0 && index < list.length) return list[index];
+  return list[list.length - 1];
+}
+
 interface AssignmentData {
   result: ResultEntry;
   option: number;
@@ -78,7 +85,7 @@ async function loadAssignment(ctx: ViewCtx): Promise<AssignmentData> {
       ? 'stored result predates the membership model — re-run mold orientation'
       : 'no mold_orientation result yet — run the analysis below');
   }
-  const result = results[ctx.params.result ?? 0] ?? results[results.length - 1];
+  const result = pickResult(results, ctx.params.result)!;
   const option = ctx.params.option ?? 0;
 
   const brepDesc = ctx.manifest.fields.find((f) => f.id === 'brep_faces');
@@ -307,7 +314,7 @@ function paintFillField(ctx: ViewCtx, vertexFill: Float32Array, tMax: number) {
 
 function pickSkeletonResult(ctx: ViewCtx) {
   const results = skeletonResults(ctx);
-  const result = results[ctx.params.skelResult ?? 0] ?? results[0];
+  const result = pickResult(results, ctx.params.skelResult);
   if (!result) {
     throw new Error('no wall_skeleton result yet — run the analysis below');
   }
@@ -408,7 +415,7 @@ const sprueMode: ViewMode = {
   label: 'Sprue proposals',
   async paint(ctx): Promise<PaintInfo> {
     const results = sprueResults(ctx);
-    const result = results[ctx.params.sprueResult ?? 0] ?? results[0];
+    const result = pickResult(results, ctx.params.sprueResult);
     if (!result) {
       throw new Error('no sprue_proposals result yet — run the analysis below');
     }
@@ -537,7 +544,7 @@ const ejectorMode: ViewMode = {
   label: 'Ejector pins',
   async paint(ctx): Promise<PaintInfo> {
     const results = stickingResults(ctx);
-    const result = results[ctx.params.stickResult ?? 0] ?? results[0];
+    const result = pickResult(results, ctx.params.stickResult);
     if (!result) {
       throw new Error('no ejection_sticking result yet — run the analysis below');
     }
@@ -638,6 +645,35 @@ const ejectorMode: ViewMode = {
   },
 };
 
+/** Per-vertex mask of readings explainable by nearby sharp geometry —
+    the false-low corner/edge artifacts of the tangent-at-vertex probe.
+    Mirrors pipeline.edge_excluded: inside the stored [band_lo, band_hi]
+    window, or flagged `suspect` (penetrating center / crease wobble).
+    Null when the result predates the band arrays. */
+async function edgeExclusion(
+  ctx: ViewCtx, analysis: string, member: string,
+): Promise<Uint8Array | null> {
+  const results = resultsFor(ctx.manifest, analysis);
+  const result = results[results.length - 1];
+  if (!result) return null;
+  const desc = resolveField(ctx, result, member);
+  const loDesc = resolveField(ctx, result, 'band_lo');
+  const hiDesc = resolveField(ctx, result, 'band_hi');
+  const suspectDesc = resolveField(ctx, result, 'suspect');
+  if (!desc || !loDesc || !hiDesc || !suspectDesc) return null;
+  const [values, lo, hi, suspect] = await Promise.all([
+    ctx.getField(desc) as Promise<Float32Array>,
+    ctx.getField(loDesc) as Promise<Float32Array>,
+    ctx.getField(hiDesc) as Promise<Float32Array>,
+    ctx.getField(suspectDesc) as Promise<Uint8Array>,
+  ]);
+  const out = new Uint8Array(values.length);
+  for (let i = 0; i < values.length; i++) {
+    if (suspect[i] || (values[i] >= lo[i] && values[i] <= hi[i])) out[i] = 1;
+  }
+  return out;
+}
+
 const thicknessMode = heatmapMode(
   'thickness', 'Wall thickness heatmap',
   (ctx) => scalarField(ctx, 'thickness', 'thickness'),
@@ -646,6 +682,8 @@ const thicknessMode = heatmapMode(
     thresholdParam: 'minThickness',
     scaleParam: 'thicknessScale',
     okLabel: 'thick — ok',
+    exclusion: (ctx) => edgeExclusion(ctx, 'thickness', 'thickness'),
+    maskParam: 'maskExplained',
   });
 
 const gapsMode = heatmapMode(
@@ -656,6 +694,34 @@ const gapsMode = heatmapMode(
     thresholdParam: 'minGap',
     scaleParam: 'gapScale',
     okLabel: 'clearance ok (incl. no opposing wall in range)',
+    exclusion: (ctx) => edgeExclusion(ctx, 'gaps', 'gap'),
+    maskParam: 'maskExplained',
+  });
+
+// separation angle per ball (requires the "Store contact angles" analysis
+// param): wall ~180°, N-degree corner ~N, edge-collapsed ~0, saturated NaN
+const thicknessAngleMode = heatmapMode(
+  'thicknessAngle', 'Thickness contact angle',
+  (ctx) => scalarField(ctx, 'thickness', 'contact_angle'),
+  {
+    flagDirection: 'below',
+    thresholdParam: 'minAngle',
+    scaleParam: 'angleScale',
+    units: '°',
+    okLabel: 'wall-like (→ 180°)',
+    maskedLabel: 'no opposing contact / saturated',
+  });
+
+const gapAngleMode = heatmapMode(
+  'gapAngle', 'Gap contact angle',
+  (ctx) => scalarField(ctx, 'gaps', 'contact_angle'),
+  {
+    flagDirection: 'below',
+    thresholdParam: 'minAngle',
+    scaleParam: 'angleScale',
+    units: '°',
+    okLabel: 'wall-like (→ 180°)',
+    maskedLabel: 'no opposing contact / saturated',
   });
 
 async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
@@ -723,7 +789,7 @@ function InjectionControls() {
   const set = (name: string, value: any) => setParam('injection_molding', name, value);
 
   const results = manifest ? resultsFor(manifest, 'mold_orientation') : [];
-  const result = results[params.result ?? 0] ?? results[results.length - 1];
+  const result = pickResult(results, params.result);
   const options: any[] = result?.stats.options ?? [];
   const fieldOptions = options.slice(0, 3);
 
@@ -733,7 +799,7 @@ function InjectionControls() {
   const sprueResultList = (manifest?.results ?? []).filter(
     (r) => r.process === 'injection_molding' && r.analysis === 'sprue_proposals'
       && r.stats.schema === 2);
-  const sprueResult = sprueResultList[params.sprueResult ?? 0] ?? sprueResultList[0];
+  const sprueResult = pickResult(sprueResultList, params.sprueResult);
   const proposals: Proposal[] = sprueResult?.stats.proposals ?? [];
 
   const stickingList = (manifest?.results ?? []).filter(
@@ -748,18 +814,19 @@ function InjectionControls() {
         <>
           <label>Result (parameter set)</label>
           <select
-            value={params.sprueResult ?? 0}
+            value={params.sprueResult ?? -1}
             onChange={(e) => {
               set('sprueResult', parseInt(e.target.value));
               set('proposal', null);
             }}
           >
+            {sprueResultList.length > 0 && <option value={-1}>latest</option>}
             {sprueResultList.map((r, i) => (
               <option key={r.hash} value={i}>
                 {`${r.stats.proposals?.length ?? 0} proposals · ${r.hash}`}
               </option>
             ))}
-            {!sprueResultList.length && <option value={0}>no results yet</option>}
+            {!sprueResultList.length && <option value={-1}>no results yet</option>}
           </select>
 
           <div className="proposal-list">
@@ -822,15 +889,16 @@ function InjectionControls() {
         <>
           <label>Result (parameter set)</label>
           <select
-            value={params.stickResult ?? 0}
+            value={params.stickResult ?? -1}
             onChange={(e) => set('stickResult', parseInt(e.target.value))}
           >
+            {stickingList.length > 0 && <option value={-1}>latest</option>}
             {stickingList.map((r, i) => (
               <option key={r.hash} value={i}>
                 {`${(r.stats.totals?.sticking_force_n ?? 0).toFixed(0)} N sticking · ${r.hash}`}
               </option>
             ))}
-            {!stickingList.length && <option value={0}>no results yet</option>}
+            {!stickingList.length && <option value={-1}>no results yet</option>}
           </select>
 
           <div className="row">
@@ -900,15 +968,16 @@ function InjectionControls() {
         <>
           <label>Result (parameter set)</label>
           <select
-            value={params.skelResult ?? 0}
+            value={params.skelResult ?? -1}
             onChange={(e) => set('skelResult', parseInt(e.target.value))}
           >
+            {skelResults.length > 0 && <option value={-1}>latest</option>}
             {skelResults.map((r, i) => (
               <option key={r.hash} value={i}>
                 {`max r ${r.params.max_radius ?? '?'} mm · ${r.hash}`}
               </option>
             ))}
-            {!skelResults.length && <option value={0}>no results yet</option>}
+            {!skelResults.length && <option value={-1}>no results yet</option>}
           </select>
 
           <label>Skeleton graph</label>
@@ -929,13 +998,14 @@ function InjectionControls() {
       {modeId === 'assignment' && (
         <>
           <label>Result (parameter set)</label>
-          <select value={params.result ?? 0} onChange={(e) => set('result', parseInt(e.target.value))}>
+          <select value={params.result ?? -1} onChange={(e) => set('result', parseInt(e.target.value))}>
+            {results.length > 0 && <option value={-1}>latest</option>}
             {results.map((r, i) => (
               <option key={r.hash} value={i}>
                 {`max slides ${r.params.max_slides ?? '?'} · ${r.hash}`}
               </option>
             ))}
-            {!results.length && <option value={0}>no results yet</option>}
+            {!results.length && <option value={-1}>no results yet</option>}
           </select>
 
           <label>Orientation option</label>
@@ -980,27 +1050,58 @@ function InjectionControls() {
       )}
 
       {modeId === 'thickness' && (
-        <div className="row">
-          <NumberParam
-            label="Min thickness (mm)" value={params.minThickness ?? 1.0}
-            onChange={(v) => set('minThickness', v)}
-          />
-          <NumberParam
-            label="Heatmap max (mm)" value={params.thicknessScale ?? ''}
-            placeholder="auto" onChange={(v) => set('thicknessScale', v)}
-          />
-        </div>
+        <>
+          <div className="row">
+            <NumberParam
+              label="Min thickness (mm)" value={params.minThickness ?? 1.0}
+              onChange={(v) => set('minThickness', v)}
+            />
+            <NumberParam
+              label="Heatmap max (mm)" value={params.thicknessScale ?? ''}
+              placeholder="auto" onChange={(v) => set('thicknessScale', v)}
+            />
+          </div>
+          <label className="check">
+            <input
+              type="checkbox" checked={params.maskExplained !== false}
+              onChange={(e) => set('maskExplained', e.target.checked)}
+            />
+            show edge-explained readings as ok
+          </label>
+        </>
       )}
 
       {modeId === 'gaps' && (
+        <>
+          <div className="row">
+            <NumberParam
+              label="Min gap (mm)" value={params.minGap ?? 0.5}
+              onChange={(v) => set('minGap', v)}
+            />
+            <NumberParam
+              label="Heatmap max (mm)" value={params.gapScale ?? ''}
+              placeholder="auto" onChange={(v) => set('gapScale', v)}
+            />
+          </div>
+          <label className="check">
+            <input
+              type="checkbox" checked={params.maskExplained !== false}
+              onChange={(e) => set('maskExplained', e.target.checked)}
+            />
+            show edge-explained readings as ok
+          </label>
+        </>
+      )}
+
+      {(modeId === 'thicknessAngle' || modeId === 'gapAngle') && (
         <div className="row">
           <NumberParam
-            label="Min gap (mm)" value={params.minGap ?? 0.5}
-            onChange={(v) => set('minGap', v)}
+            label="Min angle (°)" value={params.minAngle ?? 60}
+            onChange={(v) => set('minAngle', v)}
           />
           <NumberParam
-            label="Heatmap max (mm)" value={params.gapScale ?? ''}
-            placeholder="auto" onChange={(v) => set('gapScale', v)}
+            label="Heatmap max (°)" value={params.angleScale ?? 180}
+            onChange={(v) => set('angleScale', v)}
           />
         </div>
       )}
@@ -1012,15 +1113,17 @@ export const injectionPlugin: ProcessPlugin = {
   processId: 'injection_molding',
   label: 'Injection molding',
   modes: [assignmentMode, sprueMode, ejectorMode, thicknessMode, gapsMode,
-          skeletonMode, brepFacesMode, highlightsMode],
+          thicknessAngleMode, gapAngleMode, skeletonMode, brepFacesMode,
+          highlightsMode],
   defaults: () => ({
-    result: 0, option: 0,
+    result: -1, option: 0,
     showLines: true, showArrows: true,
     minThickness: 1.0, thicknessScale: '',
-    minGap: 0.5, gapScale: '',
-    skelResult: 0, graph: 'cluster', gate: null,
-    sprueResult: 0, proposal: null, showCandidates: false, showWeld: true,
-    stickResult: 0, pins: [], pinDiameter: 3, ejE: 2000, ejAllow: 80,
+    minGap: 0.5, gapScale: '', maskExplained: true,
+    minAngle: 60, angleScale: 180,
+    skelResult: -1, graph: 'cluster', gate: null,
+    sprueResult: -1, proposal: null, showCandidates: false, showWeld: true,
+    stickResult: -1, pins: [], pinDiameter: 3, ejE: 2000, ejAllow: 80,
     ejShowDraft: false, ejSim: null,
   }),
   Controls: InjectionControls,
