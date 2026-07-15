@@ -2517,3 +2517,152 @@ def pocket_slenderness(workdir, *, direction, max_diameter=None, ladder=1.5,
         "visible_fraction": float(visible.mean()),
     }
     return ratio, width, stats
+
+
+def span_ladder(verts, faces, thickness, *, ladder=1.5, contrast=1.5,
+                max_thickness, max_span):
+    """Per-vertex thin-span ratio: the geodesic distance (over the mesh
+    edge graph) to the nearest ADEQUATE support — material at least
+    ``contrast`` times the vertex's own thickness — divided by the vertex's
+    own thickness. The direction-free sibling of zmap.slenderness_ladder:
+    support thickness plays the pocket-width role, distance-to-support the
+    depth role.
+
+    Sweep rule: ascending geometric ladder of thickness scales (step
+    ``ladder``); each vertex is assigned at the FIRST scale that meets its
+    support requirement (contrast x own thickness) and has any seed
+    vertices, via one multi-source Dijkstra per used scale. The nearest
+    adequate support wins — a rib supported by a nearby modest wall reads
+    the short distance to that wall, not the long distance to bulk (the
+    wall's own floppiness is the wall's own reading; series compliance
+    stays per-member). Vertices whose requirement exceeds every scale with
+    material — near-bulk vertices, and uniform parts with no thickness
+    contrast — stay 0: no support contrast, no span reading. The ladder
+    step only rounds the support requirement UP (by < ladder), which can
+    substitute a farther, thicker support: conservative, and finer ladders
+    tighten it.
+
+    Pure numpy/scipy over the given arrays (no meshlib, no workdir) so
+    synthetic fixtures can exercise it directly. Distances saturate at
+    ``max_span``. Returns (ratio float32[V], critical float32[V], scales):
+    critical is the support-thickness scale each vertex was measured
+    against (0 where unassigned).
+    """
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import dijkstra
+
+    finite = np.isfinite(thickness) & (thickness > 0)
+    count = len(verts)
+    ratio = np.zeros(count, dtype=np.float32)
+    critical = np.zeros(count, dtype=np.float32)
+    if not finite.any():
+        return ratio, critical, []
+
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]],
+                            faces[:, [2, 0]]])
+    edges.sort(axis=1)
+    edges = np.unique(edges, axis=0)
+    lengths = np.linalg.norm(verts[edges[:, 0]] - verts[edges[:, 1]], axis=1)
+    graph = csr_matrix(
+        (np.concatenate([lengths, lengths]),
+         (np.concatenate([edges[:, 0], edges[:, 1]]),
+          np.concatenate([edges[:, 1], edges[:, 0]]))),
+        shape=(count, count))
+
+    # ladder from the smallest support requirement present (p05 keeps
+    # outlier-thin corner readings from adding useless scales) up to the
+    # thickest support available
+    t_lo = max(contrast * float(np.percentile(thickness[finite], 5)), 1e-6)
+    scales = []
+    t = min(t_lo, max_thickness)
+    while t < max_thickness:
+        scales.append(t)
+        t *= ladder
+    scales.append(float(max_thickness))
+
+    requirement = contrast * thickness
+    assigned = ~finite  # never assign non-finite readings
+    used = []
+    for t in scales:
+        select = ~assigned & (requirement <= t)
+        if not select.any():
+            continue
+        seeds = np.flatnonzero(finite & (thickness >= t))
+        if not len(seeds):
+            continue  # requirement waits for a scale that has material
+        dist = dijkstra(graph, directed=False, indices=seeds, min_only=True)
+        np.minimum(dist, max_span, out=dist)
+        ratio[select] = (dist[select] / thickness[select]).astype(np.float32)
+        critical[select] = t
+        assigned |= select
+        used.append(float(t))
+    return ratio, critical, used
+
+
+def thin_span(workdir, *, thickness, band_lo=None, band_hi=None,
+              suspect=None, max_thickness=None, ladder=1.5, contrast=1.5,
+              max_span=None, progress=None):
+    """Per-vertex thin-span (normal-direction stiffness proxy) field: how
+    far each vertex sits from material at least ``contrast`` times its own
+    thickness, in units of its own thickness — see span_ladder. Bending
+    compliance of a strip/plate grows ~(span/thickness)^3, so the linear
+    ratio stored here is the right dimensionless screen for "thin areas
+    that spread far": stubby ribs and short bridges read low, long thin
+    bridges and large unsupported panels read high, and near-bulk material
+    (nothing meaningfully thicker exists) reads 0. Proxy limits: curvature
+    stiffening is ignored (a curved shell reads like a flat panel),
+    fixturing / load direction are unknown, and a perfectly uniform part
+    has no thickness contrast to measure against — it screens internal
+    support only, not a FEA.
+
+    ``thickness`` is the per-vertex inscribed-sphere diameter field (the
+    cached `thickness` analysis result); pass its ``band_lo/band_hi/
+    suspect`` masks to lift edge-explainable false-low readings to their
+    band ceiling, so chamfer rings do not divide by an artifact thickness.
+    ``max_thickness`` None = the p99 of the field; ``max_span`` None = the
+    bounding box diagonal.
+    """
+    verts, faces = load_mesh_arrays(workdir)
+
+    # edge-explainable readings are false-LOW: substituting the band
+    # ceiling keeps both the support requirement and the denominator sane
+    if band_lo is not None and band_hi is not None and suspect is not None:
+        excluded = edge_excluded(thickness, band_lo, band_hi,
+                                 suspect.astype(bool))
+        thickness = np.where(excluded, np.maximum(thickness, band_hi),
+                             thickness)
+
+    # readings below the mesh's analysis resolution are sliver/knife-edge
+    # artifacts the mesh cannot measure — dividing by them mints absurd
+    # ratios, so they read 0 (unmeasurable, not "infinitely floppy")
+    floor = part_resolution(workdir)
+    if floor:
+        thickness = np.where(thickness < floor, np.nan, thickness)
+
+    finite = np.isfinite(thickness) & (thickness > 0)
+    if max_thickness is None:
+        max_thickness = (float(np.percentile(thickness[finite], 99))
+                         if finite.any() else 0.0)
+        logger.info(f"max support thickness {max_thickness:.2f} mm from p99")
+    if max_span is None:
+        extents = verts.max(axis=0) - verts.min(axis=0)
+        max_span = float(np.linalg.norm(extents))
+
+    _report(progress, 0.2, "span ladder")
+    ratio, critical, scales = span_ladder(
+        verts, faces, thickness, ladder=ladder, contrast=contrast,
+        max_thickness=max_thickness, max_span=max_span)
+
+    stats = {
+        "max_thickness": float(max_thickness),
+        "max_span": float(max_span),
+        "ladder": float(ladder),
+        "contrast": float(contrast),
+        "scales": len(scales),
+        "verts": int(ratio.size),
+        "p50": float(np.percentile(ratio, 50)),
+        "p95": float(np.percentile(ratio, 95)),
+        "max": float(ratio.max()),
+        "above_5": float(np.mean(ratio > 5.0)),
+    }
+    return ratio, critical, stats

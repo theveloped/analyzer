@@ -975,6 +975,20 @@ const slendernessMode = heatmapMode(
     okLabel: 'stocky steel — ok',
   });
 
+// distance to supporting thick material over local thickness scale — the
+// direction-free stiffness proxy (bending compliance ~ ratio³); long thin
+// bridges and large unsupported panels read high
+const thinSpanMode = heatmapMode(
+  'thinSpan', 'Thin span / stiffness heatmap',
+  (ctx) => scalarField(ctx, 'thin_span', 'span_ratio'),
+  {
+    flagDirection: 'above',
+    thresholdParam: 'maxSpanRatio',
+    scaleParam: 'spanScale',
+    units: '×',
+    okLabel: 'well supported — ok',
+  });
+
 // separation angle per ball (requires the "Store contact angles" analysis
 // param): wall ~180°, N-degree corner ~N, edge-collapsed ~0, saturated NaN
 const thicknessAngleMode = heatmapMode(
@@ -1552,6 +1566,19 @@ function InjectionControls() {
         </div>
       )}
 
+      {modeId === 'thinSpan' && (
+        <div className="row">
+          <NumberParam
+            label="Max span/thickness (×)" value={params.maxSpanRatio ?? 5.0}
+            onChange={(v) => set('maxSpanRatio', v)}
+          />
+          <NumberParam
+            label="Heatmap max (×)" value={params.spanScale ?? ''}
+            placeholder="auto" onChange={(v) => set('spanScale', v)}
+          />
+        </div>
+      )}
+
       {(modeId === 'thicknessAngle' || modeId === 'gapAngle') && (
         <div className="row">
           <NumberParam
@@ -1572,7 +1599,7 @@ export const injectionPlugin: ProcessPlugin = {
   processId: 'injection_molding',
   label: 'Injection molding',
   modes: [assignmentMode, sprueMode, flowFillMode, coolingMode, ejectorMode,
-          thicknessMode, gapsMode, slendernessMode,
+          thicknessMode, gapsMode, slendernessMode, thinSpanMode,
           thicknessAngleMode, gapAngleMode,
           skeletonMode, voxelFieldMode, brepFacesMode, highlightsMode],
   defaults: () => ({
@@ -1581,6 +1608,7 @@ export const injectionPlugin: ProcessPlugin = {
     minThickness: 1.0, thicknessScale: '',
     minGap: 0.5, gapScale: '', maskExplained: true,
     maxSlenderness: 2.0, slendernessScale: '',
+    maxSpanRatio: 5.0, spanScale: '',
     minAngle: 60, angleScale: 180,
     skelResult: -1, graph: 'cluster', gate: null,
     sprueResult: -1, proposal: null, showCandidates: false, showWeld: true,

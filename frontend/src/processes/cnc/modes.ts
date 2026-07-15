@@ -2,9 +2,9 @@
 // update() dispatcher.
 
 import {
-  COL, faceAngles, faceBlocked, faceValues, percentile, rampColor,
+  COL, faceAngles, faceBlocked, faceValues, heatmapMode, percentile, rampColor,
 } from '../../colorizers/core';
-import type { PaintInfo, ViewMode } from '../../registry/types';
+import type { PaintInfo, ViewCtx, ViewMode } from '../../registry/types';
 import {
   accessKeep, faceAccess, requireSource, vertexGap, vertexMinStickout,
 } from './compose';
@@ -14,6 +14,28 @@ const num = (value: any) => {
   const parsed = parseFloat(value);
   return isFinite(parsed) ? parsed : NaN;
 };
+
+// the thin_span field is computed by the (process-agnostic) injection
+// molding analysis; surface it here too — weak flexible features matter
+// for machining as much as for molding
+function spanField(ctx: ViewCtx) {
+  const results = ctx.manifest.results.filter(
+    (r) => r.process === 'injection_molding' && r.analysis === 'thin_span');
+  const result = results[results.length - 1];
+  const fieldId = result?.fields.find((f) => f.endsWith('.span_ratio'));
+  return fieldId ? ctx.manifest.fields.find((f) => f.id === fieldId) ?? null : null;
+}
+
+export const thinSpanMode = heatmapMode(
+  'thinSpan', 'Thin span / stiffness heatmap',
+  spanField,
+  {
+    flagDirection: 'above',
+    thresholdParam: 'maxSpanRatio',
+    scaleParam: 'spanScale',
+    units: '×',
+    okLabel: 'well supported — ok',
+  });
 
 export const unifiedMode: ViewMode = {
   id: 'unified',

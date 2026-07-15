@@ -24,6 +24,7 @@ SKELETON_SCHEMA = 5  # wall_skeleton schema (5: unbounded-marker normalization)
 EJECTION_SCHEMA = 2  # ejection_sticking schema version, cache salt
 FLOW_SCHEMA = 1  # flow_voxels / flow_fill schema version, cache salt
 SLENDER_SCHEMA = 1  # slenderness schema version, cache salt
+SPAN_SCHEMA = 1  # thin_span schema version, cache salt
 
 SKELETON_PARAMS = ("max_radius", "min_radius", "cluster_factor",
                    "absorb_factor")
@@ -135,6 +136,57 @@ def run_slenderness(workdir, params, progress):
     }
     arrays = {"slenderness": ratio, "critical_width": width}
     store_result(workdir, "injection_molding", "slenderness", cache_params,
+                 stats, arrays=arrays, field_meta=field_meta)
+    return AnalysisResult(stats=stats, fields=list(arrays))
+
+
+def span_cache_params(workdir, params):
+    """thin_span cache key: declared params + schema/mesh salts (no
+    directions — the field is direction-independent)."""
+    return {**params, "schema": SPAN_SCHEMA,
+            "mesh": pipeline.mesh_fingerprint(workdir)}
+
+
+def run_thin_span(workdir, params, progress):
+    cache_params = span_cache_params(workdir, params)
+    cached = load_cached_result(workdir, "injection_molding", "thin_span",
+                                cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    def scaled(lo, hi):
+        if progress is None:
+            return None
+        return lambda f, m: progress(lo + (hi - lo) * f, m)
+
+    # the thickness field is a cache-aware sub-run: default params -> the
+    # result is shared with a plain thickness analysis run
+    thick_params = {"max_radius": params["max_radius"], "sharp_deg": 25.0,
+                    "contact_angles": False}
+    run_thickness(workdir, thick_params, scaled(0.0, 0.7))
+    thick_cache = {**thick_params, "mesh": pipeline.mesh_fingerprint(workdir)}
+    thick_arrays = load_result_arrays(workdir, "injection_molding",
+                                      "thickness", thick_cache)
+
+    ratio, critical, stats = pipeline.thin_span(
+        workdir, thickness=thick_arrays["thickness"],
+        band_lo=thick_arrays["band_lo"], band_hi=thick_arrays["band_hi"],
+        suspect=thick_arrays["suspect"],
+        max_thickness=params["max_thickness"], ladder=params["ladder"],
+        contrast=params["contrast"], max_span=params["max_span"],
+        progress=scaled(0.7, 1.0))
+
+    field_meta = {
+        "span_ratio": {"kind": "thin_span", "association": "vertex",
+                       "role": "scalar", "units": ""},
+        # the thickness scale that realised each vertex's max ratio — the
+        # support thickness the span is measured against (0 = no reading)
+        "critical_thickness": {"kind": "thin_span", "association": "vertex",
+                               "role": "data", "units": "mm"},
+    }
+    arrays = {"span_ratio": ratio, "critical_thickness": critical}
+    store_result(workdir, "injection_molding", "thin_span", cache_params,
                  stats, arrays=arrays, field_meta=field_meta)
     return AnalysisResult(stats=stats, fields=list(arrays))
 
@@ -374,6 +426,26 @@ PROCESS = ProcessDef(
                       label="Store contact angles"),
             ],
             run=run_gaps,
+        ),
+        AnalysisDef(
+            id="thin_span",
+            label="Thin span / stiffness proxy",
+            description="Distance to supporting thick material over local thickness scale, direction-free — long thin bridges and large unsupported panels read high (bending compliance ~ ratio^3).",
+            requires=["prep/mesh"],
+            params=[
+                Param("max_radius", "number", default=None, unit="mm", min=0,
+                      label="Max sphere radius (thickness, blank = auto)"),
+                Param("max_thickness", "number", default=None, unit="mm",
+                      min=0,
+                      label="Max support thickness (blank = auto p99)"),
+                Param("ladder", "number", default=1.5, min=1.05, max=2.0,
+                      label="Thickness sweep step (finer = smoother, slower)"),
+                Param("contrast", "number", default=1.5, min=1.1, max=3.0,
+                      label="Support contrast (support >= this x own thickness)"),
+                Param("max_span", "number", default=None, unit="mm", min=0,
+                      label="Span saturation (blank = bbox diagonal)"),
+            ],
+            run=run_thin_span,
         ),
         AnalysisDef(
             id="slenderness",
