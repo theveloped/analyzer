@@ -148,7 +148,9 @@ def _result_entries(workdir, base_url, face_count, vert_count):
     current_fingerprint = pipeline.directions_fingerprint(workdir)
     current_mesh = pipeline.mesh_fingerprint(workdir)
     pattern = os.path.join(workdir, RESULTS_DIR, "*", "*", "*.json")
-    for json_path in sorted(glob.glob(pattern)):
+    # oldest -> newest so "last entry per analysis" means the most recent
+    # recompute — the frontend's default result picks rely on this
+    for json_path in sorted(glob.glob(pattern), key=os.path.getmtime):
         if json_path.endswith("_overrides.json"):
             continue  # assignment overrides live next to their result
         with open(json_path) as f:

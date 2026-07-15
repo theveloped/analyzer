@@ -204,7 +204,10 @@ def main():
         from api.fields import result_field_bytes
         from processes.base import params_hash
         from processes.injection_molding import skeleton_cache_params
-        result_hash = params_hash(skeleton_cache_params(workdir, params))
+        cache_key = skeleton_cache_params(workdir, params)
+        check("cache key carries schema 5",
+              cache_key["schema"] == 5, f"schema {cache_key['schema']}")
+        result_hash = params_hash(cache_key)
         for name, entry in by_id.items():
             data, dtype = result_field_bytes(
                 workdir, "injection_molding", "wall_skeleton", result_hash, name)
@@ -214,9 +217,12 @@ def main():
                   f"{dtype} {len(data)} bytes")
 
     # --- STEP mesh: non-manifold vertex splitting must not break the ----
-    # per-vertex contract or hang the inscribed-sphere correction
-    step = os.path.join(os.path.dirname(__file__), "tests", "Aligator.STEP")
-    if os.path.exists(step):
+    # per-vertex contract or hang the inscribed-sphere correction; the
+    # drafted variant also exercises the C1-crease support filtering
+    candidates = [os.path.join(os.path.dirname(__file__), "tests", name)
+                  for name in ("Aligator.STEP", "AligatorDrafted.stp")]
+    step = next((path for path in candidates if os.path.exists(path)), None)
+    if step:
         print("=== STEP part (welded, non-manifold) ===")
         from processes.base import apply_defaults
         from processes.prep import PROCESS as PREP
@@ -252,6 +258,9 @@ def main():
                   result.stats["cluster_nodes"] > 0,
                   f"{result.stats['cluster_nodes']} clusters, "
                   f"{result.stats['penetrating_dropped']} penetrating dropped")
+            check("unbounded markers normalized (sane mean thickness)",
+                  result.stats["mean_thickness"] < 1e3,
+                  f"mean {result.stats['mean_thickness']:.2f}")
 
     print()
     if failures:

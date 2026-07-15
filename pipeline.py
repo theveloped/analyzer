@@ -480,7 +480,8 @@ def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
 
 
 def compute_thickness(workdir, *, max_radius=None, inverted=False,
-                      max_iters=1000, progress=None):
+                      max_iters=1000, sharp_deg=25.0, contact_angles=False,
+                      progress=None):
     """Per-vertex maximal inscribed ("rolling") sphere diameter.
 
     inverted=False measures wall thickness inside the part. inverted=True
@@ -491,7 +492,27 @@ def compute_thickness(workdir, *, max_radius=None, inverted=False,
     opposing wall worth considering); max_radius=None derives meshlib's
     recommended 0.5 * min(bbox dims).
 
-    Returns (values float32[verts], max_radius).
+    The field itself is the raw probe: every reading is a valid empty ball,
+    a trustworthy lower bound, so it is never modified. The tangent-at-
+    vertex construction does read falsely LOW near sharp convex edges
+    (concave ones for the gap) and on chord creases of C1-continuous BREP
+    faces — those artifacts are captured in the returned masks instead:
+    `band_lo`/`band_hi` bound the readings explainable by the nearest
+    matching-sign sharp feature (_sharp_edge_vertices/_edge_band; `limit`
+    = 2*d*tan(Omega/2) is the nominal explainable diameter, for display)
+    and `suspect` flags penetrating reconstructed centers (crease wobble,
+    _penetrating_mask). Combine them with edge_excluded() to keep thin-wall
+    flags off edge artifacts at any threshold — cheap array logic, shared
+    by the CLI and the viewer. sharp_deg=0/None skips the masks entirely.
+    contact_angles=True additionally stores each ball's separation angle
+    (_contact_angles: wall ~180 deg, N-degree corner ~N, edge ~0,
+    saturated NaN) — an opt-in diagnostic of how wall-like each reading
+    is.
+
+    Returns (values float32[verts], max_radius, masks) with masks =
+    {"limit"/"band_lo"/"band_hi" float32[verts] (limit -1 = no sharp
+    features), "suspect" bool[verts], "angle" float32[verts] or None,
+    "floor": float, "tol": EDGE_FIT_TOL}.
     """
     verts, faces = load_mesh_arrays(workdir)
     mesh = mn.meshFromFacesVerts(faces, verts)
@@ -504,23 +525,76 @@ def compute_thickness(workdir, *, max_radius=None, inverted=False,
     if inverted:
         mesh.topology.flipOrientation()
 
-    settings = mm.InSphereSearchSettings()
-    settings.insideAndOutside = False
-    settings.maxRadius = float(max_radius)
-    settings.maxIters = int(max_iters)
-    settings.minShrinkage = 1e-6
+    settings = _in_sphere_settings(max_radius, max_iters=max_iters)
 
     _report(progress, 0.2, "rolling inscribed spheres")
     result = mm.computeInSphereThicknessAtVertices(mesh, settings)
-    values = _per_vertex(np.array(result.vec, dtype=np.float32), len(verts))
+    raw = _per_vertex(np.array(result.vec, dtype=np.float32), len(verts))
     # meshlib returns an unbounded (inf) radius where no sphere is limited by
     # an opposing wall — degenerate/open spots common on welded STEP meshes.
     # Saturate those to the documented cap so the field, its stats and the
     # heatmap stay finite (cap = "no opposing wall worth considering").
     cap = np.float32(2.0 * max_radius)
-    values = np.where(np.isfinite(values), np.minimum(values, cap), cap)
+    values = np.where(np.isfinite(raw), np.minimum(raw, cap), cap)
+
+    if not (sharp_deg or contact_angles):
+        masks = {"limit": np.full(len(verts), -1.0, dtype=np.float32),
+                 "band_lo": np.zeros(len(verts), dtype=np.float32),
+                 "band_hi": np.full(len(verts), -1.0, dtype=np.float32),
+                 "suspect": np.zeros(len(verts), dtype=bool),
+                 "angle": None, "floor": 0.0, "tol": EDGE_FIT_TOL}
+        _report(progress, 1.0, "thickness field done")
+        return values, float(max_radius), masks
+
+    _report(progress, 0.7, "edge-limit masks")
+    from scipy.spatial import cKDTree
+
+    face_normals = load_face_normals(workdir).astype(np.float64)
+    mean_edge = _mean_edge_length(verts, faces)
+    floor = _slack_floor(mean_edge, part_deflection(workdir))
+
+    # meshlib marks unbounded balls inconsistently (inf, but also
+    # FLT_MAX-scale finite values on welded STEP meshes) — normalize beyond
+    # the search radius to inf so the tree passes skip them
+    radii = raw.astype(np.float64) / 2.0
+    radii[~np.isfinite(radii) | (radii > max_radius * (1 + 1e-3))] = np.inf
+    vertex_normals = _vertex_normals(verts, faces, face_normals)
+    centers = _reconstruct_centers(verts, vertex_normals, radii,
+                                   inverted=inverted)
+    vert_tree = cKDTree(verts)
+
+    if sharp_deg:
+        suspect = _penetrating_mask(vert_tree, centers, radii, mean_edge)
+        brep_path = os.path.join(workdir, BREP_FACES_FILE)
+        brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
+        sharp_idx, sharp_tan = _sharp_edge_vertices(
+            verts, faces, face_normals, sharp_deg=sharp_deg,
+            concave=inverted, brep_ids=brep_ids)
+        limit, band_lo, band_hi = _edge_band(
+            verts, sharp_idx, sharp_tan, mean_edge=mean_edge, floor=floor)
+        logger.debug(f"edge masks: {len(sharp_idx)} sharp vertices, "
+                     f"{int(suspect.sum())} penetrating of {len(verts)}")
+    else:  # angles only — no exclusions
+        suspect = np.zeros(len(verts), dtype=bool)
+        limit = np.full(len(verts), -1.0)
+        band_lo = np.zeros(len(verts))
+        band_hi = np.full(len(verts), -1.0)
+
+    angle = None
+    if contact_angles:
+        _report(progress, 0.85, "contact angles")
+        angle = _contact_angles(vert_tree, verts, vertex_normals, centers,
+                                radii, sign=1.0 if inverted else -1.0,
+                                floor=floor, max_radius=float(max_radius))
+        angle = angle.astype(np.float32)
+
+    masks = {"limit": limit.astype(np.float32),
+             "band_lo": band_lo.astype(np.float32),
+             "band_hi": band_hi.astype(np.float32),
+             "suspect": suspect, "angle": angle,
+             "floor": float(floor), "tol": EDGE_FIT_TOL}
     _report(progress, 1.0, "thickness field done")
-    return values, float(max_radius)
+    return values, float(max_radius), masks
 
 
 def mold_orientation(workdir, *, max_slides=2, slide_tollerance=2.0, count=10,
@@ -874,68 +948,267 @@ def thickness_highlights(faces, thickness, hi=1.3):
 NODE_SENTINEL = np.uint32(0xFFFFFFFF)  # vert->node mapping: vertex has no node
 
 
-def _in_sphere_settings(max_radius):
+def _in_sphere_settings(max_radius, max_iters=1000):
     from meshlib import mrmeshpy as mm
 
+    # InSphereSearchSettings also exposes minAngleCos, which skips touch
+    # points close to the start vertex *during* shrinking — it changes the
+    # returned radius rather than classifying balls, so the support filter
+    # below stays a post-pass. Possible future experiment, unused here.
     settings = mm.InSphereSearchSettings()
     settings.insideAndOutside = False
     settings.maxRadius = float(max_radius)
-    settings.maxIters = 1000
+    settings.maxIters = int(max_iters)
     settings.minShrinkage = 1e-6
     return settings
 
 
-def _skeleton_centers(verts, faces, radii, face_normals):
-    """Inscribed-sphere centers per vertex.
+# Wedges tighter than this interior opening are genuine knife/V-thin
+# features: their small readings are true thin walls, never artifacts, so
+# their edges are not exclusion sources.
+SHARP_OMEGA_MIN_DEG = 60.0
+# Relative width of the exclusion band around the edge-explainable limit
+# 2*d*tan(Omega/2): readings inside [limit/tol - floor, limit*tol + floor]
+# are what the wedge alone would produce; readings well below it are
+# genuinely thinner than the edge explains and stay flaggable.
+EDGE_FIT_TOL = 1.3
 
-    meshlib constrains each sphere's center to the inward normal at the
-    vertex, so centers reconstruct vectorized as p - n*r — exact on smooth
-    regions. The per-vertex normal is the area-weighted average of the
-    incident faces' exact surface normals (normals.npy): within a BREP face
-    those vary smoothly, so centers stop wobbling with the tessellation's
-    chord facets (the false creases facet-averaged normals paint into the
-    skeleton). Two suspect classes are handled without meshlib's per-vertex
-    findInSphere (which can hang indefinitely on the degenerate, split
-    topology of welded STEP meshes and cannot be interrupted from Python):
 
-    - penetrating: the reconstructed center sits closer to the surface than
-      its own radius, so the estimate is unreliable — those vertices are
-      dropped (radius -> nan) rather than seeding a bad skeleton node. They
-      are ~1% at most and the clustered graph stays connected.
-    - sharp crease: the averaged normal is a fine medial direction there and
-      the downstream absorption pass folds rim/crease nodes into their wall,
-      so the estimate is kept as-is.
+def _edge_lengths(verts, faces):
+    """(faces, 3) edge lengths of every triangle."""
+    tri = verts[faces].astype(np.float64)
+    return np.linalg.norm(tri - np.roll(tri, -1, axis=1), axis=2)
+
+
+def _mean_edge_length(verts, faces):
+    return max(float(_edge_lengths(verts, faces).mean()), 1e-6)
+
+
+def _slack_floor(mean_edge, deflection):
+    """Absolute tangency/coverage slack floor: half a mesh edge (surfaces
+    are only *sampled* by vertices) plus the chord deflection of curved
+    faces."""
+    return max(0.5 * mean_edge, float(deflection))
+
+
+def _sharp_edge_vertices(verts, faces, face_normals, *, sharp_deg,
+                         concave=False, brep_ids=None):
+    """Vertices on matching-sign sharp feature edges, with wedge factors.
+
+    An edge qualifies iff the exact-normal dihedral is at least sharp_deg,
+    the interior wedge opening Omega = 180 - phi is at least
+    SHARP_OMEGA_MIN_DEG, the sign matches (convex edges limit thickness
+    balls; part-concave edges limit gap balls on the flipped mesh), and —
+    when BREP provenance is available — the two faces belong to different
+    BREP faces (chord steps interior to one curved BREP face are
+    tessellation, not features; STL falls back to angle-only facet
+    normals). Returns (vert_idx, tan_half): tan_half = tan(Omega/2), the
+    exact wedge limit factor r = d*tan(Omega/2), maximized per vertex over
+    its qualifying edges.
+    """
+    from molding import face_adjacency
+
+    pairs, edge_verts = face_adjacency(faces)
+    n1 = face_normals[pairs[:, 0].astype(np.int64)]
+    n2 = face_normals[pairs[:, 1].astype(np.int64)]
+    cos_phi = np.clip(np.einsum("ij,ij->i", n1, n2), -1.0, 1.0)
+
+    sharp = (cos_phi <= np.cos(np.radians(sharp_deg))) \
+        & (cos_phi >= np.cos(np.radians(180.0 - SHARP_OMEGA_MIN_DEG)))
+    if brep_ids is not None:
+        sharp &= (brep_ids[pairs[:, 0].astype(np.int64)]
+                  != brep_ids[pairs[:, 1].astype(np.int64)])
+
+    centroids = verts[faces].astype(np.float64).mean(axis=1)
+    across = centroids[pairs[:, 1].astype(np.int64)] \
+        - centroids[pairs[:, 0].astype(np.int64)]
+    convex = np.einsum("ij,ij->i", n1, across) < 0.0
+    sharp &= ~convex if concave else convex
+
+    if not sharp.any():
+        return np.zeros(0, dtype=np.int64), np.zeros(0)
+
+    # tan(Omega/2) = cot(phi/2) = sin(phi) / (1 - cos(phi))
+    sin_phi = np.sqrt(np.maximum(1.0 - cos_phi[sharp] ** 2, 0.0))
+    tan_half = sin_phi / np.maximum(1.0 - cos_phi[sharp], 1e-12)
+
+    edge_verts = edge_verts[sharp].astype(np.int64)
+    per_vert = np.zeros(len(verts))
+    np.maximum.at(per_vert, edge_verts[:, 0], tan_half)
+    np.maximum.at(per_vert, edge_verts[:, 1], tan_half)
+    idx = np.flatnonzero(per_vert > 0.0)
+    return idx, per_vert[idx]
+
+
+def _edge_band(verts, sharp_idx, sharp_tan, *, mean_edge, floor,
+               tol=EDGE_FIT_TOL):
+    """Per-vertex edge-explainable reading band (limit, band_lo, band_hi).
+
+    limit = 2*d*tan(Omega/2) from the nearest matching-sign sharp vertex —
+    the exact diameter the wedge alone produces at distance d. The band is
+    asymmetric on purpose: the KD distance to sampled edge vertices never
+    underestimates the true edge distance, so band_lo = limit/tol - floor
+    needs no mesh term (widening it would swallow genuinely tight
+    walls/gaps near corners); the discrete probe at on-edge vertices is
+    limited by the first ring of sampled triangles (~0.7 edge lengths)
+    instead of shrinking to the theoretical 0, so band_hi adds one
+    mean-edge worth of wedge reach: tol*(limit + mean_edge*tan) + floor.
+    When no sharp features exist limit = -1 and the band is empty.
     """
     from scipy.spatial import cKDTree
 
+    if not len(sharp_idx):
+        return (np.full(len(verts), -1.0), np.zeros(len(verts)),
+                np.full(len(verts), -1.0))
+    d, j = cKDTree(verts[sharp_idx]).query(verts, workers=-1)
+    tan = sharp_tan[j]
+    limit = 2.0 * d * tan
+    band_lo = np.maximum(limit / tol - floor, 0.0)
+    band_hi = tol * (limit + mean_edge * tan) + floor
+    # a vertex ON the sharp feature can never yield trustworthy thin-wall
+    # evidence — its tangent ball is edge-dominated by construction, and at
+    # multi-face corners the discrete reading lands anywhere within a few
+    # mesh edges — so on-edge readings are excluded outright
+    band_hi[d <= 0.5 * mean_edge] = np.inf
+    return limit, band_lo, band_hi
+
+
+def _pair_budget_slices(counts, budget=5_000_000):
+    """Consecutive index slices whose hit counts sum to <= budget each, so
+    flattened (ball, vertex) pair arrays stay memory-bounded even when
+    large balls hit thousands of vertices apiece."""
+    cum = np.cumsum(counts, dtype=np.int64)
+    start = 0
+    while start < len(counts):
+        base = int(cum[start - 1]) if start else 0
+        end = int(np.searchsorted(cum, base + budget, side="right"))
+        end = max(end, start + 1)
+        yield slice(start, end)
+        start = end
+
+
+def _contact_angles(vert_tree, verts, normals, centers, radii, *, sign,
+                    floor, max_radius=None, chunk=200_000):
+    """Separation angle (degrees) per ball: the largest angle any surface
+    contact subtends at the center against the ball's own tangency
+    direction (p - c). A wall reads ~180, a ball bound by an N-degree
+    corner reads ~N, an edge-collapsed ball ~0 — how "wall-like" each
+    thickness/gap reading is.
+
+    Contacts are the vertices within r + floor of the center, but the
+    angle is measured against each contact's implied tangency direction
+    `-sign * n_q` (a ball tangent to a wall with outward normal n touches
+    it at `c - sign*r*n` regardless of where on the wall the sample sits)
+    — exact on planar walls, so the shell can be generous without the
+    position-based overshoot of samples past the tangency. Contacts whose
+    implied tangency lands back on the ball's own vertex (same-wall
+    samples: |t_q - p| <= r/2) are its p-tangency, not a separate
+    contact, and are skipped. NaN where the angle is meaningless:
+    sub-resolution balls (center effectively on the surface) and
+    saturated ones. Saturated = at the search cap, matching the field's
+    own saturated_fraction semantics (meshlib reports unbounded balls
+    either as inf markers or as a finite stop at the cap) — skipping them
+    up front also avoids the most expensive large-radius tree queries.
+    """
+    count = len(radii)
+    angles = np.full(count, np.nan)
+    with np.errstate(invalid="ignore"):
+        active = np.isfinite(radii) & (radii > floor)
+        if max_radius is not None:
+            active &= radii < max_radius * (1 - 1e-4)
+    active = np.flatnonzero(active)
+    if not len(active):
+        return angles
+
+    v64 = verts.astype(np.float64)
+    min_cos = np.ones(count)
+    for start in range(0, len(active), chunk):
+        idx = active[start:start + chunk]
+        # query once; the pair budget only bounds the flattened math below
+        all_hits = vert_tree.query_ball_point(
+            centers[idx], r=radii[idx] + floor, workers=-1,
+            return_sorted=False)
+        counts = np.fromiter(map(len, all_hits), np.int64, len(all_hits))
+        for piece in _pair_budget_slices(counts):
+            sub = idx[piece]
+            pair_ball = np.repeat(sub, counts[piece])
+            pair_vert = np.concatenate(
+                all_hits[piece], dtype=np.int64, casting="unsafe")
+            u_p = v64[pair_ball] - centers[pair_ball]
+            u_p /= np.maximum(
+                np.linalg.norm(u_p, axis=1, keepdims=True), 1e-30)
+            n_q = normals[pair_vert]
+            r_pair = radii[pair_ball][:, None]
+            tangency = centers[pair_ball] - sign * r_pair * n_q
+            distinct = np.linalg.norm(
+                tangency - v64[pair_ball], axis=1) > 0.5 * radii[pair_ball]
+            cos = np.einsum("ij,ij->i", u_p, -sign * n_q)
+            np.minimum.at(min_cos, pair_ball[distinct], cos[distinct])
+    angles[active] = np.degrees(
+        np.arccos(np.clip(min_cos[active], -1.0, 1.0)))
+    return angles
+
+
+def edge_excluded(values, band_lo, band_hi, suspect):
+    """Readings that must not count as thin walls: inside the explainable
+    band around the nearest sharp edge (the wedge alone would produce a
+    ball that size — the false-low corner/edge artifact), or with a
+    penetrating reconstructed center (C1 crease wobble). Readings below
+    the band are genuinely thinner than the edge explains and stay
+    flaggable. Two comparisons + an OR — shared by the CLI highlights and
+    mirrored by the viewer's interactive thresholds."""
+    values = np.asarray(values, dtype=np.float64)
+    band = (np.asarray(band_lo, dtype=np.float64) <= values) \
+        & (values <= np.asarray(band_hi, dtype=np.float64))
+    return band | np.asarray(suspect, dtype=bool)
+
+
+def _vertex_normals(verts, faces, face_normals):
+    """Area-weighted average of the incident faces' unit normals, per vertex.
+
+    With exact BREP surface normals (normals.npy) these vary smoothly within
+    a BREP face, so reconstructed sphere centers stop wobbling with the
+    tessellation's chord facets."""
     tri = verts[faces].astype(np.float64)
     face_weights = np.linalg.norm(
         np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
     accum = np.zeros((len(verts), 3))
     np.add.at(accum, faces.reshape(-1),
               np.repeat(face_normals * face_weights[:, None], 3, axis=0))
-    normals = accum / np.maximum(
+    return accum / np.maximum(
         np.linalg.norm(accum, axis=1, keepdims=True), 1e-30)
-    centers = verts.astype(np.float64) - normals * radii[:, None]
 
-    tri = verts[faces].astype(np.float64)
-    edge_lengths = np.linalg.norm(tri - np.roll(tri, -1, axis=1), axis=2)
-    mean_edge = float(edge_lengths.mean())
 
-    # penetration flag: a valid center keeps its radius from the surface
-    # (vertex samples of it; mean_edge covers sampling slack)
-    surface_distance, _ = cKDTree(verts).query(centers, workers=-1)
+def _reconstruct_centers(verts, normals, radii, inverted=False):
+    """Inscribed-sphere centers: meshlib constrains each center to the
+    inward normal at the vertex, so centers reconstruct as p - n*r. On an
+    orientation-flipped mesh (the gaps field) meshlib's inward direction is
+    the original outward normal, so the sign flips to p + n*r — normals stay
+    in the on-disk original orientation. Non-finite (saturated/dropped)
+    balls keep their center at the vertex so tree queries stay finite."""
+    sign = 1.0 if inverted else -1.0
+    reach = np.where(np.isfinite(radii), radii, 0.0)[:, None]
+    return verts.astype(np.float64) + sign * normals * reach
+
+
+def _penetrating_mask(vert_tree, centers, radii, mean_edge):
+    """Balls whose reconstructed center sits closer to the surface than
+    their own radius (vertex samples of it; mean_edge covers sampling
+    slack) — the reading is unreliable: facet-normal wobble on
+    C1-continuous faces or degenerate spots. Callers decide the
+    consequence (field: exclude from thin flags; skeleton: drop the
+    node)."""
+    surface_distance, _ = vert_tree.query(centers, workers=-1)
     tolerance = np.maximum(0.05 * radii, 0.5 * mean_edge)
-    penetrating = (surface_distance < radii - tolerance) & np.isfinite(radii)
-
-    radii = radii.copy()
-    radii[penetrating] = np.nan
+    with np.errstate(invalid="ignore"):  # inf radii yield nan -> False
+        penetrating = ((surface_distance < radii - tolerance)
+                       & np.isfinite(radii))
     dropped = int(penetrating.sum())
-    if dropped > 0.1 * len(verts):
+    if dropped > 0.1 * len(radii):
         logger.warning(
-            f"{dropped}/{len(verts)} penetrating sphere centers dropped; "
+            f"{dropped}/{len(radii)} penetrating sphere centers flagged; "
             "mesh may be under-resolved or degenerate")
-    return centers, radii, dropped
+    return penetrating
 
 
 def _cluster_nodes(nodes, radii, cluster_factor):
@@ -1045,12 +1318,16 @@ def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
     centers become skeleton nodes carrying the local wall radius, connected
     by the mesh edge adjacency (raw graph) and additionally merged into a
     reduced clustered graph, with curvature-artifact rim clusters absorbed
-    into their walls (_absorb_clusters). Stats include a mesh-resolution
-    spec (p95 edge length vs the median measured wall thickness) — the
-    workdir's single canonical mesh is shared by every analysis and
-    visualization, and this gate validates that its resolution is adequate
-    for thickness/skeleton work. Returns (stats, arrays, field_meta) —
-    storing the result is the caller's job.
+    into their walls (_absorb_clusters). Centers reconstruct on exact
+    normals (_reconstruct_centers); penetrating reconstructions are dropped
+    (_penetrating_mask) — every surviving reading is a valid measured ball
+    and is kept: a raw meshlib reading is a trustworthy lower bound, and
+    the thickest balls (rib junctions) are exactly the ones sprue packing
+    needs. Stats include a mesh-resolution spec (p95 edge length vs the
+    median measured wall thickness) — the workdir's single canonical mesh
+    is shared by every analysis and visualization, and this gate validates
+    that its resolution is adequate for thickness/skeleton work. Returns
+    (stats, arrays, field_meta) — storing the result is the caller's job.
     """
     from meshlib import mrmeshpy as mm
 
@@ -1067,8 +1344,22 @@ def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
     radii = thickness / 2.0
 
     _report(progress, 0.3, "sphere centers")
-    centers, radii, corrected = _skeleton_centers(
-        verts, faces, radii, load_face_normals(workdir).astype(np.float64))
+    from scipy.spatial import cKDTree
+
+    # normalize meshlib's inconsistent unbounded markers (inf, but also
+    # FLT_MAX-scale finite values on welded STEP meshes) so the finite
+    # gates and stats hold
+    radii[~np.isfinite(radii) | (radii > max_radius * (1 + 1e-3))] = np.inf
+    centers = _reconstruct_centers(
+        verts, _vertex_normals(
+            verts, faces, load_face_normals(workdir).astype(np.float64)),
+        radii)
+    mean_edge = _mean_edge_length(verts, faces)
+    penetrating = _penetrating_mask(cKDTree(verts), centers, radii,
+                                    mean_edge)
+    radii = radii.copy()
+    radii[penetrating] = np.nan
+    corrected = int(penetrating.sum())
     thickness = radii * 2.0
 
     # nodes: one per vertex with a meaningful sphere; tiny corner spheres
@@ -1092,9 +1383,8 @@ def wall_skeleton(workdir, *, max_radius=5.0, min_radius=0.1,
     # it cannot represent contiguous material at that radius, and one such
     # edge can tether a whole region to the graph through a near-zero
     # stiffness / huge flow resistance artifact
-    tri = verts[faces]
-    edge_lengths = np.linalg.norm(tri - np.roll(tri, -1, axis=1), axis=2)
-    mesh_edge = float(edge_lengths.mean())
+    edge_lengths = _edge_lengths(verts, faces)
+    mesh_edge = mean_edge
     a = raw_edges[:, 0].astype(np.int64)
     b = raw_edges[:, 1].astype(np.int64)
     span = np.linalg.norm(raw_nodes[a] - raw_nodes[b], axis=1)
