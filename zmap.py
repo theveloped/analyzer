@@ -459,6 +459,88 @@ def close_heightmap(heights, diameter, corner_radius, pixel):
     return work[pad:-pad, pad:-pad].astype(np.float32)
 
 
+@log_execution_time
+def slenderness_ladder(heights, fx, fy, vheight, pixel, max_diameter, ladder=1.5,
+                       window_px=2):
+    """
+    Per-vertex pocket depth/width (slenderness) ratio: over a geometric
+    ladder of flat tip diameters D, the vertical depth each vertex sits
+    below the D-closing of the height map, divided by D, maximised over the
+    ladder. A pocket of width W and depth H reads ~H/W at the floor (the
+    closing first jumps to the surrounding surface at the first D > W) and
+    ramps 0 -> H/W down the walls — the slenderness of the steel core a mold
+    half needs to fill the pocket.
+
+    One pass for ALL diameters: disk(r1) + disk(r2) = disk(r1 + r2) under
+    Minkowski sums, so the dilation grows incrementally across the ladder
+    (total cost ~ one max_diameter dilation); only the erosion runs at full
+    radius per scale (a geometric ladder sums to ~3x the largest erosion).
+    Net ~2x one max_diameter closing, instead of one closing per diameter.
+    The composed dilation under-covers the exact disk by <~1 px in diagonal
+    directions; where the matching full-disk erosion then dips below the
+    surface the depth clamps to 0, so the error only ever hides a rim pixel,
+    never flags one.
+
+    A geometric ladder underestimates the true max ratio by at most the
+    `ladder` factor (gap is monotone in D), and quantizes critical_width to
+    the ladder diameters — the visible stepping of the ratio field. A finer
+    ladder smooths both at a predictable cost: the erosion work grows as
+    ~ladder / (ladder - 1) times the largest closing (1.5 -> ~3x,
+    1.25 -> ~5x, 1.1 -> ~11x); steps always advance at least one pixel, so
+    even ladder -> 1 stays finite (every whole-pixel diameter, the exact
+    but slowest sweep). Depth is the vertical distance
+    to the closing MIN-FILTERED over a (2*window_px+1)^2 window (the clamp
+    commutes with the min, so this equals min over the window of the clamped
+    per-pixel depth): the lateral tolerance that keeps vertices on swept
+    vertical walls — outer silhouette walls next to free space, step walls
+    above a lower terrace — from reading the whole wall height as pocket
+    depth, the same role the window plays in euclidean_gap. The filtered map
+    is then sampled at the four pixels bracketing each vertex
+    (_bracket_corners) so coplanar wall vertices read subpixel-stable
+    values.
+
+    Returns (ratio float32[V], critical_width float32[V], diameters):
+    critical_width is the ladder diameter that realised each vertex's max
+    (~ the pocket width), 0 where the ratio is 0.
+    """
+    # ladder of disk radii in whole pixels so the incremental dilations
+    # compose exactly with the per-scale erosion counterpart
+    n_max = max(int(round(0.5 * max_diameter / pixel)), 1)
+    steps = []
+    n = 1
+    while n < n_max:
+        steps.append(n)
+        n = max(n + 1, int(round(n * ladder)))
+    steps.append(n_max)
+
+    pad = _mink_pad(n_max * pixel, pixel)
+    work = np.pad(heights.astype(np.float64), pad, constant_values=FREE_SPACE)
+    ix4, iy4 = _bracket_corners(fx, fy, heights.shape)
+
+    ratio = np.zeros(len(fx), dtype=np.float32)
+    width = np.zeros(len(fx), dtype=np.float32)
+    grown = 0
+    for n in steps:
+        # +eps so int(radius / pixel) inside the morphology never rounds a
+        # whole-pixel radius down to n - 1
+        eps = 1e-6 * pixel
+        work = _flat_dilate(work, (n - grown) * pixel + eps, pixel)
+        grown = n
+        closed = -_flat_dilate(-work, n * pixel + eps, pixel, cval=-FREE_SPACE)
+        closed = closed[pad:-pad, pad:-pad]
+        closed = ndimage.minimum_filter(closed, size=2 * window_px + 1,
+                                        mode="nearest")
+
+        depth = closed[iy4, ix4].min(axis=0) - vheight
+        np.maximum(depth, 0.0, out=depth)
+        diameter = 2.0 * n * pixel
+        scale_ratio = (depth / diameter).astype(np.float32)
+        better = scale_ratio > ratio
+        ratio[better] = scale_ratio[better]
+        width[better] = diameter
+    return ratio, width, [2.0 * n * pixel for n in steps]
+
+
 def _contact_offsets(diameter, corner_radius, pixel, max_rings=24, max_angles=48):
     """
     Sampled contact offsets (dy_px, dx_px, profile_height) covering the tool
@@ -795,6 +877,13 @@ class DirectionCache:
         if not hasattr(self, "_ix"):
             raise ValueError("Vertex projections need verts passed to the constructor")
         return self._ix, self._iy, self._vheight
+
+    def vertex_projection(self):
+        """Fractional map coordinates and height of the constructor's
+        vertices: (fx, fy, height), as project_vertices_float returns."""
+        if not hasattr(self, "_fx"):
+            raise ValueError("Vertex projections need verts passed to the constructor")
+        return self._fx, self._fy, self._vheight
 
     def tip_gap(self, diameter, corner_radius):
         """

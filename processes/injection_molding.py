@@ -23,6 +23,7 @@ SPRUE_SCHEMA = 2  # sprue_proposals schema version, salted into the cache key
 SKELETON_SCHEMA = 5  # wall_skeleton schema (5: unbounded-marker normalization)
 EJECTION_SCHEMA = 2  # ejection_sticking schema version, cache salt
 FLOW_SCHEMA = 1  # flow_voxels / flow_fill schema version, cache salt
+SLENDER_SCHEMA = 1  # slenderness schema version, cache salt
 
 SKELETON_PARAMS = ("max_radius", "min_radius", "cluster_factor",
                    "absorb_factor")
@@ -99,6 +100,43 @@ def run_thickness(workdir, params, progress):
 def run_gaps(workdir, params, progress):
     return _run_sphere_field(workdir, "gaps", "gap", "gap",
                              True, params, progress)
+
+
+def slenderness_cache_params(workdir, params):
+    """slenderness cache key: declared params + schema/directions/
+    accessibility/mesh salts (the direction index is only meaningful for one
+    directions.npy, and off-half vertices are zeroed via accessibility)."""
+    return {**params, "schema": SLENDER_SCHEMA,
+            "directions": pipeline.directions_fingerprint(workdir),
+            "accessibility": pipeline.accessibility_fingerprint(workdir),
+            "mesh": pipeline.mesh_fingerprint(workdir)}
+
+
+def run_slenderness(workdir, params, progress):
+    cache_params = slenderness_cache_params(workdir, params)
+    cached = load_cached_result(workdir, "injection_molding", "slenderness",
+                                cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    ratio, width, stats = pipeline.pocket_slenderness(
+        workdir, direction=params["direction"],
+        max_diameter=params["max_diameter"], ladder=params["ladder"],
+        progress=progress)
+
+    field_meta = {
+        "slenderness": {"kind": "slenderness", "association": "vertex",
+                        "role": "scalar", "units": ""},
+        # the ladder diameter that realised each vertex's max ratio — the
+        # local pocket width the steel core has to fill (0 = no pocket)
+        "critical_width": {"kind": "slenderness", "association": "vertex",
+                           "role": "data", "units": "mm"},
+    }
+    arrays = {"slenderness": ratio, "critical_width": width}
+    store_result(workdir, "injection_molding", "slenderness", cache_params,
+                 stats, arrays=arrays, field_meta=field_meta)
+    return AnalysisResult(stats=stats, fields=list(arrays))
 
 
 def run_mold_orientation(workdir, params, progress):
@@ -336,6 +374,22 @@ PROCESS = ProcessDef(
                       label="Store contact angles"),
             ],
             run=run_gaps,
+        ),
+        AnalysisDef(
+            id="slenderness",
+            label="Steel slenderness (pocket depth/width)",
+            description="Pocket depth/width ratio along one pull direction — the slenderness of the mold-steel core each pocket needs (thin steel above ~2-3).",
+            requires=["prep/directions"],
+            params=[
+                Param("direction", "int", default=4, min=0,
+                      label="Pull direction index"),
+                Param("max_diameter", "number", default=None, unit="mm",
+                      min=0,
+                      label="Max pocket width (blank = auto from bbox)"),
+                Param("ladder", "number", default=1.5, min=1.05, max=2.0,
+                      label="Width sweep step (finer = smoother, slower)"),
+            ],
+            run=run_slenderness,
         ),
         AnalysisDef(
             id="wall_skeleton",

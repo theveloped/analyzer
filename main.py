@@ -57,6 +57,15 @@ if __name__ == "__main__":
     parser_thickness.add_argument("--min_gap", help="with --both: also flag faces with wall-to-wall clearance below this (mm)", type=float, default=0.5)
     parser_thickness.add_argument("--serve", help="serve results in browser", action="store_true")
     
+    # Create the parser for the "slender" command
+    parser_slender = subparsers.add_parser("slender", help="pocket depth/width (thin mold steel) slenderness field along one pull direction")
+    parser_slender.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_slender.add_argument("--direction", help="pull direction index (with --axes: 0..5 = +/-X +/-Y +/-Z)", type=int, default=4)
+    parser_slender.add_argument("--max_diameter", help="max pocket width considered in mm (default: auto from bounding box)", type=float, default=None)
+    parser_slender.add_argument("--ladder", help="geometric step between swept pocket widths - the ratio field is quantized to it (finer = smoother, cost ~ladder/(ladder-1))", type=float, default=None)
+    parser_slender.add_argument("--min_ratio", help="flag faces with all vertices above this depth/width ratio", type=float, default=2.0)
+    parser_slender.add_argument("--serve", help="serve results in browser", action="store_true")
+
     # Create the parser for the "directions" command
     parser_directions = subparsers.add_parser("directions", help="directions a file and derive the mesh")
     parser_directions.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
@@ -210,6 +219,38 @@ if __name__ == "__main__":
 
         indices = np.flatnonzero(flagged).tolist()
         logger.info(f"Flagging {len(indices)} faces below the thresholds")
+        write_highlights(args.directory, indices)
+
+        if args.serve:
+            serve_workdir(args.directory)
+
+    elif args.command == "slender":
+        logger.info("Computing pocket slenderness field")
+
+        import processes
+        from processes.base import apply_defaults, load_result_arrays
+        from processes.injection_molding import slenderness_cache_params
+
+        analysis = processes.get_analysis("injection_molding", "slenderness")
+        params = {"direction": args.direction}
+        if args.max_diameter is not None:
+            params["max_diameter"] = args.max_diameter
+        if args.ladder is not None:
+            params["ladder"] = args.ladder
+        merged = apply_defaults(analysis, params)
+        result = analysis.run(args.directory, merged, None)
+        logger.info(f"slenderness stats: {result.stats}")
+
+        cache_key = slenderness_cache_params(args.directory, merged)
+        arrays = load_result_arrays(args.directory, "injection_molding",
+                                    "slenderness", cache_key)
+        ratio = arrays["slenderness"]
+
+        faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
+        flagged = np.all(ratio[faces] > args.min_ratio, axis=1)
+        indices = np.flatnonzero(flagged).tolist()
+        logger.info(f"Flagging {len(indices)} faces above depth/width "
+                    f"ratio {args.min_ratio}")
         write_highlights(args.directory, indices)
 
         if args.serve:

@@ -7,10 +7,10 @@ and this document disagree, the code wins — update this file in the same commi
 
 | File | Role | Key entry points |
 |---|---|---|
-| `main.py` | argparse CLI, one subcommand per stage; thin wrappers over `pipeline.py` | `mesh`, `directions`, `options`, `thickness`, `flow`, `setups`, `verdict`, `precompute`, `compose`, `serve`, `view` |
-| `pipeline.py` | The shared orchestration layer used by both CLI and API jobs. All workdir I/O funnels through here | `mesh_part`, `compute_directions`, `mold_orientation`, `compute_thickness`, `wall_skeleton`, `flow_voxels`, `flow_fill_solve`, `flow_frozen_skin`, `flow_fill`, `precompute_fields`, `compose_tool`, `write_highlights`, `load_mesh_arrays`, `parse_tips`, `parse_holder` |
+| `main.py` | argparse CLI, one subcommand per stage; thin wrappers over `pipeline.py` | `mesh`, `directions`, `options`, `thickness`, `slender`, `flow`, `setups`, `verdict`, `precompute`, `compose`, `serve`, `view` |
+| `pipeline.py` | The shared orchestration layer used by both CLI and API jobs. All workdir I/O funnels through here | `mesh_part`, `compute_directions`, `mold_orientation`, `compute_thickness`, `pocket_slenderness`, `wall_skeleton`, `flow_voxels`, `flow_fill_solve`, `flow_frozen_skin`, `flow_fill`, `precompute_fields`, `compose_tool`, `write_highlights`, `load_mesh_arrays`, `parse_tips`, `parse_holder` |
 | `analysis.py` | meshlib geometry primitives: loading, healing, subdivision, direction sampling, accessibility | `load_mesh`, `heal_mesh`, `offset_mesh`, `subdivide_mesh`, `sample_unity_vector_pairs`, `compute_accessibility` |
-| `zmap.py` | 2D height-map (Z-map) engine: renders depth maps, grayscale closings, Euclidean gaps, clearance fields; owns the per-direction cache | `render_heightmap`, `face_visibility`, `close_heightmap`, `euclidean_gap`, `clearance_heightmap`, `tip_aware_min_stickout`, `DirectionCache`, `compose_unreachable` |
+| `zmap.py` | 2D height-map (Z-map) engine: renders depth maps, grayscale closings, Euclidean gaps, clearance fields; owns the per-direction cache | `render_heightmap`, `face_visibility`, `close_heightmap`, `slenderness_ladder`, `euclidean_gap`, `clearance_heightmap`, `tip_aware_min_stickout`, `DirectionCache`, `compose_unreachable` |
 | `molding.py` | Mold orientation search & face assignment (pure numpy over accessibility rows) | `mold_orientation_search`, `membership_field`, `internal_regions`, `brep_validity`, `brep_defaults`, `face_adjacency` |
 | `brep.py` | BREP-aware STEP meshing via OCCT (OCP bindings): per-face tessellation, welding, conformal subdivision | `mesh_step`, `subdivide_tagged` |
 | `processes/` | Backend analysis registry (see below) | `processes.base`, one module per process |
@@ -76,7 +76,7 @@ Registered today:
 
 - `prep` — `mesh`, `directions`
 - `cnc` — `precompute`, `compose`
-- `injection_molding` — `mold_orientation`, `thickness`, `gaps`, `wall_skeleton`, `sprue_proposals`, `ejection_sticking`, `flow_voxels`, `flow_fill`
+- `injection_molding` — `mold_orientation`, `thickness`, `gaps`, `slenderness`, `wall_skeleton`, `sprue_proposals`, `ejection_sticking`, `flow_voxels`, `flow_fill`
 - `sheet_metal` — empty placeholder
 
 `run` callables must go through `pipeline.py` functions and write only into the
