@@ -365,8 +365,10 @@ demand at compose time and cached.
 the angle between a face normal and any approach direction is then a dot product.
 Near-90° faces (vertical walls) are finished by the tool *flank*, not its bottom, so
 the gap field does not apply to them — the viewer classifies them as "side-milled"
-(and the classification floor / slope / wall / overhang is the seed for assigning
-finishing strategies: bottom milling, ball/step milling, side milling, chamfering).
+(and the classification is the seed for assigning finishing strategies: faces within
+±wallTol of 0°, 45° and 90° are classed as bottom milling, chamfer milling and wall
+milling respectively, faces between those bands are slope — ball/step milling, faces
+beyond 90° + wallTol are overhang, and inaccessible faces are greyed).
 
 **Why not a vertex-cloud Z-map?** A third option considered: skip the 2D grid and
 run the morphology on the mesh vertices themselves, transformed into tool-aligned

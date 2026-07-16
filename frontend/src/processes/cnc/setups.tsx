@@ -7,7 +7,7 @@
 import { putOverrides } from '../../api/client';
 import type { FieldDescriptor, Manifest, ResultEntry } from '../../api/types';
 import {
-  COL, fade, nextSetBit, nthSetBit, popcount, regionColor,
+  COL, fade, FocusTracker, nextSetBit, nthSetBit, popcount, regionColor,
 } from '../../colorizers/core';
 import type {
   LegendEntry, PaintInfo, RGB, ViewCtx, ViewMode,
@@ -18,6 +18,8 @@ import {
   type SplitHost,
 } from '../../splits/splits';
 import { SplitControls } from '../../splits/SplitControls';
+import { optimizeParting } from '../parting';
+import { runCtxAction } from '../../viewer/controller';
 
 const CONFLICT_FEATURE = 254;
 const INTERNAL_FEATURE = 255;
@@ -153,6 +155,7 @@ export const setupsMode: ViewMode = {
     let conflictCount = 0;
     let internalCount = 0;
     const { faces, verts } = ctx;
+    const tracker = new FocusTracker(ctx); // legend click -> fly to the group
 
     ctx.paintFaces((f) => {
       const b = brepIds[f];
@@ -161,16 +164,19 @@ export const setupsMode: ViewMode = {
       const cat = b < current.length ? current[b] : CONFLICT_FEATURE;
       if (cat === INTERNAL_FEATURE) {
         internalCount++;
+        tracker.add(`r${region[f]}`, f);
         return regionColor(region[f]);
       }
       if (cat === CONFLICT_FEATURE) {
         conflictCount++;
+        tracker.add('conflict', f);
         // spatially truthful: each triangle shows which setup partially
         // covers it (faded); uncovered triangles get the conflict color
         const m = membership[f];
         return m ? fade(colors[nthSetBit(m, 0)]) : conflictColor;
       }
       counts[cat]++;
+      tracker.add(`c${cat}`, f);
       const v = valid[b];
       const n = popcount(v);
       if (n <= 1) return colors[cat];
@@ -183,22 +189,24 @@ export const setupsMode: ViewMode = {
     });
 
     const legend: LegendEntry[] = labels
-      .map((label, i) => ({ color: colors[i], label: `${label} (${counts[i]})` }))
+      .map((label, i) => ({ color: colors[i], label: `${label} (${counts[i]})`, focus: tracker.focus(`c${i}`) }))
       .filter((_, i) => counts[i] > 0);
     if (conflictCount) {
-      legend.push({ color: conflictColor, label: `conflict / needs split (${conflictCount})` });
+      legend.push({ color: conflictColor, label: `conflict / needs split (${conflictCount})`, focus: tracker.focus('conflict') });
     }
     const regionDesc = resolveField(ctx, data.result, `internal_region_${data.option}`);
     const regionCounts: number[] = regionDesc?.params.region_counts ?? [];
     const SHOWN_REGIONS = 8;
     regionCounts.slice(0, SHOWN_REGIONS).forEach((count: number, i: number) => {
-      legend.push({ color: regionColor(i + 1), label: `unmachinable region ${i + 1} (${count})` });
+      legend.push({ color: regionColor(i + 1), label: `unmachinable region ${i + 1} (${count})`, focus: tracker.focus(`r${i + 1}`) });
     });
     if (regionCounts.length > SHOWN_REGIONS) {
       const rest = regionCounts.slice(SHOWN_REGIONS).reduce((a, b) => a + b, 0);
+      const overflowKeys = regionCounts.slice(SHOWN_REGIONS).map((_, j) => `r${SHOWN_REGIONS + 1 + j}`);
       legend.push({
         color: regionColor(SHOWN_REGIONS + 1),
         label: `… ${regionCounts.length - SHOWN_REGIONS} more regions (${rest} faces)`,
+        focus: tracker.merged(overflowKeys),
       });
     }
 
@@ -288,6 +296,7 @@ export function SetupsControls() {
   const result = results[params.setupsResult ?? 0] ?? results[results.length - 1];
   const options: any[] = result?.stats.options ?? [];
   const fieldOptions: number[] = result?.stats.field_options ?? [];
+  const hasBrep = !!manifest?.fields.some((f) => f.id === 'brep_edges');
 
   return (
     <>
@@ -334,6 +343,22 @@ export function SetupsControls() {
         click a face to cycle it between the setups that can machine it ·
         faded stripes = other valid setups
       </div>
+
+      <button
+        disabled={!hasBrep || !results.length}
+        onClick={() => void runCtxAction(async (ctx) => {
+          const data = await loadSetups(ctx);
+          const { summary, changed } = await optimizeParting(ctx, {
+            valid: data.valid, defaults: data.defaults, current: data.current,
+            option: data.option, overridesKey: data.overridesKey,
+            overridesUrl: data.result.overrides_url,
+          });
+          useStore.getState().set({ pick: summary });
+          return changed;
+        })}
+      >
+        optimize parting lines
+      </button>
 
       <SplitControls host={cncSplitHost} />
 
