@@ -30,6 +30,8 @@ import {
   loadVertVoxel, loadVoxelGrid, voxelPositions, type FlowFill,
 } from './voxels';
 import { runAnalysisJob } from '../../viewer/jobs';
+import { optimizeParting } from '../parting';
+import { runCtxAction } from '../../viewer/controller';
 
 const CONFLICT_FEATURE = 254;
 const INTERNAL_FEATURE = 255;
@@ -1089,6 +1091,7 @@ function InjectionControls() {
   const result = pickResult(results, params.result);
   const options: any[] = result?.stats.options ?? [];
   const fieldOptions = options.slice(0, 3);
+  const hasBrep = !!manifest?.fields.some((f) => f.id === 'brep_edges');
 
   const skelResults = (manifest?.results ?? []).filter(
     (r) => r.process === 'injection_molding' && r.analysis === 'wall_skeleton');
@@ -1499,6 +1502,22 @@ function InjectionControls() {
             click a face to cycle it between its valid sides/slides ·
             faded stripes = other valid features
           </div>
+
+          <button
+            disabled={!hasBrep || !results.length}
+            onClick={() => void runCtxAction(async (ctx) => {
+              const data = await loadAssignment(ctx);
+              const { summary, changed } = await optimizeParting(ctx, {
+                valid: data.valid, defaults: data.defaults, current: data.current,
+                option: data.option, overridesKey: data.overridesKey,
+                overridesUrl: data.result.overrides_url,
+              });
+              useStore.getState().set({ pick: summary });
+              return changed;
+            })}
+          >
+            optimize parting lines
+          </button>
 
           {options.length > 0 && (
             <div className="hint">
