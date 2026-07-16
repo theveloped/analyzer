@@ -617,6 +617,50 @@ def compute_thickness(workdir, *, max_radius=None, inverted=False,
     return values, float(max_radius), masks
 
 
+def compute_ray_thickness(workdir, *, inverted=False, max_distance=None,
+                          progress=None):
+    """Per-vertex wall thickness by ray casting (meshlib).
+
+    computeRayThicknessAtVertices shoots a ray from each vertex along the
+    inward (minus-normal) direction and returns the distance to the first
+    opposing surface (FLT_MAX on a miss). inverted=True flips the mesh
+    orientation first, so the ray points OUTWARD and the value becomes the
+    gap to the nearest opposing outside wall on the same vertex indexing
+    (mirrors compute_thickness's inverted trick, no boolean/cross-mesh map).
+
+    Unlike the rolling sphere this is a single-sided, direction-locked
+    probe: it reads exactly the along-normal distance, so it is cheaper and
+    never under-reads at sharp edges (it over-reads on oblique walls, which
+    is conservative for thin-wall flagging) — no edge-band/suspect masks.
+
+    Miss / no-opposing-wall vertices (FLT_MAX) and readings beyond
+    max_distance saturate to max_distance so the field stays finite.
+    max_distance=None derives the bounding-box diagonal.
+
+    Returns (values float32[verts], max_distance).
+    """
+    verts, faces = load_mesh_arrays(workdir)
+    mesh = mn.meshFromFacesVerts(faces, verts)
+
+    if max_distance is None:
+        size = mesh.computeBoundingBox().size()
+        max_distance = float(np.sqrt(size.x ** 2 + size.y ** 2 + size.z ** 2))
+        logger.debug(f"Auto ray max distance (bbox diagonal): {max_distance:.3f}")
+
+    if inverted:
+        mesh.topology.flipOrientation()
+
+    _report(progress, 0.2, "casting outward rays" if inverted else "casting rays")
+    result = mm.computeRayThicknessAtVertices(mesh)
+    raw = _per_vertex(np.array(result.vec, dtype=np.float32), len(verts))
+    # FLT_MAX (no opposing wall) is finite in float32 — cap by magnitude,
+    # not isfinite
+    cap = np.float32(max_distance)
+    values = np.where(np.isfinite(raw) & (raw <= cap), raw, cap)
+    _report(progress, 1.0, "ray field done")
+    return values, float(max_distance)
+
+
 def mold_orientation(workdir, *, max_slides=2, slide_tollerance=2.0, count=10,
                      min_slide_faces=50, field_options=3, progress=None):
     """Search mold orientations and derive per-face assignment fields.

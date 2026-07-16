@@ -25,6 +25,7 @@ EJECTION_SCHEMA = 2  # ejection_sticking schema version, cache salt
 FLOW_SCHEMA = 1  # flow_voxels / flow_fill schema version, cache salt
 SLENDER_SCHEMA = 1  # slenderness schema version, cache salt
 SPAN_SCHEMA = 1  # thin_span schema version, cache salt
+RAY_SCHEMA = 1  # ray_thickness / ray_gap schema version, cache salt
 
 SKELETON_PARAMS = ("max_radius", "min_radius", "cluster_factor",
                    "absorb_factor")
@@ -101,6 +102,52 @@ def run_thickness(workdir, params, progress):
 def run_gaps(workdir, params, progress):
     return _run_sphere_field(workdir, "gaps", "gap", "gap",
                              True, params, progress)
+
+
+def _ray_field_stats(values, max_distance):
+    return {
+        "max_distance": max_distance,
+        "verts": int(values.size),
+        "min": float(values.min()),
+        "mean": float(values.mean()),
+        "p05": float(np.percentile(values, 5)),
+        "p50": float(np.percentile(values, 50)),
+        "p95": float(np.percentile(values, 95)),
+        "saturated_fraction": float(np.mean(values >= max_distance * (1 - 1e-4))),
+    }
+
+
+def _run_ray_field(workdir, analysis_id, member, kind, inverted, params,
+                   progress):
+    cache_params = {**params, "schema": RAY_SCHEMA,
+                    "mesh": pipeline.mesh_fingerprint(workdir)}
+    cached = load_cached_result(workdir, "injection_molding", analysis_id,
+                                cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    values, max_distance = pipeline.compute_ray_thickness(
+        workdir, inverted=inverted, max_distance=params["max_distance"],
+        progress=progress)
+    stats = _ray_field_stats(values, max_distance)
+    field_meta = {member: {"kind": kind, "association": "vertex",
+                           "role": "scalar", "units": "mm",
+                           "max_distance": max_distance}}
+    arrays = {member: values}
+    store_result(workdir, "injection_molding", analysis_id, cache_params,
+                 stats, arrays=arrays, field_meta=field_meta)
+    return AnalysisResult(stats=stats, fields=list(arrays))
+
+
+def run_ray_thickness(workdir, params, progress):
+    return _run_ray_field(workdir, "ray_thickness", "ray_thickness",
+                          "thickness", False, params, progress)
+
+
+def run_ray_gap(workdir, params, progress):
+    return _run_ray_field(workdir, "ray_gap", "ray_gap", "gap",
+                          True, params, progress)
 
 
 def slenderness_cache_params(workdir, params):
@@ -427,6 +474,30 @@ PROCESS = ProcessDef(
                       label="Store contact angles"),
             ],
             run=run_gaps,
+        ),
+        AnalysisDef(
+            id="ray_thickness",
+            label="Ray wall thickness",
+            description="Per-vertex wall thickness by casting a ray inward along -normal to the opposing wall (meshlib ray cast). Cheaper than the rolling sphere and never under-reads at sharp edges; over-reads on oblique/non-parallel walls.",
+            requires=["prep/mesh"],
+            params=[
+                Param("max_distance", "number", default=None, unit="mm",
+                      min=0,
+                      label="Max ray distance (blank = auto bbox diagonal)"),
+            ],
+            run=run_ray_thickness,
+        ),
+        AnalysisDef(
+            id="ray_gap",
+            label="Ray wall gap / clearance",
+            description="Per-vertex gap to the nearest opposing wall by casting a ray outward along +normal (meshlib ray cast on the orientation-flipped shape).",
+            requires=["prep/mesh"],
+            params=[
+                Param("max_distance", "number", default=None, unit="mm",
+                      min=0,
+                      label="Max ray distance (blank = auto bbox diagonal)"),
+            ],
+            run=run_ray_gap,
         ),
         AnalysisDef(
             id="thin_span",
