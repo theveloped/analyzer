@@ -457,6 +457,26 @@ render it as a 0–180° heatmap — a per-vertex trust layer for how wall-like
 each thickness/gap reading is. Costs one extra contact query pass, so it is
 off by default.
 
+### Auxiliary — ray thickness / gap (`ray_thickness`, `ray_gap`)
+
+`compute_ray_thickness` (meshlib `computeRayThicknessAtVertices`) casts one
+ray from each vertex along −normal and returns the distance to the first
+opposing surface; `ray_gap` runs the identical call on the
+orientation-flipped mesh so the ray points +normal and reads the outside
+clearance, on the same vertex indexing (the `inverted` trick `thickness`/
+`gaps` already use — no boolean or cross-mesh map). Unlike the rolling
+sphere this is a single-sided, direction-locked *distance*, not a ball
+diameter: it reads exactly the along-normal span, so it is cheaper and
+needs **none** of the edge-band/`suspect` masks — a ray never under-reads
+at a sharp edge (it over-reads on oblique/non-parallel walls, which is
+conservative for thin-wall flagging). Misses (meshlib returns a *finite*
+`FLT_MAX`, so the cap tests magnitude, not `isfinite`) and readings past
+`max_distance` saturate to `max_distance` (default = bbox diagonal, since a
+legitimate inward ray can traverse the whole part). The results store a
+single per-vertex `float32` field each; the viewer's ray heatmap modes
+threshold it client-side like the sphere modes, minus the edge-exclusion
+toggle.
+
 ### Auxiliary — voxel/SDF flow analysis (`flow`)
 
 The wall-skeleton graph doubles as a fill-flow *visualization*, but its

@@ -991,6 +991,26 @@ const gapsMode = heatmapMode(
     maskParam: 'maskExplained',
   });
 
+const rayThicknessMode = heatmapMode(
+  'rayThickness', 'Ray wall thickness heatmap',
+  (ctx) => scalarField(ctx, 'ray_thickness', 'ray_thickness'),
+  {
+    flagDirection: 'below',
+    thresholdParam: 'minRayThickness',
+    scaleParam: 'rayThicknessScale',
+    okLabel: 'thick — ok',
+  });
+
+const rayGapMode = heatmapMode(
+  'rayGap', 'Ray wall gap / clearance heatmap',
+  (ctx) => scalarField(ctx, 'ray_gap', 'ray_gap'),
+  {
+    flagDirection: 'below',
+    thresholdParam: 'minRayGap',
+    scaleParam: 'rayGapScale',
+    okLabel: 'clearance ok (incl. no opposing wall in range)',
+  });
+
 // pocket depth/width ratio along the pull direction — the slenderness of
 // the mold-steel core each pocket needs (thin steel above ~2-3×)
 const slendernessMode = heatmapMode(
@@ -1606,6 +1626,32 @@ function InjectionControls() {
         </>
       )}
 
+      {modeId === 'rayThickness' && (
+        <div className="row">
+          <NumberParam
+            label="Min thickness (mm)" value={params.minRayThickness ?? 1.0}
+            onChange={(v) => set('minRayThickness', v)}
+          />
+          <NumberParam
+            label="Heatmap max (mm)" value={params.rayThicknessScale ?? ''}
+            placeholder="auto" onChange={(v) => set('rayThicknessScale', v)}
+          />
+        </div>
+      )}
+
+      {modeId === 'rayGap' && (
+        <div className="row">
+          <NumberParam
+            label="Min gap (mm)" value={params.minRayGap ?? 0.5}
+            onChange={(v) => set('minRayGap', v)}
+          />
+          <NumberParam
+            label="Heatmap max (mm)" value={params.rayGapScale ?? ''}
+            placeholder="auto" onChange={(v) => set('rayGapScale', v)}
+          />
+        </div>
+      )}
+
       {modeId === 'slenderness' && (
         <div className="row">
           <NumberParam
@@ -1652,7 +1698,8 @@ export const injectionPlugin: ProcessPlugin = {
   processId: 'injection_molding',
   label: 'Injection molding',
   modes: [assignmentMode, sprueMode, flowFillMode, coolingMode, ejectorMode,
-          thicknessMode, gapsMode, slendernessMode, thinSpanMode,
+          thicknessMode, gapsMode, rayThicknessMode, rayGapMode,
+          slendernessMode, thinSpanMode,
           thicknessAngleMode, gapAngleMode,
           skeletonMode, voxelFieldMode, brepFacesMode, highlightsMode],
   defaults: () => ({
@@ -1661,6 +1708,8 @@ export const injectionPlugin: ProcessPlugin = {
     splitMode: false, splitFace: null, splitStart: null, showCuts: true,
     minThickness: 1.0, thicknessScale: '',
     minGap: 0.5, gapScale: '', maskExplained: true,
+    minRayThickness: 1.0, rayThicknessScale: '',
+    minRayGap: 0.5, rayGapScale: '',
     maxSlenderness: 2.0, slendernessScale: '',
     maxSpanRatio: 5.0, spanScale: '',
     minAngle: 60, angleScale: 180,
