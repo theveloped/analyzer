@@ -116,12 +116,13 @@ Vite + React 18 + three.js + zustand. Build once with `npm run build` (output
 | `App.tsx` | shell: part picker, process tabs, view-mode list, canvas |
 | `api/client.ts`, `api/types.ts` | fetch wrappers + manifest/field descriptor types |
 | `state/store.ts` | zustand store (active part/process/mode/params) |
-| `viewer/scene.ts`, `viewer/controller.ts` | three.js scene, un-indexed mesh, picking, overlays (lines/arrows/graph) |
+| `viewer/scene.ts`, `viewer/controller.ts` | three.js scene, un-indexed mesh, picking, overlays (lines/arrows/graph); `runCtxAction` bridges a controls button to the live `ViewCtx` |
 | `colorizers/core.ts` | generic painters: masks, heatmaps, highlights — new processes get rendering for free |
 | `registry/types.ts` | **the plugin contract**: `ProcessPlugin { processId, modes: ViewMode[], defaults, Controls?, inspect?, onPick? }`; `ViewMode.paint(ctx) → PaintInfo`; `ViewCtx` gives `getField`, `paintFaces`, `setLines/Arrows/Graph`, params |
 | `registry/index.ts` | plugin list — register new process plugins here |
-| `processes/cnc/` | CNC plugin: verdict/gap/stickout modes (`modes.ts`), client-side tool composition (`compose.ts`), field lookup (`sources.ts`), holder/tolerance controls (`Controls.tsx`) |
-| `processes/injection/` | injection molding plugin: mold assignment view, thickness/gap heatmaps, skeleton overlay |
+| `processes/cnc/` | CNC plugin: verdict/gap/stickout modes (`modes.ts`), client-side tool composition (`compose.ts`), field lookup (`sources.ts`), holder/tolerance controls (`Controls.tsx`); setup-assignment view has the "optimize parting lines" button |
+| `processes/injection/` | injection molding plugin: mold assignment view (with "optimize parting lines" button), thickness/gap heatmaps, skeleton overlay |
+| `processes/parting.ts` | shared client-side parting-line optimizer for both categorical assignment views: reassigns every multi-valid BREP face to minimize, lexicographically, parting-line wire count then total length, written through the overrides mechanism (`optimizeParting`, `partingMetrics`) |
 | `components/` | `AnalysisPanel` (run analyses via jobs API), `ParamForm` (auto forms from `Param` schemas), `Readouts`, `PartPicker` |
 
 Interactive thresholds (tolerance, stickout, holder stack) are recomputed
