@@ -2,7 +2,7 @@
 // update() dispatcher.
 
 import {
-  COL, faceAngles, faceBlocked, faceValues, heatmapMode, percentile, rampColor,
+  COL, faceAngles, faceBlocked, faceValues, FocusTracker, heatmapMode, percentile, rampColor,
 } from '../../colorizers/core';
 import type { PaintInfo, ViewCtx, ViewMode } from '../../registry/types';
 import {
@@ -56,8 +56,9 @@ export const unifiedMode: ViewMode = {
     const sideMill = !!ctx.params.sideMill;
     const wallGapTol = wallThreshold(source, tol);
     let nTip = 0, nWall = 0, nHold = 0, nOk = 0, nInv = 0, nSide = 0;
+    const tracker = new FocusTracker(ctx); // legend click -> fly to the group
     ctx.paintFaces((f) => {
-      if (access && !access[f]) { nInv++; return COL.inaccess; }
+      if (access && !access[f]) { nInv++; tracker.add('inaccess', f); return COL.inaccess; }
       const holderBlocked = useHolder
         && faceBlocked(ctx, f, (v) => minStick!.values[v] > stickoutVal + tol, rule);
       if (sideMill && Math.abs(angles[f] - 90) <= wallTol) {
@@ -65,23 +66,23 @@ export const unifiedMode: ViewMode = {
         // still decides whether the flank can get there at all (a slot
         // narrower than the tool fills up in the closing), just with a
         // pixel-noise-proof threshold.
-        if (faceBlocked(ctx, f, (v) => gap[v] > wallGapTol, rule)) { nWall++; return COL.tip; }
-        if (holderBlocked) { nHold++; return COL.holder; }
-        nSide++; return COL.side;
+        if (faceBlocked(ctx, f, (v) => gap[v] > wallGapTol, rule)) { nWall++; tracker.add('tip', f); return COL.tip; }
+        if (holderBlocked) { nHold++; tracker.add('holder', f); return COL.holder; }
+        nSide++; tracker.add('side', f); return COL.side;
       }
-      if (faceBlocked(ctx, f, (v) => gap[v] > tol, rule)) { nTip++; return COL.tip; }
-      if (holderBlocked) { nHold++; return COL.holder; }
-      nOk++; return COL.ok;
+      if (faceBlocked(ctx, f, (v) => gap[v] > tol, rule)) { nTip++; tracker.add('tip', f); return COL.tip; }
+      if (holderBlocked) { nHold++; tracker.add('holder', f); return COL.holder; }
+      nOk++; tracker.add('ok', f); return COL.ok;
     });
     const legend = [
-      { color: COL.ok, label: 'reachable (tool bottom)' },
-      { color: COL.tip, label: 'blocked — tool cannot reach' },
-      { color: COL.inaccess, label: 'not accessible (undercut)' },
+      { color: COL.ok, label: 'reachable (tool bottom)', focus: tracker.focus('ok') },
+      { color: COL.tip, label: 'blocked — tool cannot reach', focus: tracker.focus('tip') },
+      { color: COL.inaccess, label: 'not accessible (undercut)', focus: tracker.focus('inaccess') },
     ];
-    if (sideMill) legend.splice(1, 0, { color: COL.side, label: 'wall — side-milled' });
+    if (sideMill) legend.splice(1, 0, { color: COL.side, label: 'wall — side-milled', focus: tracker.focus('side') });
     if (useHolder) {
       legend.splice(legend.length - 1, 0,
-        { color: COL.holder, label: 'blocked by holder / stickout' });
+        { color: COL.holder, label: 'blocked by holder / stickout', focus: tracker.focus('holder') });
     }
     const stats = `reachable ${nOk}` + (sideMill ? ` · side-milled ${nSide}` : '')
       + ` · blocked ${nTip + nWall}` + (sideMill && nWall ? ` (${nWall} walls)` : '')
@@ -102,11 +103,15 @@ export const accessMode: ViewMode = {
     const access = await faceAccess(ctx, source);
     if (!access) throw new Error('no accessibility.npy for this direction');
     let n = 0;
-    ctx.paintFaces((f) => (access[f] ? (n++, COL.ok) : COL.inaccess));
+    const tracker = new FocusTracker(ctx); // legend click -> fly to the group
+    ctx.paintFaces((f) => {
+      if (access[f]) { n++; tracker.add('ok', f); return COL.ok; }
+      tracker.add('inaccess', f); return COL.inaccess;
+    });
     return {
       legend: [
-        { color: COL.ok, label: 'accessible (not an undercut)' },
-        { color: COL.inaccess, label: 'undercut for this direction' },
+        { color: COL.ok, label: 'accessible (not an undercut)', focus: tracker.focus('ok') },
+        { color: COL.inaccess, label: 'undercut for this direction', focus: tracker.focus('inaccess') },
       ],
       stats: `${n} of ${ctx.faceCount} faces accessible`,
     };
@@ -121,24 +126,27 @@ export const classMode: ViewMode = {
     const angles = faceAngles(ctx, ctx.directions[source.direction]);
     const wallTol = num(ctx.params.wallTol) || 0;
     const keep = await accessKeep(ctx, source);
-    let nFloor = 0, nSlope = 0, nWall = 0, nOver = 0;
+    let nBottom = 0, nChamfer = 0, nWall = 0, nSlope = 0, nOver = 0;
+    const tracker = new FocusTracker(ctx); // legend click -> fly to the group
     ctx.paintFaces((f) => {
-      if (keep && !keep(f)) return COL.inaccess;
+      if (keep && !keep(f)) { tracker.add('inaccess', f); return COL.inaccess; }
       const a = angles[f];
-      if (Math.abs(a - 90) <= wallTol) { nWall++; return COL.side; }
-      if (a > 90) { nOver++; return COL.overhang; }
-      if (a < 45) { nFloor++; return COL.floor; }
-      nSlope++; return COL.slope;
+      if (a <= wallTol) { nBottom++; tracker.add('bottom', f); return COL.floor; }
+      if (Math.abs(a - 45) <= wallTol) { nChamfer++; tracker.add('chamfer', f); return COL.chamfer; }
+      if (Math.abs(a - 90) <= wallTol) { nWall++; tracker.add('wall', f); return COL.side; }
+      if (a > 90) { nOver++; tracker.add('over', f); return COL.overhang; }
+      nSlope++; tracker.add('slope', f); return COL.slope;
     });
     return {
       legend: [
-        { color: COL.floor, label: '< 45° — bottom milling' },
-        { color: COL.slope, label: '45–90° — slope (ball / step milling)' },
-        { color: COL.side, label: `wall (90° ± ${wallTol}°) — side milling` },
-        { color: COL.overhang, label: '> 90° — overhang for this direction' },
-        { color: COL.inaccess, label: 'inaccessible (greyed)' },
+        { color: COL.floor, label: `≈ 0° (±${wallTol}°) — bottom milling`, focus: tracker.focus('bottom') },
+        { color: COL.chamfer, label: `≈ 45° (±${wallTol}°) — chamfer milling`, focus: tracker.focus('chamfer') },
+        { color: COL.side, label: `≈ 90° (±${wallTol}°) — wall milling`, focus: tracker.focus('wall') },
+        { color: COL.slope, label: 'slope (ball / step milling)', focus: tracker.focus('slope') },
+        { color: COL.overhang, label: '> 90° — overhang for this direction', focus: tracker.focus('over') },
+        { color: COL.inaccess, label: 'inaccessible (greyed)', focus: tracker.focus('inaccess') },
       ],
-      stats: `floor ${nFloor} · slope ${nSlope} · wall ${nWall} · overhang ${nOver}`,
+      stats: `bottom ${nBottom} · chamfer ${nChamfer} · wall ${nWall} · slope ${nSlope} · overhang ${nOver}`,
     };
   },
 };
