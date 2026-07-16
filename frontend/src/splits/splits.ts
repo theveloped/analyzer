@@ -274,29 +274,39 @@ export function handleSplitPick(
       const ids = await ctx.getField(desc) as Uint32Array;
       const params = viewerParams[host.processId] ?? {};
       const clicked = ids[face];
+      const selected = params.splitFace;
 
-      if (params.splitFace == null || params.splitFace !== clicked) {
-        setViewerParam(host.processId, 'splitFace', clicked);
-        setViewerParam(host.processId, 'splitStart', null);
+      if (selected != null) {
+        // snap against the SELECTED face's targets first: the nodes sit
+        // exactly on the wire, so the ray often lands on the neighbor's
+        // triangle — that must arm/commit the node, not flip the selection
+        const targets = snapTargets(ctx, ids, selected);
+        const target = nearestTarget(
+          targets, point, 0.03 * bboxDiagonal(ctx.verts));
+        if (target) {
+          if (params.splitStart == null) {
+            setViewerParam(host.processId, 'splitStart', target.vertex);
+          } else if (params.splitStart === target.vertex) {
+            setViewerParam(host.processId, 'splitStart', null); // un-arm
+          } else {
+            await postSplit(partId, {
+              face: selected, start: params.splitStart, end: target.vertex,
+            });
+            clearSplitSelection(host.processId);
+            await afterSplitsChanged(host, { rerun: true });
+          }
+          return;
+        }
+        // away from every node: a different face reselects, the selected
+        // face is a consumed no-op (the stats hint explains the flow)
+        if (clicked !== selected) {
+          setViewerParam(host.processId, 'splitFace', clicked);
+          setViewerParam(host.processId, 'splitStart', null);
+        }
         return;
       }
-      const targets = snapTargets(ctx, ids, clicked);
-      const target = nearestTarget(
-        targets, point, 0.03 * bboxDiagonal(ctx.verts));
-      if (!target) return; // consumed, but no snap point near the click
-      if (params.splitStart == null) {
-        setViewerParam(host.processId, 'splitStart', target.vertex);
-        return;
-      }
-      if (params.splitStart === target.vertex) {
-        setViewerParam(host.processId, 'splitStart', null); // un-arm
-        return;
-      }
-      await postSplit(partId, {
-        face: clicked, start: params.splitStart, end: target.vertex,
-      });
-      clearSplitSelection(host.processId);
-      await afterSplitsChanged(host, { rerun: true });
+      setViewerParam(host.processId, 'splitFace', clicked);
+      setViewerParam(host.processId, 'splitStart', null);
     } catch (err) {
       useStore.getState().set({
         error: err instanceof Error ? err.message : String(err),
@@ -395,13 +405,15 @@ export async function drawSplitOverlays(
   }
 
   if (state.cuts.length) {
-    const segments: number[] = [];
-    for (const cut of state.cuts) {
-      for (let i = 0; i + 1 < cut.polyline.length; i++) {
-        segments.push(...cut.polyline[i], ...cut.polyline[i + 1]);
+    if (params.showCuts !== false) {
+      const segments: number[] = [];
+      for (const cut of state.cuts) {
+        for (let i = 0; i + 1 < cut.polyline.length; i++) {
+          segments.push(...cut.polyline[i], ...cut.polyline[i + 1]);
+        }
       }
+      ctx.setLines(new Float32Array(segments), CUT_COLOR);
     }
-    ctx.setLines(new Float32Array(segments), CUT_COLOR);
     lines.push(`${state.cuts.length} cut(s)`
       + (state.stale ? ' — ⚠ splits reference an old mesh, clear all cuts' : ''));
   }

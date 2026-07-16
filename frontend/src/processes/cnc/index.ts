@@ -84,6 +84,7 @@ export const cncPlugin: ProcessPlugin = {
     splitMode: false,
     splitFace: null,
     splitStart: null,
+    showCuts: true,
   }),
   Controls: CncControls,
   inspect,

@@ -150,6 +150,27 @@ def fixture_box_split(check):
         check("splits fingerprint present",
               pipeline.splits_fingerprint(workdir) is not None, "")
 
+        # straightness: a diagonal cut (worst case for grid zigzag) must
+        # hug the chord between its endpoints, not wander mesh edges
+        cz = verts[faces].mean(axis=1)[:, 2]
+        bottom = int(ids[np.argmin(cz)])
+        s2 = nearest_boundary_vertex(verts, faces, ids, bottom, (-10, -10, -5))
+        e2 = nearest_boundary_vertex(verts, faces, ids, bottom, (10, 10, -5))
+        state = splits.add_cut(workdir, bottom, s2, e2)
+        with open(os.path.join(workdir, pipeline.FACE_SPLITS_FILE)) as f:
+            path = np.asarray(json.load(f)["cuts"][-1]["path"])
+        p0, p1 = verts[s2], verts[e2]
+        chord = (p1 - p0) / np.linalg.norm(p1 - p0)
+        rel = verts[path] - p0
+        dev = np.linalg.norm(rel - np.outer(rel @ chord, chord), axis=1)
+        tris = faces[ids == bottom]
+        edge_len = float(np.linalg.norm(
+            verts[tris[:, 0]] - verts[tris[:, 1]], axis=1).mean())
+        check("diagonal cut hugs the chord",
+              state.cut_info[-1]["separated"]
+              and float(dev.max()) < 1.5 * edge_len,
+              f"max deviation {dev.max():.2f} mm vs edge {edge_len:.2f} mm")
+
 
 def fixture_annulus(check):
     with tempfile.TemporaryDirectory() as tmp:

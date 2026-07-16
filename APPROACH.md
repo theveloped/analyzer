@@ -108,10 +108,14 @@ derivations are numpy row operations — no geometry is touched.
 **User face splits** (`splits.py`, shared with CNC setups) resolve conflict
 faces interactively: in the viewer the user clicks two snap points on a
 face's boundary wires (wire corners or edge midpoints) and the backend cuts
-the face along the shortest interior **mesh-edge path** between them — a
-pure relabeling of the face's triangles into sub-face ids appended above
+the face along an interior **mesh-edge path** between them — a pure
+relabeling of the face's triangles into sub-face ids appended above
 `n_brep` (`subfaces.npy`), never a remesh, so face indexing and every
-per-triangle cache stay valid. Sub-faces are connected components under
+per-triangle cache stay valid. The path is Dijkstra with edge weights
+penalized by deviation from the ideal cutting plane (through the two
+points, oriented by the face's average normal; chord-line fallback when
+degenerate), so the cut hugs the line a user expects — straight on planes,
+a clean section arc on curved faces — instead of zigzagging the grid. Sub-faces are connected components under
 the accumulated cut edges, so cuts compose: a cylinder/annulus face takes
 two cuts before it separates, and pieces can be re-split (the old label
 retires; ids are never reused). Replay of the cut list is deterministic —
@@ -361,8 +365,10 @@ demand at compose time and cached.
 the angle between a face normal and any approach direction is then a dot product.
 Near-90° faces (vertical walls) are finished by the tool *flank*, not its bottom, so
 the gap field does not apply to them — the viewer classifies them as "side-milled"
-(and the classification floor / slope / wall / overhang is the seed for assigning
-finishing strategies: bottom milling, ball/step milling, side milling, chamfering).
+(and the classification is the seed for assigning finishing strategies: faces within
+±wallTol of 0°, 45° and 90° are classed as bottom milling, chamfer milling and wall
+milling respectively, faces between those bands are slope — ball/step milling, faces
+beyond 90° + wallTol are overhang, and inaccessible faces are greyed).
 
 **Why not a vertex-cloud Z-map?** A third option considered: skip the 2D grid and
 run the morphology on the mesh vertices themselves, transformed into tool-aligned

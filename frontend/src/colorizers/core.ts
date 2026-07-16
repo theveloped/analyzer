@@ -17,6 +17,7 @@ export const COL = {
   floor: [0.62, 0.8, 0.58] as RGB,
   slope: [0.38, 0.68, 0.66] as RGB,
   overhang: [0.72, 0.42, 0.55] as RGB,
+  chamfer: [0.85, 0.72, 0.32] as RGB,
 };
 
 // --- bitmask helpers for membership/assignment fields ---
@@ -502,11 +503,15 @@ export const highlightsMode: ViewMode = {
   async paint(ctx) {
     if (!ctx.highlights) throw new Error('no highlights.json in the working directory');
     const flagged = new Set(ctx.highlights);
-    ctx.paintFaces((f) => (flagged.has(f) ? COL.tip : COL.ok));
+    const tracker = new FocusTracker(ctx); // legend click -> fly to the group
+    ctx.paintFaces((f) => {
+      if (flagged.has(f)) { tracker.add('flagged', f); return COL.tip; }
+      tracker.add('ok', f); return COL.ok;
+    });
     return {
       legend: [
-        { color: COL.tip, label: `flagged by last CLI run (${ctx.highlights.length} faces)` },
-        { color: COL.ok, label: 'not flagged' },
+        { color: COL.tip, label: `flagged by last CLI run (${ctx.highlights.length} faces)`, focus: tracker.focus('flagged') },
+        { color: COL.ok, label: 'not flagged', focus: tracker.focus('ok') },
       ],
     };
   },

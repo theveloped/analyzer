@@ -83,6 +83,16 @@ export function SplitControls({ host }: { host: SplitHost }) {
       )}
 
       {cuts > 0 && (
+        <label className="check">
+          <input
+            type="checkbox" checked={params.showCuts !== false}
+            onChange={(e) => set('showCuts', e.target.checked)}
+          />
+          show cut lines
+        </label>
+      )}
+
+      {cuts > 0 && (
         <div className="row">
           <button disabled={busy} onClick={() => run(() => undoLastCut(host))}>
             {`undo last cut (${cuts})`}

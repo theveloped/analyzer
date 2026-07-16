@@ -71,6 +71,18 @@ export function flyToFocus(focus: LegendFocus) {
   scene?.flyTo(focus.center, focus.direction, focus.radius);
 }
 
+/** Run an action that needs the live ViewCtx (e.g. a controls button);
+    repaint if it reports a change. */
+export async function runCtxAction(fn: (ctx: ViewCtx) => Promise<boolean>): Promise<void> {
+  const ctx = buildCtx();
+  if (!ctx) return;
+  try {
+    if (await fn(ctx)) schedulePaint(true);
+  } catch (err) {
+    useStore.getState().set({ error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 export async function selectPart(partId: string) {
   const store = useStore.getState();
   clearFieldCache();
