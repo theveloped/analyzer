@@ -108,10 +108,14 @@ derivations are numpy row operations — no geometry is touched.
 **User face splits** (`splits.py`, shared with CNC setups) resolve conflict
 faces interactively: in the viewer the user clicks two snap points on a
 face's boundary wires (wire corners or edge midpoints) and the backend cuts
-the face along the shortest interior **mesh-edge path** between them — a
-pure relabeling of the face's triangles into sub-face ids appended above
+the face along an interior **mesh-edge path** between them — a pure
+relabeling of the face's triangles into sub-face ids appended above
 `n_brep` (`subfaces.npy`), never a remesh, so face indexing and every
-per-triangle cache stay valid. Sub-faces are connected components under
+per-triangle cache stay valid. The path is Dijkstra with edge weights
+penalized by deviation from the ideal cutting plane (through the two
+points, oriented by the face's average normal; chord-line fallback when
+degenerate), so the cut hugs the line a user expects — straight on planes,
+a clean section arc on curved faces — instead of zigzagging the grid. Sub-faces are connected components under
 the accumulated cut edges, so cuts compose: a cylinder/annulus face takes
 two cuts before it separates, and pieces can be re-split (the old label
 retires; ids are never reused). Replay of the cut list is deterministic —

@@ -1639,7 +1639,7 @@ export const injectionPlugin: ProcessPlugin = {
   defaults: () => ({
     result: -1, option: 0,
     showLines: true, showArrows: true,
-    splitMode: false, splitFace: null, splitStart: null,
+    splitMode: false, splitFace: null, splitStart: null, showCuts: true,
     minThickness: 1.0, thicknessScale: '',
     minGap: 0.5, gapScale: '', maskExplained: true,
     maxSlenderness: 2.0, slendernessScale: '',

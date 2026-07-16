@@ -36,6 +36,12 @@ import pipeline
 
 SPLITS_SCHEMA = 1
 
+# How strongly cut_path prefers staying on the ideal cutting plane over
+# taking a shorter route, in path-length per edge-length of deviation. On a
+# subdivided mesh many near-equal-length edge routes exist; without the
+# penalty the winner zigzags arbitrarily and the cut looks jagged.
+CUT_STRAIGHTNESS = 5.0
+
 
 class StaleSplitsError(Exception):
     """face_splits.json references a mesh that has been regenerated."""
@@ -167,9 +173,32 @@ def cut_path(verts, faces, eff, face_id, start, end, cut_edges=()):
                          "pick different points")
     lengths = np.linalg.norm(verts[interior[:, 0]] - verts[interior[:, 1]],
                              axis=1)
+
+    # steer the path onto the ideal cutting plane: the plane through the
+    # two picked points oriented by the face's average normal — its
+    # intersection with the surface is the line a user expects (straight
+    # on planes, a clean section arc on cylinders). Degenerate normal sum
+    # (e.g. a full cylinder wall) falls back to distance-to-chord-line.
+    p0 = verts[start].astype(np.float64)
+    chord = verts[end].astype(np.float64) - p0
+    chord /= max(float(np.linalg.norm(chord)), 1e-12)
+    tri = verts[faces[region]].astype(np.float64)
+    n_face = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]).sum(0)
+    n_plane = np.cross(chord, n_face)
+    rel = verts[node_ids].astype(np.float64) - p0
+    if np.linalg.norm(n_plane) > 1e-9 * max(np.linalg.norm(n_face), 1e-12):
+        n_plane /= np.linalg.norm(n_plane)
+        deviation = np.abs(rel @ n_plane)
+    else:
+        off = rel - np.outer(rel @ chord, chord)
+        deviation = np.linalg.norm(off, axis=1)
+
     row = np.array([local[int(v)] for v in interior[:, 0]])
     col = np.array([local[int(v)] for v in interior[:, 1]])
-    graph = coo_matrix((lengths, (row, col)),
+    scale = max(float(lengths.mean()), 1e-12)
+    weights = lengths * (1 + CUT_STRAIGHTNESS
+                         * 0.5 * (deviation[row] + deviation[col]) / scale)
+    graph = coo_matrix((weights, (row, col)),
                        shape=(len(node_ids), len(node_ids)))
     dist, pred = dijkstra(graph, directed=False, indices=local[start],
                           return_predecessors=True)
