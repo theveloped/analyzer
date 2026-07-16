@@ -90,7 +90,7 @@ accessibility rows):
 - **BREP validity** — a feature is valid for a whole BREP face iff it
   reaches every one of its triangles (strict, via `brep_faces.npy`); faces
   with partial coverage but no full cover are **conflicts** (need a split —
-  the future non-BREP-edge parting).
+  see face splits below).
 - **defaults + overrides** — each BREP face gets a deterministic default
   feature (sides beat slides; A/B ties break by exclusive-coverage
   majority); in the viewer, multi-valid faces render **striped** with all
@@ -104,6 +104,29 @@ accessibility rows):
 
 Because accessibility is precomputed, the whole search and all field
 derivations are numpy row operations — no geometry is touched.
+
+**User face splits** (`splits.py`, shared with CNC setups) resolve conflict
+faces interactively: in the viewer the user clicks two snap points on a
+face's boundary wires (wire corners or edge midpoints) and the backend cuts
+the face along the shortest interior **mesh-edge path** between them — a
+pure relabeling of the face's triangles into sub-face ids appended above
+`n_brep` (`subfaces.npy`), never a remesh, so face indexing and every
+per-triangle cache stay valid. Sub-faces are connected components under
+the accumulated cut edges, so cuts compose: a cylinder/annulus face takes
+two cuts before it separates, and pieces can be re-split (the old label
+retires; ids are never reused). Replay of the cut list is deterministic —
+undo reproduces the previous labeling byte-identically. The assignment
+analyses aggregate validity/defaults over effective ids (membership is
+per-triangle and split-invariant) and salt their cache keys with a
+fingerprint of `subfaces.npy`, so cuts orphan stale assignment results and
+an undo re-validates the older ones; the regenerated
+`subface_edges/subface_edge_pairs` arrays make the parting/setup boundary
+lines follow the cuts automatically. Retired ids are sanitized to
+"conflict" in stored arrays so any consumer indexing a stale id degrades
+gracefully; sprue/ejection consume effective ids only while the mold
+result's splits salt matches the workdir (else their usual no-mold
+fallback). An override on a face that gets split does not propagate to its
+pieces — they take fresh defaults.
 
 ### Stage 3b — `setups`: CNC setup combinations & per-setup assignment
 

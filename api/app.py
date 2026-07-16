@@ -6,6 +6,7 @@ app at /.
 """
 
 import os
+import threading
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
@@ -17,7 +18,7 @@ from api import manifest as manifest_api
 from api import parts as parts_api
 from api import ejector as ejector_api
 from api.jobs import JobManager, PartBusyError
-from api.schemas import EjectorSimRequest, JobRequest
+from api.schemas import EjectorSimRequest, JobRequest, SplitRequest
 import pipeline
 
 FRONTEND_DIST = os.path.join(
@@ -106,6 +107,16 @@ def create_app(root=".", preload=None):
             elif file_stem == "brep_edge_pairs":
                 data, _ = fields_api.brep_edge_pairs_bytes(workdir)
                 tag_path = os.path.join(workdir, pipeline.BREP_EDGE_PAIRS_FILE)
+            elif file_stem == "subfaces":
+                data, _ = fields_api.subfaces_bytes(workdir)
+                tag_path = os.path.join(workdir, pipeline.SUBFACES_FILE)
+            elif file_stem == "subface_edges":
+                data, _ = fields_api.subface_edges_bytes(workdir)
+                tag_path = os.path.join(workdir, pipeline.SUBFACE_EDGES_FILE)
+            elif file_stem == "subface_edge_pairs":
+                data, _ = fields_api.subface_edge_pairs_bytes(workdir)
+                tag_path = os.path.join(workdir,
+                                        pipeline.SUBFACE_EDGE_PAIRS_FILE)
             else:
                 data, _ = fields_api.zcache_field_bytes(workdir, file_stem, key)
                 tag_path = os.path.join(workdir, "zcache", f"{file_stem}.npz")
@@ -153,6 +164,58 @@ def create_app(root=".", preload=None):
         with open(path, "w") as f:
             json_module.dump(body, f)
         return {"ok": True}
+
+    # face-split mutations are read-modify-write over workdir sidecars;
+    # FastAPI runs sync handlers in a threadpool, so serialize them. The
+    # compute itself is numpy-only (no meshlib) — safe outside the job queue.
+    splits_lock = threading.Lock()
+
+    def _splits_state_or_404(workdir):
+        import splits
+        try:
+            return splits.state(workdir)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error))
+
+    @app.get("/api/parts/{part_id}/splits")
+    def get_splits(part_id: str):
+        part = part_or_404(part_id)
+        return _splits_state_or_404(parts_api.workdir_for(root, part["id"]))
+
+    @app.post("/api/parts/{part_id}/splits")
+    def post_split(part_id: str, body: SplitRequest):
+        import splits
+        part = part_or_404(part_id)
+        workdir = parts_api.workdir_for(root, part["id"])
+        with splits_lock:
+            try:
+                splits.add_cut(workdir, body.face, body.start, body.end)
+            except splits.StaleSplitsError as error:
+                raise HTTPException(status_code=409, detail=str(error))
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error))
+            return _splits_state_or_404(workdir)
+
+    @app.delete("/api/parts/{part_id}/splits/last")
+    def delete_last_split(part_id: str):
+        import splits
+        part = part_or_404(part_id)
+        workdir = parts_api.workdir_for(root, part["id"])
+        with splits_lock:
+            try:
+                splits.undo_last(workdir)
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error))
+            return _splits_state_or_404(workdir)
+
+    @app.delete("/api/parts/{part_id}/splits")
+    def delete_splits(part_id: str):
+        import splits
+        part = part_or_404(part_id)
+        workdir = parts_api.workdir_for(root, part["id"])
+        with splits_lock:
+            splits.clear(workdir)
+            return _splits_state_or_404(workdir)
 
     @app.post("/api/parts/{part_id}/ejector/simulate")
     def ejector_simulate(part_id: str, body: EjectorSimRequest):

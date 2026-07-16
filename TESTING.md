@@ -150,6 +150,17 @@ line (drawn along BREP edges between differently-assigned faces) jumps
 accordingly, and the choice is saved to the workdir. The "BREP faces" view
 mode (any tab) colors the mesh by source BREP face.
 
+**Splitting conflict faces:** enable "split faces (two boundary clicks)" in
+the assignment controls (also in CNC → Setup assignment — cuts are shared
+per part). Click a face to show its wire snap points (white = corners, gold
+= edge midpoints), then click two of them: the face is cut along the mesh
+edges between the points, the assignment analysis re-runs automatically and
+the pieces classify (and cycle/override) individually, with the parting
+line following the cut. Cuts stack — a cylinder wall or annulus needs two
+before it separates — and "undo last cut" restores the previous state
+exactly (older results become valid again). `python test_splits.py` covers
+the machinery end to end.
+
 ## Wall thickness and gaps (rolling sphere)
 
 Two per-vertex fields from the maximal inscribed ("rolling") sphere: wall

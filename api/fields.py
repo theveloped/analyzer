@@ -67,6 +67,30 @@ def brep_edge_pairs_bytes(workdir):
     return np.ascontiguousarray(np.load(path), dtype="<u4").tobytes(), "<u4"
 
 
+def subfaces_bytes(workdir):
+    """Per-face effective (sub-)face ids as uint32."""
+    path = os.path.join(workdir, pipeline.SUBFACES_FILE)
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    return np.ascontiguousarray(np.load(path), dtype="<u4").tobytes(), "<u4"
+
+
+def subface_edges_bytes(workdir):
+    """Effective-face boundary segment coordinates as float32 (E*2*3)."""
+    path = os.path.join(workdir, pipeline.SUBFACE_EDGES_FILE)
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    return np.ascontiguousarray(np.load(path), dtype="<f4").tobytes(), "<f4"
+
+
+def subface_edge_pairs_bytes(workdir):
+    """Unordered effective face id pair per segment as uint32 (E*2)."""
+    path = os.path.join(workdir, pipeline.SUBFACE_EDGE_PAIRS_FILE)
+    if not os.path.exists(path):
+        raise FileNotFoundError(path)
+    return np.ascontiguousarray(np.load(path), dtype="<u4").tobytes(), "<u4"
+
+
 def accessibility_bytes(workdir, direction_index):
     """One accessibility row as a per-face uint8 mask."""
     path = os.path.join(workdir, pipeline.ACCESSIBILITY_FILE)

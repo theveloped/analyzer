@@ -15,6 +15,14 @@ class EjectorPin(BaseModel):
     diameter: float  # mm
 
 
+class SplitRequest(BaseModel):
+    """One face cut: two snapped boundary mesh-vertex ids on an effective
+    face (see splits.py)."""
+    face: int
+    start: int
+    end: int
+
+
 class EjectorSimRequest(BaseModel):
     """Interactive ejector-pin simulation over a stored ejection_sticking
     result (identified by its cache hash)."""

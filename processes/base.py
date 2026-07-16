@@ -117,10 +117,17 @@ def result_paths(workdir, process_id, analysis_id, params):
 
 
 def load_cached_result(workdir, process_id, analysis_id, params):
-    """Return a previously stored AnalysisResult dict, or None."""
+    """Return a previously stored AnalysisResult dict, or None.
+
+    A hit refreshes the json's mtime: the manifest treats the newest file
+    per analysis as "latest", so a re-run that lands on an older cached
+    result (e.g. after undoing a face split) surfaces it again instead of
+    leaving a stale newer result selected.
+    """
     json_path, _ = result_paths(workdir, process_id, analysis_id, params)
     if not os.path.exists(json_path):
         return None
+    os.utime(json_path)
     with open(json_path) as f:
         return json.load(f)
 

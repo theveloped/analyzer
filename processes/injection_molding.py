@@ -18,7 +18,7 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             params_hash, store_result)
 
 ASSIGNMENT_OPTIONS = 3  # options that get per-face assignment fields
-MOLD_SCHEMA = 3  # result schema version, salted into the cache key
+MOLD_SCHEMA = 4  # result schema version, salted into the cache key
 SPRUE_SCHEMA = 2  # sprue_proposals schema version, salted into the cache key
 SKELETON_SCHEMA = 5  # wall_skeleton schema (5: unbounded-marker normalization)
 EJECTION_SCHEMA = 2  # ejection_sticking schema version, cache salt
@@ -195,7 +195,8 @@ def run_mold_orientation(workdir, params, progress):
     cache_params = {**params, "schema": MOLD_SCHEMA,
                     "directions": pipeline.directions_fingerprint(workdir),
                     "accessibility": pipeline.accessibility_fingerprint(workdir),
-                    "mesh": pipeline.mesh_fingerprint(workdir)}
+                    "mesh": pipeline.mesh_fingerprint(workdir),
+                    "splits": pipeline.splits_fingerprint(workdir)}
     cached = load_cached_result(workdir, "injection_molding",
                                 "mold_orientation", cache_params)
     if cached is not None:

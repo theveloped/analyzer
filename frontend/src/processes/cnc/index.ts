@@ -1,11 +1,13 @@
 import { brepFacesMode, highlightsMode } from '../../colorizers/core';
 import type { ProcessPlugin, ViewCtx } from '../../registry/types';
+import { faceLabel, handleSplitPick } from '../../splits/splits';
+import { useStore } from '../../state/store';
 import { faceAccess, vertexGap, vertexMinStickout } from './compose';
 import { CncControls } from './Controls';
 import {
   accessMode, classMode, gapMode, stickoutMode, thinSpanMode, unifiedMode,
 } from './modes';
-import { loadSetups, setupsMode } from './setups';
+import { cncSplitHost, loadSetups, setupsMode } from './setups';
 import { currentSource, currentTip } from './sources';
 
 async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
@@ -19,13 +21,19 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
     for (let s = 0; s < labels.length; s++) {
       if ((data.membership[face] >>> s) & 1) bits.push(labels[s]);
     }
+    const label = faceLabel(b, data.brepDesc);
+    lines.push(`brep face: ${label}${label.includes('.') ? ' (split piece)' : ''}`);
     lines.push(`machinable in: ${bits.join(', ') || 'nothing (unmachinable)'}`);
-    const cat = data.current[b];
-    const catName = cat === 255
-      ? `unmachinable region ${data.region[face] || ''}`
-      : cat === 254 ? 'conflict / needs split' : labels[cat];
-    const overridden = cat !== data.defaults[b] ? ' (override)' : '';
-    lines.push(`assigned: ${catName}${overridden}`);
+    if (b >= data.valid.length) {
+      lines.push('assigned: pending — result predates this cut');
+    } else {
+      const cat = data.current[b];
+      const catName = cat === 255
+        ? `unmachinable region ${data.region[face] || ''}`
+        : cat === 254 ? 'conflict / needs split' : labels[cat];
+      const overridden = cat !== data.defaults[b] ? ' (override)' : '';
+      lines.push(`assigned: ${catName}${overridden}`);
+    }
   } catch {
     // no setups result — skip those lines
   }
@@ -73,7 +81,18 @@ export const cncPlugin: ProcessPlugin = {
     setupsOption: 0,
     showLines: true,
     showArrows: true,
+    splitMode: false,
+    splitFace: null,
+    splitStart: null,
   }),
   Controls: CncControls,
   inspect,
+  onPick(face, point, ctx) {
+    const { modeId, viewerParams } = useStore.getState();
+    const params = viewerParams.cnc ?? {};
+    if (modeId === 'setups' && params.splitMode) {
+      return handleSplitPick(cncSplitHost, face, point, ctx);
+    }
+    return false;
+  },
 };

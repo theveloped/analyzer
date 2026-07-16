@@ -30,12 +30,17 @@ import {
   loadVertVoxel, loadVoxelGrid, voxelPositions, type FlowFill,
 } from './voxels';
 import { runAnalysisJob } from '../../viewer/jobs';
+import {
+  drawSplitOverlays, edgeDescriptors, effectiveDescriptor, faceLabel,
+  handleSplitPick, type SplitHost,
+} from '../../splits/splits';
+import { SplitControls } from '../../splits/SplitControls';
 
 const CONFLICT_FEATURE = 254;
 const INTERNAL_FEATURE = 255;
 
 // keep in sync with MOLD_SCHEMA in processes/injection_molding.py
-const MOLD_SCHEMA = 3;
+const MOLD_SCHEMA = 4;
 
 const ARROW_COLORS: Record<string, RGB> = {
   main_a: [0.44, 0.64, 0.86], // side A
@@ -72,6 +77,7 @@ interface AssignmentData {
   result: ResultEntry;
   option: number;
   desc: FieldDescriptor; // membership field (labels/colors in params)
+  brepDesc: FieldDescriptor; // effective face ids (subfaces or brep_faces)
   membership: Uint32Array;
   region: Uint32Array;
   valid: Uint32Array;
@@ -93,7 +99,8 @@ async function loadAssignment(ctx: ViewCtx): Promise<AssignmentData> {
   const result = pickResult(results, ctx.params.result)!;
   const option = ctx.params.option ?? 0;
 
-  const brepDesc = ctx.manifest.fields.find((f) => f.id === 'brep_faces');
+  // effective ids: user sub-faces when splits exist, plain BREP otherwise
+  const brepDesc = effectiveDescriptor(ctx.manifest);
   if (!brepDesc) {
     throw new Error('assignment needs BREP face ids — re-mesh the part from its STEP file');
   }
@@ -122,10 +129,20 @@ async function loadAssignment(ctx: ViewCtx): Promise<AssignmentData> {
   }
 
   return {
-    result, option, desc, membership, region, valid, defaults, brepIds,
-    current, overridesKey,
+    result, option, desc, brepDesc, membership, region, valid, defaults,
+    brepIds, current, overridesKey,
   };
 }
+
+/** Split-interaction wiring for the mold assignment view. */
+const moldSplitHost: SplitHost = {
+  processId: 'injection_molding',
+  modeId: 'assignment',
+  currentResult: (manifest, params) =>
+    pickResult(resultsFor(manifest, 'mold_orientation'), params.result),
+  analysisOf: () => 'mold_orientation',
+  resultParam: 'result',
+};
 
 const assignmentMode: ViewMode = {
   id: 'assignment',
@@ -154,7 +171,9 @@ const assignmentMode: ViewMode = {
 
     ctx.paintFaces((f) => {
       const b = brepIds[f];
-      const cat = current[b];
+      // ids past the arrays = new sub-faces the result predates — paint
+      // them via the conflict path until the auto re-run lands
+      const cat = b < current.length ? current[b] : CONFLICT_FEATURE;
       if (cat === INTERNAL_FEATURE) {
         internalCount++;
         tracker.add(`r${region[f]}`, f);
@@ -221,15 +240,16 @@ const assignmentMode: ViewMode = {
     }
 
     if (ctx.params.showLines !== false) {
-      const edgesDesc = ctx.manifest.fields.find((f) => f.id === 'brep_edges');
-      const pairsDesc = ctx.manifest.fields.find((f) => f.id === 'brep_edge_pairs');
-      if (edgesDesc && pairsDesc) {
-        const edges = await ctx.getField(edgesDesc) as Float32Array;
-        const pairs = await ctx.getField(pairsDesc) as Uint32Array;
+      const lineDescs = edgeDescriptors(ctx.manifest);
+      if (lineDescs) {
+        const edges = await ctx.getField(lineDescs.edges) as Float32Array;
+        const pairs = await ctx.getField(lineDescs.pairs) as Uint32Array;
         const kept: number[] = [];
         for (let e = 0; e < pairs.length / 2; e++) {
-          const a = current[pairs[2 * e]];
-          const b = current[pairs[2 * e + 1]];
+          const pa = pairs[2 * e];
+          const pb = pairs[2 * e + 1];
+          const a = pa < current.length ? current[pa] : CONFLICT_FEATURE;
+          const b = pb < current.length ? current[pb] : CONFLICT_FEATURE;
           if (a !== b && a < CONFLICT_FEATURE && b < CONFLICT_FEATURE) {
             for (let i = 0; i < 6; i++) kept.push(edges[6 * e + i]);
           }
@@ -237,6 +257,7 @@ const assignmentMode: ViewMode = {
         ctx.setLines(new Float32Array(kept));
       }
     }
+    const splitLines = await drawSplitOverlays(ctx, moldSplitHost, brepIds);
 
     const opt = data.result.stats.options?.[data.option];
     if (ctx.params.showArrows !== false && opt) {
@@ -258,7 +279,12 @@ const assignmentMode: ViewMode = {
         + ` · ${opt.slides.length} slide(s)${slides}`
         + ` · internal ${internalCount}`;
     }
+    if (data.result.stale) {
+      stats += '\n⚠ cuts or directions changed since this result — recomputing'
+        + ' (or re-run below)';
+    }
     stats += '\nstriped = multiple valid features — click a face to cycle';
+    if (splitLines.length) stats += `\n${splitLines.join('\n')}`;
     return { legend, stats };
   },
 
@@ -270,6 +296,7 @@ const assignmentMode: ViewMode = {
       return false;
     }
     const b = data.brepIds[face];
+    if (b >= data.valid.length) return false; // sub-face newer than result
     const v = data.valid[b];
     if (popcount(v) < 2) return false; // solid / conflict / internal
 
@@ -1028,19 +1055,24 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
     for (let f = 0; f < labels.length; f++) {
       if ((data.membership[face] >>> f) & 1) bits.push(labels[f]);
     }
-    lines.push(`brep face: ${b}`);
+    const label = faceLabel(b, data.brepDesc);
+    lines.push(`brep face: ${label}${label.includes('.') ? ' (split piece)' : ''}`);
     lines.push(`reachable by: ${bits.join(', ') || 'nothing (internal)'}`);
-    const validNames: string[] = [];
-    for (let f = 0; f < labels.length; f++) {
-      if ((data.valid[b] >>> f) & 1) validNames.push(labels[f]);
+    if (b >= data.valid.length) {
+      lines.push('assigned: pending — result predates this cut');
+    } else {
+      const validNames: string[] = [];
+      for (let f = 0; f < labels.length; f++) {
+        if ((data.valid[b] >>> f) & 1) validNames.push(labels[f]);
+      }
+      const cat = data.current[b];
+      const catName = cat === INTERNAL_FEATURE
+        ? `internal undercut ${data.region[face] || ''}`
+        : cat === CONFLICT_FEATURE ? 'conflict / needs split' : labels[cat];
+      const overridden = cat !== data.defaults[b] ? ' (override)' : '';
+      lines.push(`face valid for: ${validNames.join(', ') || '—'}`);
+      lines.push(`assigned: ${catName}${overridden}`);
     }
-    const cat = data.current[b];
-    const catName = cat === INTERNAL_FEATURE
-      ? `internal undercut ${data.region[face] || ''}`
-      : cat === CONFLICT_FEATURE ? 'conflict / needs split' : labels[cat];
-    const overridden = cat !== data.defaults[b] ? ' (override)' : '';
-    lines.push(`face valid for: ${validNames.join(', ') || '—'}`);
-    lines.push(`assigned: ${catName}${overridden}`);
   } catch {
     // assignment data unavailable — skip those lines
   }
@@ -1500,6 +1532,8 @@ function InjectionControls() {
             faded stripes = other valid features
           </div>
 
+          <SplitControls host={moldSplitHost} />
+
           {options.length > 0 && (
             <div className="hint">
               ranked: {options.map((o, i) =>
@@ -1605,6 +1639,7 @@ export const injectionPlugin: ProcessPlugin = {
   defaults: () => ({
     result: -1, option: 0,
     showLines: true, showArrows: true,
+    splitMode: false, splitFace: null, splitStart: null,
     minThickness: 1.0, thicknessScale: '',
     minGap: 0.5, gapScale: '', maskExplained: true,
     maxSlenderness: 2.0, slendernessScale: '',
@@ -1623,6 +1658,10 @@ export const injectionPlugin: ProcessPlugin = {
   inspect,
   onPick(face, point, ctx) {
     const { modeId, setViewerParam } = useStore.getState();
+    const splitParams = useStore.getState().viewerParams.injection_molding ?? {};
+    if (modeId === 'assignment' && splitParams.splitMode) {
+      return handleSplitPick(moldSplitHost, face, point, ctx);
+    }
     if (modeId === 'skeleton' || modeId === 'flowFill') {
       setViewerParam('injection_molding', 'gate', point);
       return true;

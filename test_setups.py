@@ -187,7 +187,8 @@ def fixture_slot_brep(check):
         result = pipeline.cnc_setups(workdir, indexed=True, count=10,
                                      field_options=3)
         stats = result["stats"]
-        check("stats carry schema 2 and brep", stats["schema"] == 2
+        check("stats carry the schema and brep",
+              stats["schema"] == pipeline.SETUPS_STATS_SCHEMA
               and stats["brep"], "")
         check("stats carry the directions fingerprint",
               stats["directions_fingerprint"]
@@ -406,7 +407,8 @@ def fixture_tool_verdict(check):
               opt["feasible"] and opt["verdict"]["lost"] < 1.0,
               f"lost {opt['verdict']['lost']} mm²")
         check("verdict stats mirror the setups schema",
-              good["stats"]["schema"] == 2 and good["stats"]["verdict"]
+              good["stats"]["schema"] == pipeline.SETUPS_STATS_SCHEMA
+              and good["stats"]["verdict"]
               and good["stats"]["field_options"] == [0]
               and "membership_0" in good["arrays"], "")
 
