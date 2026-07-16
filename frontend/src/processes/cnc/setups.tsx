@@ -13,12 +13,17 @@ import type {
   LegendEntry, PaintInfo, RGB, ViewCtx, ViewMode,
 } from '../../registry/types';
 import { useStore } from '../../state/store';
+import {
+  drawSplitOverlays, edgeDescriptors, effectiveDescriptor,
+  type SplitHost,
+} from '../../splits/splits';
+import { SplitControls } from '../../splits/SplitControls';
 import { optimizeParting } from '../parting';
 import { runCtxAction } from '../../viewer/controller';
 
 const CONFLICT_FEATURE = 254;
 const INTERNAL_FEATURE = 255;
-const SETUPS_SCHEMA = 2;
+const SETUPS_SCHEMA = 3;
 
 export function setupsResults(manifest: Manifest): ResultEntry[] {
   return manifest.results.filter(
@@ -41,6 +46,7 @@ interface SetupsData {
   result: ResultEntry;
   option: number; // field option index (membership_<option>)
   desc: FieldDescriptor; // membership field (labels/colors in params)
+  brepDesc: FieldDescriptor; // effective face ids (subfaces or brep_faces)
   membership: Uint32Array;
   region: Uint32Array;
   valid: Uint32Array;
@@ -62,7 +68,8 @@ export async function loadSetups(ctx: ViewCtx): Promise<SetupsData> {
   const result = results[ctx.params.setupsResult ?? 0] ?? results[results.length - 1];
   const option = ctx.params.setupsOption ?? 0;
 
-  const brepDesc = ctx.manifest.fields.find((f) => f.id === 'brep_faces');
+  // effective ids: user sub-faces when splits exist, plain BREP otherwise
+  const brepDesc = effectiveDescriptor(ctx.manifest);
   if (!brepDesc) {
     throw new Error('assignment needs BREP face ids — re-mesh the part from its STEP file');
   }
@@ -91,10 +98,22 @@ export async function loadSetups(ctx: ViewCtx): Promise<SetupsData> {
   }
 
   return {
-    result, option, desc, membership, region, valid, defaults, brepIds,
-    current, overridesKey,
+    result, option, desc, brepDesc, membership, region, valid, defaults,
+    brepIds, current, overridesKey,
   };
 }
+
+/** Split-interaction wiring for the setups assignment view. */
+export const cncSplitHost: SplitHost = {
+  processId: 'cnc',
+  modeId: 'setups',
+  currentResult: (manifest, params) => {
+    const results = setupsResults(manifest);
+    return results[params.setupsResult ?? 0] ?? results[results.length - 1];
+  },
+  analysisOf: (result) => (result.stats.verdict ? 'setup_verdict' : 'setups'),
+  resultParam: 'setupsResult',
+};
 
 /** 'A · 2 setups (flip) · feasible 100%' — selector / stats label. */
 export function optionLabel(opt: any): string {
@@ -140,7 +159,9 @@ export const setupsMode: ViewMode = {
 
     ctx.paintFaces((f) => {
       const b = brepIds[f];
-      const cat = current[b];
+      // ids past the arrays = new sub-faces the result predates — paint
+      // them via the conflict path until the auto re-run lands
+      const cat = b < current.length ? current[b] : CONFLICT_FEATURE;
       if (cat === INTERNAL_FEATURE) {
         internalCount++;
         tracker.add(`r${region[f]}`, f);
@@ -190,15 +211,16 @@ export const setupsMode: ViewMode = {
     }
 
     if (ctx.params.showLines !== false) {
-      const edgesDesc = ctx.manifest.fields.find((f) => f.id === 'brep_edges');
-      const pairsDesc = ctx.manifest.fields.find((f) => f.id === 'brep_edge_pairs');
-      if (edgesDesc && pairsDesc) {
-        const edges = await ctx.getField(edgesDesc) as Float32Array;
-        const pairs = await ctx.getField(pairsDesc) as Uint32Array;
+      const lineDescs = edgeDescriptors(ctx.manifest);
+      if (lineDescs) {
+        const edges = await ctx.getField(lineDescs.edges) as Float32Array;
+        const pairs = await ctx.getField(lineDescs.pairs) as Uint32Array;
         const kept: number[] = [];
         for (let e = 0; e < pairs.length / 2; e++) {
-          const a = current[pairs[2 * e]];
-          const b = current[pairs[2 * e + 1]];
+          const pa = pairs[2 * e];
+          const pb = pairs[2 * e + 1];
+          const a = pa < current.length ? current[pa] : CONFLICT_FEATURE;
+          const b = pb < current.length ? current[pb] : CONFLICT_FEATURE;
           if (a !== b && a < CONFLICT_FEATURE && b < CONFLICT_FEATURE) {
             for (let i = 0; i < 6; i++) kept.push(edges[6 * e + i]);
           }
@@ -206,6 +228,7 @@ export const setupsMode: ViewMode = {
         ctx.setLines(new Float32Array(kept));
       }
     }
+    const splitLines = await drawSplitOverlays(ctx, cncSplitHost, brepIds);
 
     const opt = fieldOption(data.result, data.option);
     if (ctx.params.showArrows !== false && opt) {
@@ -227,9 +250,10 @@ export const setupsMode: ViewMode = {
       }
     }
     if (data.result.stale) {
-      stats += '\n⚠ directions changed since this result — re-run the analysis';
+      stats += '\n⚠ cuts or directions changed since this result — re-run the analysis';
     }
     stats += '\nstriped = machinable in several setups — click a face to cycle';
+    if (splitLines.length) stats += `\n${splitLines.join('\n')}`;
     return { legend, stats };
   },
 
@@ -241,6 +265,7 @@ export const setupsMode: ViewMode = {
       return false;
     }
     const b = data.brepIds[face];
+    if (b >= data.valid.length) return false; // sub-face newer than result
     const v = data.valid[b];
     if (popcount(v) < 2) return false; // solid / conflict / unmachinable
 
@@ -334,6 +359,8 @@ export function SetupsControls() {
       >
         optimize parting lines
       </button>
+
+      <SplitControls host={cncSplitHost} />
 
       {options.length > 0 && (
         <div className="hint">

@@ -77,6 +77,7 @@ Test files are **plain scripts, not pytest** — run them directly:
 ```bash
 python test_zmap.py          # zmap engine vs analytic expectations (fast-ish)
 python test_mold.py          # mold orientation / assignment fixtures
+python test_splits.py        # user face splits (relabel, replay, split-aware runs)
 python test_thickness.py     # rolling-sphere plate/gap probes
 python test_accessibility.py # visibility raster on a synthetic pocket part
 python test_gap_probes.py    # Euclidean gap metric probes

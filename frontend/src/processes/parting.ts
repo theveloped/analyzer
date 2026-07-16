@@ -10,6 +10,7 @@
 import { putOverrides } from '../api/client';
 import type { ViewCtx } from '../registry/types';
 import { useStore } from '../state/store';
+import { edgeDescriptors } from '../splits/splits';
 
 // Labels >= EXCLUDED are the 254 (conflict) / 255 (internal) sentinels; a
 // segment between them never draws a parting line.
@@ -55,8 +56,12 @@ export function partingMetrics(
     return r;
   };
   for (let e = 0; e < E; e++) {
-    const la = label[pairs[2 * e]];
-    const lb = label[pairs[2 * e + 1]];
+    // ids past the label array = sub-faces newer than the result (interim
+    // between a face split and its re-run) — excluded like the sentinels
+    const pa = pairs[2 * e];
+    const pb = pairs[2 * e + 1];
+    const la = pa < label.length ? label[pa] : EXCLUDED;
+    const lb = pb < label.length ? label[pb] : EXCLUDED;
     if (la >= EXCLUDED || lb >= EXCLUDED || la === lb) continue;
     const o = 6 * e;
     const x0 = segments[o], y0 = segments[o + 1], z0 = segments[o + 2];
@@ -86,14 +91,15 @@ function mulberry32(seed: number): () => number {
 export async function optimizeParting(
   ctx: ViewCtx, data: PartingData,
 ): Promise<{ summary: string; changed: boolean }> {
-  // 1. Fetch parting-line geometry.
-  const edgesDesc = ctx.manifest.fields.find((f) => f.id === 'brep_edges');
-  const pairsDesc = ctx.manifest.fields.find((f) => f.id === 'brep_edge_pairs');
-  if (!edgesDesc || !pairsDesc) {
+  // 1. Fetch parting-line geometry — the effective sub-face boundary
+  // arrays when user face splits exist, plain BREP edges otherwise, so the
+  // optimizer moves the same segments the views draw (incl. cut edges).
+  const lineDescs = edgeDescriptors(ctx.manifest);
+  if (!lineDescs) {
     return { summary: 'optimize needs BREP edges — re-mesh from STEP', changed: false };
   }
-  const segments = await ctx.getField(edgesDesc) as Float32Array;
-  const pairs = await ctx.getField(pairsDesc) as Uint32Array;
+  const segments = await ctx.getField(lineDescs.edges) as Float32Array;
+  const pairs = await ctx.getField(lineDescs.pairs) as Uint32Array;
 
   // 2. Sets & domains. A face contributes iff valid != 0; it is movable iff
   // its valid mask has >= 2 bits.
@@ -119,7 +125,8 @@ export async function optimizeParting(
   for (let e = 0; e < pairs.length / 2; e++) {
     const a = pairs[2 * e];
     const b = pairs[2 * e + 1];
-    if (data.valid[a] === 0 || data.valid[b] === 0) continue;
+    // ids >= N are sub-faces the stale result doesn't know yet — skip
+    if (a >= N || b >= N || data.valid[a] === 0 || data.valid[b] === 0) continue;
     const o = 6 * e;
     const len = Math.hypot(
       segments[o + 3] - segments[o], segments[o + 4] - segments[o + 1],

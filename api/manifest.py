@@ -143,10 +143,57 @@ def _brep_faces_fields(workdir, base_url, face_count):
     return fields
 
 
+def _subface_fields(workdir, base_url, face_count):
+    """Effective sub-face labeling from user cuts (splits.py sidecars).
+
+    Only advertised while the splits reference the current mesh — a
+    re-meshed part silently falls back to plain BREP faces."""
+    meta_path = os.path.join(workdir, pipeline.SUBFACE_META_FILE)
+    if not (os.path.exists(meta_path)
+            and os.path.exists(os.path.join(workdir, pipeline.SUBFACES_FILE))):
+        return []
+    with open(meta_path) as f:
+        meta = json.load(f)
+    if meta.get("mesh_fingerprint") != pipeline.mesh_fingerprint(workdir):
+        return []
+    fields = [{
+        "id": "subfaces",
+        "association": "face",
+        "dtype": "u4",
+        "role": "category",
+        "length": face_count,
+        "url": f"{base_url}/fields/subfaces/0",
+        "params": {"kind": "subfaces", "count": meta["n_effective"],
+                   "n_brep": meta["n_brep"], "parents": meta["parents"]},
+    }]
+    edges_path = os.path.join(workdir, pipeline.SUBFACE_EDGES_FILE)
+    if os.path.exists(edges_path):
+        segments = int(np.load(edges_path, mmap_mode="r").shape[0])
+        fields += [{
+            "id": "subface_edges",
+            "association": "none",
+            "dtype": "f4",
+            "role": "lines",
+            "length": None,
+            "url": f"{base_url}/fields/subface_edges/0",
+            "params": {"kind": "subface_edges", "segments": segments},
+        }, {
+            "id": "subface_edge_pairs",
+            "association": "none",
+            "dtype": "u4",
+            "role": "data",
+            "length": None,
+            "url": f"{base_url}/fields/subface_edge_pairs/0",
+            "params": {"kind": "subface_edge_pairs", "segments": segments},
+        }]
+    return fields
+
+
 def _result_entries(workdir, base_url, face_count, vert_count):
     fields, results = [], []
     current_fingerprint = pipeline.directions_fingerprint(workdir)
     current_mesh = pipeline.mesh_fingerprint(workdir)
+    current_splits = pipeline.splits_fingerprint(workdir)
     pattern = os.path.join(workdir, RESULTS_DIR, "*", "*", "*.json")
     # oldest -> newest so "last entry per analysis" means the most recent
     # recompute — the frontend's default result picks rely on this
@@ -192,11 +239,14 @@ def _result_entries(workdir, base_url, face_count, vert_count):
             "params": payload.get("params", {}),
             "stats": _json_safe(stats),
             "fields": field_ids,
-            # direction indices or face/vertex indexing in the result no
-            # longer match the workdir — the result is stale, re-run it
+            # direction indices, face/vertex indexing or sub-face labeling
+            # in the result no longer match the workdir — stale, re-run it
             "stale": bool((stored_fingerprint
                            and stored_fingerprint != current_fingerprint)
-                          or (stored_mesh and stored_mesh != current_mesh)),
+                          or (stored_mesh and stored_mesh != current_mesh)
+                          or ("splits" in payload.get("params", {})
+                              and payload["params"]["splits"]
+                              != current_splits)),
             "overrides_url": f"{base_url}/results/{process_id}/{analysis_id}/{result_hash}/overrides",
         })
     return fields, results
@@ -245,6 +295,7 @@ def build_manifest(root, part):
         _zcache_fields(workdir, base_url, vert_count)
         + _accessibility_fields(workdir, base_url, face_count)
         + _brep_faces_fields(workdir, base_url, face_count)
+        + _subface_fields(workdir, base_url, face_count)
     )
     result_fields, results = _result_entries(workdir, base_url, face_count, vert_count)
     manifest["fields"] += result_fields

@@ -63,6 +63,56 @@ export async function putOverrides(
   if (!res.ok) throw new Error(`saving overrides failed: ${res.status}`);
 }
 
+export interface SplitCut {
+  face_orig: number;
+  face_at_cut: number;
+  start: number;
+  end: number;
+  separated: boolean;
+  created: number[];
+  polyline: number[][];
+}
+
+export interface SplitsState {
+  n_brep: number;
+  n_effective: number;
+  parents: number[];
+  stale: boolean;
+  cuts: SplitCut[];
+}
+
+const splitsUrl = (partId: string) =>
+  `/api/parts/${encodeURIComponent(partId)}/splits`;
+
+export const fetchSplits = (partId: string) =>
+  getJSON<SplitsState>(splitsUrl(partId));
+
+async function splitsMutation(url: string, method: string, body?: any):
+Promise<SplitsState> {
+  const res = await fetch(url, {
+    method,
+    ...(body ? {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    } : {}),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `split request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export const postSplit = (
+  partId: string, body: { face: number; start: number; end: number },
+) => splitsMutation(splitsUrl(partId), 'POST', body);
+
+export const deleteLastSplit = (partId: string) =>
+  splitsMutation(`${splitsUrl(partId)}/last`, 'DELETE');
+
+export const clearSplits = (partId: string) =>
+  splitsMutation(splitsUrl(partId), 'DELETE');
+
 export async function postEjectorSimulate<T>(
   partId: string, body: Record<string, any>,
 ): Promise<T> {

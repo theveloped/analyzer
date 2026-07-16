@@ -42,9 +42,17 @@ BREP_EDGES_FILE = "brep_edges.npy"
 BREP_EDGE_PAIRS_FILE = "brep_edge_pairs.npy"
 HIGHLIGHT_FILE = "highlights.json"
 
+# user face-split sidecars (splits.py owns their semantics; the constants
+# live here so pipeline/manifest can reference them without importing splits)
+FACE_SPLITS_FILE = "face_splits.json"
+SUBFACES_FILE = "subfaces.npy"
+SUBFACE_EDGES_FILE = "subface_edges.npy"
+SUBFACE_EDGE_PAIRS_FILE = "subface_edge_pairs.npy"
+SUBFACE_META_FILE = "subface_meta.json"
+
 # mold_orientation stats schema — must track MOLD_SCHEMA in
 # processes/injection_molding.py (importing processes here would be circular)
-MOLD_STATS_SCHEMA = 3
+MOLD_STATS_SCHEMA = 4  # 4: brep_valid/brep_default indexed by effective ids
 
 MESH_EXTENSIONS = [".stl", ".stp", ".step"]
 
@@ -95,6 +103,18 @@ def mesh_fingerprint(workdir):
     """
     return files_fingerprint([os.path.join(workdir, FINE_VERTS_FILE),
                               os.path.join(workdir, FINE_FACES_FILE)])
+
+
+def splits_fingerprint(workdir):
+    """Short content hash of subfaces.npy (None when no face splits exist).
+
+    Results that aggregate per BREP face salt this in so user face splits
+    orphan them. Hashing the derived labeling (not face_splits.json) means
+    a stored-but-not-yet-separating cut leaves results valid — the
+    aggregation only changes when the labeling does — and an undone cut
+    reverts the fingerprint byte-identically, re-validating older results.
+    """
+    return file_fingerprint(os.path.join(workdir, SUBFACES_FILE))
 
 
 def parse_tools(entries):
@@ -607,13 +627,12 @@ def mold_orientation(workdir, *, max_slides=2, slide_tollerance=2.0, count=10,
     (STEP-meshed parts); they are skipped otherwise.
     """
     import molding
+    import splits
 
     verts, faces = load_mesh_arrays(workdir)
     directions = np.load(os.path.join(workdir, DIRECTIONS_FILE))
     accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))
-
-    brep_path = os.path.join(workdir, BREP_FACES_FILE)
-    brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
+    brep_ids, _, _ = splits.effective_face_ids(workdir)
 
     _report(progress, 0.1, "searching mold orientations")
     options = molding.mold_orientation_search(
@@ -649,11 +668,12 @@ def mold_orientation(workdir, *, max_slides=2, slide_tollerance=2.0, count=10,
 
         if brep_ids is not None:
             valid = molding.brep_validity(membership, brep_ids, n_features)
+            defaults = molding.brep_defaults(membership, valid, brep_ids)
+            splits.sanitize_retired(valid, defaults, brep_ids)
             arrays[f"brep_valid_{k}"] = valid
             field_meta[f"brep_valid_{k}"] = {
                 **common, "variant": "brep_valid", "association": "none",
                 "role": "data", "dtype": "u4", "count": int(len(valid))}
-            defaults = molding.brep_defaults(membership, valid, brep_ids)
             arrays[f"brep_default_{k}"] = defaults
             field_meta[f"brep_default_{k}"] = {
                 **common, "variant": "brep_default", "association": "none",
@@ -670,7 +690,7 @@ def mold_orientation(workdir, *, max_slides=2, slide_tollerance=2.0, count=10,
     return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
 
 
-SETUPS_STATS_SCHEMA = 2  # area-weighted counts + directions fingerprint
+SETUPS_STATS_SCHEMA = 3  # 3: brep_valid/brep_default indexed by effective ids
 
 
 def _setup_machines(indexed, tilt):
@@ -746,12 +766,14 @@ def _membership_fields(k, option_index, option, membership, pairs, faces,
         "region_counts": region_counts}
 
     if brep_ids is not None:
+        import splits
         valid = molding.brep_validity(membership, brep_ids, setup_count)
+        defaults = machining.setup_defaults(membership, valid, brep_ids)
+        splits.sanitize_retired(valid, defaults, brep_ids)
         arrays[f"brep_valid_{k}"] = valid
         field_meta[f"brep_valid_{k}"] = {
             **common, "variant": "brep_valid", "association": "none",
             "role": "data", "dtype": "u4", "count": int(len(valid))}
-        defaults = machining.setup_defaults(membership, valid, brep_ids)
         arrays[f"brep_default_{k}"] = defaults
         field_meta[f"brep_default_{k}"] = {
             **common, "variant": "brep_default", "association": "none",
@@ -782,8 +804,8 @@ def cnc_setups(workdir, *, indexed=True, tilt=90.0, max_setups=4,
     accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))
     weights = machining.face_areas(verts, faces)
 
-    brep_path = os.path.join(workdir, BREP_FACES_FILE)
-    brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
+    import splits
+    brep_ids, _, _ = splits.effective_face_ids(workdir)
 
     _report(progress, 0.1, "searching setup combinations")
     reported, picked = _ranked_setup_options(
@@ -859,8 +881,8 @@ def setup_verdict(workdir, *, option=0, tools=(), tollerance=0.1,
     weights = machining.face_areas(verts, faces)
     normals = load_face_normals(workdir)
 
-    brep_path = os.path.join(workdir, BREP_FACES_FILE)
-    brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
+    import splits
+    brep_ids, _, _ = splits.effective_face_ids(workdir)
 
     _report(progress, 0.02, "ranking setup plans")
     reported, _ = _ranked_setup_options(
@@ -1972,6 +1994,23 @@ def _latest_mold_orientation(workdir):
     return result_hash, best[2], arrays
 
 
+def _result_effective_ids(workdir, payload):
+    """Per-triangle labeling matching a stored result's aggregation arrays.
+
+    Results carry a splits salt: their brep_valid/brep_default arrays are
+    indexed by the effective sub-face ids of that splits state. The
+    labeling is only recoverable while the workdir's current splits match
+    the salt — on mismatch return None so callers degrade to their
+    membership fallback (same as a missing mold result).
+    """
+    import splits
+
+    if payload.get("params", {}).get("splits") != splits_fingerprint(workdir):
+        return None
+    ids, _, _ = splits.effective_face_ids(workdir)
+    return ids
+
+
 def _parting_tree(workdir, brep_default):
     """cKDTree over sampled parting-line points, or None.
 
@@ -1984,6 +2023,17 @@ def _parting_tree(workdir, brep_default):
 
     edges_path = os.path.join(workdir, BREP_EDGES_FILE)
     pairs_path = os.path.join(workdir, BREP_EDGE_PAIRS_FILE)
+    # user splits relabel the aggregation — while their boundary arrays
+    # match the defaults' indexing, they replace the mesh-time edges (and
+    # carry the cut segments the parting line must follow)
+    meta_path = os.path.join(workdir, SUBFACE_META_FILE)
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            meta = json.load(f)
+        if (meta.get("mesh_fingerprint") == mesh_fingerprint(workdir)
+                and meta.get("n_effective") == len(brep_default)):
+            edges_path = os.path.join(workdir, SUBFACE_EDGES_FILE)
+            pairs_path = os.path.join(workdir, SUBFACE_EDGE_PAIRS_FILE)
     if not (os.path.exists(edges_path) and os.path.exists(pairs_path)):
         return None
     segments = np.load(edges_path).reshape(-1, 2, 3)
@@ -2063,8 +2113,7 @@ def sprue_proposals(workdir, *, skeleton, skeleton_hash, mesh_spec=None,
             option = 0
     if (mold_payload is not None and mold_arrays is not None
             and f"membership_{option}" in mold_arrays):
-        brep_path = os.path.join(workdir, BREP_FACES_FILE)
-        brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
+        brep_ids = _result_effective_ids(workdir, mold_payload)
         default_name = f"brep_default_{option}"
         use_brep = brep_ids is not None and default_name in mold_arrays
         if use_brep:
@@ -2266,9 +2315,7 @@ def ejection_sticking(workdir, *, skeleton, skeleton_hash, mesh_spec=None,
                                "option": option, "brep": False}
         if orientation["used"] and mold_arrays is not None \
                 and f"membership_{option}" in mold_arrays:
-            brep_path = os.path.join(workdir, BREP_FACES_FILE)
-            brep_ids = (np.load(brep_path) if os.path.exists(brep_path)
-                        else None)
+            brep_ids = _result_effective_ids(workdir, mold_payload)
             default_name = f"brep_default_{option}"
             if brep_ids is not None and default_name in mold_arrays:
                 defaults = mold_arrays[default_name]

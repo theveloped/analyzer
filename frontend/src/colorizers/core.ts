@@ -474,20 +474,24 @@ export function regionColor(region: number): RGB {
   return hsl(0.98 + 0.06 * t, 0.62, 0.4 + 0.28 * t);
 }
 
-/** Source BREP faces (from the STEP-aware mesher), one color per face id. */
+/** Source BREP faces (from the STEP-aware mesher), one color per face id.
+ * User face splits show as their sub-face pieces when present. */
 export const brepFacesMode: ViewMode = {
   id: 'brep_faces',
   label: 'BREP faces',
   async paint(ctx) {
-    const desc = ctx.manifest.fields.find((f) => f.id === 'brep_faces');
+    const desc = ctx.manifest.fields.find((f) => f.id === 'subfaces')
+      ?? ctx.manifest.fields.find((f) => f.id === 'brep_faces');
     if (!desc) {
       throw new Error('no BREP face ids — re-mesh the part from its STEP file');
     }
     const ids = await ctx.getField(desc) as Uint32Array;
     ctx.paintFaces((f) => segmentIdColor(ids[f]));
+    const split = desc.params.n_brep != null
+      ? ` (${desc.params.n_brep} BREP + user cuts)` : '';
     return {
       legend: [],
-      stats: `${desc.params.count} BREP faces over ${ctx.faceCount} triangles`,
+      stats: `${desc.params.count} faces${split} over ${ctx.faceCount} triangles`,
     };
   },
 };

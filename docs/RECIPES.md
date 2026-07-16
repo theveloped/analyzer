@@ -10,6 +10,7 @@ in docs/CODEMAP.md; background in APPROACH.md.
 | `zmap.py` (maps, closings, gaps, DirectionCache) | `python test_zmap.py`, `python test_gap_probes.py`, `python test_accessibility.py` |
 | `analysis.py` offsets/closings/undercuts | `python test_endmill.py` (slow, minutes) |
 | `molding.py`, `brep.py`, mold assignment | `python test_mold.py` |
+| `splits.py`, split-aware assignment/manifest | `python test_splits.py` |
 | `pipeline.compute_thickness` / thickness analyses | `python test_thickness.py` |
 | `pipeline.wall_skeleton` | `python test_skeleton.py` |
 | `pipeline.flow_voxels` / `flow_fill` (voxel flow) | `python test_flow.py` |

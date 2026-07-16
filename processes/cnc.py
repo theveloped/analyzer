@@ -5,7 +5,7 @@ import pipeline
 from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             load_cached_result, store_result)
 
-SETUPS_SCHEMA = 2  # result schema version, salted into the cache key
+SETUPS_SCHEMA = 3  # result schema version, salted into the cache key
 
 # default library: 3 flat endmills + 2 ball mills, each at its longest
 # practical reach (stickout 5xD) with the shank as the holder cylinder
@@ -22,7 +22,8 @@ def run_setups(workdir, params, progress):
     cache_params = {**params, "schema": SETUPS_SCHEMA,
                     "directions": pipeline.directions_fingerprint(workdir),
                     "accessibility": pipeline.accessibility_fingerprint(workdir),
-                    "mesh": pipeline.mesh_fingerprint(workdir)}
+                    "mesh": pipeline.mesh_fingerprint(workdir),
+                    "splits": pipeline.splits_fingerprint(workdir)}
     cached = load_cached_result(workdir, "cnc", "setups", cache_params)
     if cached is not None:
         return AnalysisResult(stats=cached["stats"],
@@ -43,7 +44,8 @@ def run_setup_verdict(workdir, params, progress):
     cache_params = {**params, "schema": SETUPS_SCHEMA, "verdict": 1,
                     "directions": pipeline.directions_fingerprint(workdir),
                     "accessibility": pipeline.accessibility_fingerprint(workdir),
-                    "mesh": pipeline.mesh_fingerprint(workdir)}
+                    "mesh": pipeline.mesh_fingerprint(workdir),
+                    "splits": pipeline.splits_fingerprint(workdir)}
     cached = load_cached_result(workdir, "cnc", "setups", cache_params)
     if cached is not None:
         return AnalysisResult(stats=cached["stats"],
