@@ -10,6 +10,7 @@ import { latestSheet } from './index';
 const OUTLINE: RGB = [0.92, 0.92, 0.95];
 const HOLES: RGB = [0.44, 0.64, 0.86];
 const BENDS: RGB = [0.95, 0.66, 0.23];
+const ENGRAVE: RGB = [0.62, 0.8, 0.58];
 
 function patternField(
   ctx: ViewCtx, result: ResultEntry, name: string,
@@ -78,12 +79,14 @@ export const patternMode: ViewMode = {
     const outline = await draw('outline_lines', OUTLINE);
     const holes = await draw('hole_lines', HOLES);
     const bends = await draw('bend_lines', BENDS);
+    const engravings = await draw('engraving_lines', ENGRAVE);
 
     const s = result.stats;
     const legend = [
       { color: OUTLINE, label: `outer contour (${outline} segments)` },
       ...(holes ? [{ color: HOLES, label: `holes (${s.hole_count})` }] : []),
       ...(bends ? [{ color: BENDS, label: `bend lines (${s.bends.length})` }] : []),
+      ...(engravings ? [{ color: ENGRAVE, label: 'feature engravings' }] : []),
     ];
     const bendSummary = (s.bends ?? []).map((b: any) => `${b.angle_deg.toFixed(0)}° r${b.inner_radius.toFixed(1)}`).join(', ');
     return {

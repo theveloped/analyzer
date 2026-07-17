@@ -11,15 +11,16 @@ import type {
 } from '../../registry/types';
 
 // keep in sync with SHEET_SCHEMA in processes/sheet_metal.py
-export const SHEET_SCHEMA = 1;
+export const SHEET_SCHEMA = 2;
 
-const ROLE_LABELS = ['other / feature', 'base skin', 'opposite skin', 'bend', 'wall / cut edge'];
+const ROLE_LABELS = ['other', 'base skin', 'opposite skin', 'bend', 'wall / cut edge', 'feature'];
 const ROLE_COLORS: RGB[] = [
   COL.ok,                // other
   [0.44, 0.64, 0.86],    // base skin
   [0.62, 0.8, 0.58],     // opposite skin
   [0.95, 0.66, 0.23],    // bend
   [0.55, 0.5, 0.62],     // wall / cut edge
+  [0.88, 0.29, 0.23],    // feature (embossing / extrusion / chamfer)
 ];
 
 export function latestSheet(ctx: ViewCtx, analysis: string): ResultEntry | null {
@@ -40,8 +41,12 @@ async function sheetField(
 function verdictLine(result: ResultEntry): string {
   const s = result.stats;
   const reasons = (s.reasons ?? []).length ? ` — ${s.reasons.join('; ')}` : '';
+  const features = (s.features ?? []).length
+    ? ` · ${s.features.length} skin features` : '';
+  const warnings = (s.warnings ?? []).length
+    ? ` — ⚠ ${s.warnings.join('; ')}` : '';
   return `${s.verdict} · thickness ${Number(s.thickness).toFixed(2)} mm · `
-    + `${s.bend_count} bends${reasons}`;
+    + `${s.bend_count} bends${features}${reasons}${warnings}`;
 }
 
 const rolesMode: ViewMode = {
@@ -108,6 +113,17 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
     const lines = [`sheet role: ${ROLE_LABELS[roles[face]] ?? 'unknown'}`];
     if (isFinite(radius[face])) {
       lines.push(`bend radius: ${radius[face].toFixed(2)} mm`);
+    }
+    // resolve the clicked face to a recognized skin feature, if any
+    const brepDesc = ctx.manifest.fields.find((f) => f.id === 'brep_faces');
+    if (brepDesc && (result.stats.features ?? []).length) {
+      const ids = await ctx.getField(brepDesc) as Uint32Array;
+      const feature = (result.stats.features as any[]).find(
+        (f) => f.faces.includes(ids[face]));
+      if (feature) {
+        lines.push(`feature: ${feature.type} ${feature.value.toFixed(2)} mm`
+          + (feature.side ? ` (${feature.side} side)` : ''));
+      }
     }
     return lines;
   } catch {

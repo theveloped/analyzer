@@ -272,13 +272,84 @@ def fixture_patterns(check, tmp):
     check("holed bracket: hole survives the unfold",
           stats["hole_count"] == 1 and stats["developable"],
           f"{stats['hole_count']} holes")
-    hole = stats["entities"]["holes"][0]
+    hole = stats["entities"]["holes"][0]["path"]
     points = np.array([entry[:2] for entry in hole])
     span = points.max(axis=0) - points.min(axis=0)
     check("holed bracket: hole is a D8 circle in the flat frame",
           np.allclose(span, [8.0, 8.0], atol=0.05), f"span {span}")
     check("holed bracket: volume conserved",
           stats["volume_error_pct"] < 0.15, f"{stats['volume_error_pct']:.3f}%")
+
+
+def fixture_features(check, tmp):
+    from OCP.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCone, \
+        BRepPrimAPI_MakeCylinder
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    def up(x, y, z):
+        return gp_Ax2(gp_Pnt(x, y, z), gp_Dir(0, 0, 1))
+
+    # boss on top: extrusion feature, height 6
+    plate = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 40, 30, 5).Shape()
+    boss = BRepPrimAPI_MakeCylinder(up(12, 15, 5), 5.0, 6.0).Shape()
+    bossed = BRepAlgoAPI_Fuse(plate, boss).Shape()
+    workdir, _, stats = _run_detect(tmp, bossed, "bossed.step")
+    features = stats["features"]
+    check("boss: one extrusion feature of height 6",
+          stats["verdict"] == "sheet" and len(features) == 1
+          and features[0]["type"] == "extrusion"
+          and np.isclose(features[0]["value"], 6.0, atol=1e-3),
+          f"{features}")
+    check("boss: feature faces get the feature role",
+          stats["role_counts"]["feature"] == 2, f"{stats['role_counts']}")
+
+    # recess in the top: embossing feature, depth 2
+    plate = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 40, 30, 5).Shape()
+    recess = BRepPrimAPI_MakeCylinder(up(25, 15, 3), 4.0, 3.0).Shape()
+    recessed = BRepAlgoAPI_Cut(plate, recess).Shape()
+    workdir, _, stats = _run_detect(tmp, recessed, "recessed.step")
+    features = stats["features"]
+    check("recess: one embossing feature of depth 2",
+          len(features) == 1 and features[0]["type"] == "embossing"
+          and np.isclose(features[0]["value"], 2.0, atol=1e-3),
+          f"{features}")
+
+    # countersunk through hole: chamfer feature + projected engraving ring
+    plate = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 40, 30, 5).Shape()
+    sunk = BRepAlgoAPI_Cut(plate, BRepPrimAPI_MakeCylinder(
+        up(20, 15, -1), 3.0, 7.0).Shape()).Shape()
+    sunk = BRepAlgoAPI_Cut(sunk, BRepPrimAPI_MakeCone(
+        up(20, 15, 2), 3.0, 6.0, 3.0).Shape()).Shape()
+    workdir, _, stats = _run_detect(tmp, sunk, "sunk.step")
+    features = stats["features"]
+    check("countersink: recognized as a chamfer feature",
+          len(features) == 1 and features[0]["type"] == "chamfer",
+          f"{features}")
+    pattern = _run_pattern(workdir)
+    check("countersink: pattern shows the countersunk side",
+          pattern["unfolded_side"] == "bottom"
+          and pattern["hole_count"] == 1, f"{pattern['unfolded_side']}")
+    hole = pattern["entities"]["holes"][0]
+    check("countersink: hole annotated with the feature",
+          hole.get("feature_type") == "chamfer", f"{hole.keys()}")
+    check("countersink: engraving ring projected (D6 bore)",
+          len(pattern["entities"]["engravings"]) == 1, "")
+    ring = np.array([e[:2] for e in pattern["entities"]["engravings"][0]])
+    span = ring.max(axis=0) - ring.min(axis=0)
+    check("countersink: engraving is the D6 bore circle",
+          np.allclose(span, [6.0, 6.0], atol=0.05), f"span {span}")
+
+    # features on both sides: warning + unfold side by majority
+    both = BRepAlgoAPI_Fuse(
+        BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), 40, 30, 5).Shape(),
+        BRepPrimAPI_MakeCylinder(up(12, 15, 5), 5.0, 6.0).Shape()).Shape()
+    both = BRepAlgoAPI_Cut(both, BRepPrimAPI_MakeCylinder(
+        gp_Ax2(gp_Pnt(30, 15, 2), gp_Dir(0, 0, -1)), 4.0, 3.0).Shape()).Shape()
+    workdir, _, stats = _run_detect(tmp, both, "both_sides.step")
+    check("both sides: two features + warning",
+          len(stats["features"]) == 2 and len(stats["warnings"]) == 1,
+          f"{len(stats['features'])} features, {stats['warnings']}")
 
 
 def _lwpolyline_area(points, closed):
@@ -367,6 +438,8 @@ def main():
         fixture_patterns(check, tmp)
         print("=== fixture E: DXF export ===")
         fixture_dxf(check, tmp)
+        print("=== fixture F: skin features ===")
+        fixture_features(check, tmp)
 
     if failures:
         print(f"{len(failures)} CHECKS FAILED: {failures}")

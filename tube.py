@@ -183,6 +183,17 @@ def _round_parameters(graph, grouped_a, grouped_b, surface_params):
             axis = np.array(params["axis"], dtype=float)
             break
     if axis is None:
+        # freeform (bspline) cylinders carry no analytic axis — every shell
+        # normal is perpendicular to it, so the axis is the null direction
+        # of the normal bundle (smallest right singular vector)
+        members = list(_members(grouped_a)) + list(_members(grouped_b))
+        normals = graph.face_normal[members]
+        normals = normals[np.isfinite(normals).all(axis=1)]
+        if len(normals) >= 2:
+            _, singular, vectors = np.linalg.svd(normals)
+            if singular[-1] < 0.1 * max(singular[0], 1e-12):
+                axis = vectors[-1]
+    if axis is None:
         return None
     faces = list(_members(grouped_a))
     span = aag_module.axial_span(graph, faces, np.zeros(3), axis)

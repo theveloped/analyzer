@@ -92,7 +92,10 @@ def export_dxf(workdir, process="sheet_metal", analysis="flat_pattern",
 
     add_path(entities.get("contour", []), "OUTLINE")
     for hole in entities.get("holes", []):
-        add_path(hole, "OUTLINE")
+        # holes may be plain paths or dicts with feature annotations
+        add_path(hole["path"] if isinstance(hole, dict) else hole, "OUTLINE")
+    for engraving in entities.get("engravings", []):
+        add_path(engraving, "ENGRAVING")
 
     for bend in entities.get("bend_lines", []):
         path = bend.get("path", [])

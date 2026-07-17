@@ -86,25 +86,66 @@ class Unfolder:
 
         return BRepTools.UVBounds_s(self.faces[face_index])
 
+    def _bend_geometry(self, face_index):
+        """(u_curved, domain_span, bend_angle) of a single-curvature face.
+
+        On an analytic cylinder the curved UV direction is in radians, so
+        the domain span IS the bend angle (exact, and correct past 180-
+        degree hems). Freeform (bspline) cylinders parametrize arbitrarily
+        — there the angle comes from the surface normals at the two domain
+        ends (capped at pi, which such imports don't exceed in practice).
+        """
+        from OCP.BRep import BRep_Tool
+        from OCP.BRepAdaptor import BRepAdaptor_Surface
+        from OCP.GeomAbs import GeomAbs_SurfaceType
+        from OCP.GeomLProp import GeomLProp_SLProps
+
+        domain = self._face_domain(face_index)
+        radii = self.graph.face_radii[face_index]
+        u_curved = abs(radii[0]) > abs(radii[1])
+        span = (abs(domain[0] - domain[1]) if u_curved
+                else abs(domain[2] - domain[3]))
+
+        face = self.faces[face_index]
+        if (BRepAdaptor_Surface(face).GetType()
+                == GeomAbs_SurfaceType.GeomAbs_Cylinder):
+            return u_curved, span, span
+
+        surface = BRep_Tool.Surface_s(face)
+        if u_curved:
+            ends = ((domain[0], 0.5 * (domain[2] + domain[3])),
+                    (domain[1], 0.5 * (domain[2] + domain[3])))
+        else:
+            ends = ((0.5 * (domain[0] + domain[1]), domain[2]),
+                    (0.5 * (domain[0] + domain[1]), domain[3]))
+        normals = []
+        for u, v in ends:
+            props = GeomLProp_SLProps(surface, float(u), float(v), 1,
+                                      TOLLERANCE)
+            if not props.IsNormalDefined():
+                return u_curved, span, span
+            direction = props.Normal()
+            normals.append(np.array([direction.X(), direction.Y(),
+                                     direction.Z()]))
+        cosine = float(np.clip(np.dot(normals[0], normals[1]), -1.0, 1.0))
+        return u_curved, span, math.acos(cosine)
+
     def node_scale(self, face_index, thickness, k_factor=0.5):
         """(u_scale, v_scale) implementing the bend allowance, or None.
 
-        On a cylindrical bend face the curved UV direction is in radians;
-        scaling it by allowance/angle (= neutral-fiber radius for the plain
-        case) makes the re-hosted pcurve span the bend allowance in mm.
+        The re-hosted pcurve spans the face's UV domain; scaling the curved
+        direction by allowance/domain_span makes it span the bend allowance
+        in mm (for an analytic cylinder that ratio is the neutral-fiber
+        radius).
         """
         convexity = int(self.graph.face_convexity[face_index])
         if convexity == aag_module.FACE_PLANAR:
             return None
 
-        domain = self._face_domain(face_index)
-        radii = self.graph.face_radii[face_index]
         curvature = self.graph.face_curvature[face_index]
-        u_curved = abs(radii[0]) > abs(radii[1])
+        u_curved, span, face_angle = self._bend_geometry(face_index)
 
         face_radius = abs(1.0 / curvature / 2.0)
-        face_angle = (abs(domain[0] - domain[1]) if u_curved
-                      else abs(domain[2] - domain[3]))
         if convexity != aag_module.FACE_CONCAVE:
             face_radius -= thickness  # outer skin: back to the inner radius
             face_angle *= -1
@@ -112,7 +153,8 @@ class Unfolder:
         allowance = (bend_allowance(face_angle, face_radius, thickness,
                                     k_factor)
                      - radius_allowance(face_angle, face_radius, face_radius))
-        scale = allowance / face_angle
+        scale = abs(allowance) / span * (1 if allowance * face_angle >= 0
+                                         else -1)
         return (scale, 1.0) if u_curved else (1.0, scale)
 
     # -- pcurve re-hosting ---------------------------------------------------
@@ -175,6 +217,45 @@ class Unfolder:
         for transformation in transformations:
             result = result.Transformed(transformation)
         return result
+
+    def _material_side_point(self, edge, face_index, scale=None,
+                             transformations=()):
+        """A layout point just inside the face's material next to the shared
+        edge — the robust reference for the unfold mirror test.
+
+        A face's UV-bbox midpoint can land on the wrong side of the fold
+        line for L-shaped flanges; stepping off the edge's pcurve midpoint
+        and keeping the side the face classifier calls IN cannot.
+        """
+        from OCP.BRep import BRep_Tool
+        from OCP.BRepClass import BRepClass_FaceClassifier
+        from OCP.TopAbs import TopAbs_State
+        from OCP.gp import gp_Pnt2d
+
+        face = self.faces[face_index]
+        pcurve = BRep_Tool.CurveOnSurface_s(edge, face, 0.0, 0.0)
+        if pcurve is None:
+            return None
+        u0, u1 = BRep_Tool.Range_s(edge, face)
+        t = 0.5 * (u0 + u1)
+        point = pcurve.Value(t)
+        tangent = pcurve.DN(t, 1)
+        length = math.hypot(tangent.X(), tangent.Y())
+        if length < 1e-12:
+            return None
+        normal_uv = (-tangent.Y() / length, tangent.X() / length)
+
+        domain = self._face_domain(face_index)
+        step = 1e-3 * max(domain[1] - domain[0], domain[3] - domain[2])
+        for sign in (1.0, -1.0):
+            uv = gp_Pnt2d(point.X() + sign * step * normal_uv[0],
+                          point.Y() + sign * step * normal_uv[1])
+            classifier = BRepClass_FaceClassifier(face, uv, 1e-9)
+            if classifier.State() == TopAbs_State.TopAbs_IN:
+                return self.transformed_uv(face_index, uv.X(), uv.Y(),
+                                           scale=scale,
+                                           transformations=transformations)
+        return None
 
     def _edge_frame(self, edge, face_index, *, scale, normal,
                     ignore_orientation, transformations=()):
@@ -266,22 +347,44 @@ class Unfolder:
                 # across the re-hosting, so decide the mirror empirically: a
                 # valid unfold puts the two faces on OPPOSITE sides of their
                 # shared fold line. Same side -> flip the successor frame.
-                anchor = predecessor_frame.Location()
-                tangent = predecessor_frame.XDirection()
+                # The fold line is evaluated at the edge MIDPOINT (same
+                # parameter as the material samples) — anchoring it at the
+                # edge start misjudges curved fold edges in multi-face bends.
+                from OCP.BRepAdaptor import BRepAdaptor_Curve
+
+                local_fold = self.transformed_edge(
+                    edge, predecessor, scale=predecessor_scale,
+                    transformations=transformations[predecessor])
+                fold_adaptor = BRepAdaptor_Curve(local_fold)
+                fold_mid = 0.5 * (fold_adaptor.FirstParameter()
+                                  + fold_adaptor.LastParameter())
+                anchor = fold_adaptor.Value(fold_mid)
+                from OCP.gp import gp_Pnt as _gp_Pnt, gp_Vec as _gp_Vec
+                tangent_vec = _gp_Vec()
+                fold_adaptor.D1(fold_mid, _gp_Pnt(), tangent_vec)
+                tangent = tangent_vec
 
                 def side(point):
                     return (tangent.X() * (point.Y() - anchor.Y())
                             - tangent.Y() * (point.X() - anchor.X()))
 
-                pd = self._face_domain(predecessor)
-                predecessor_mid = self.transformed_uv(
-                    predecessor, 0.5 * (pd[0] + pd[1]), 0.5 * (pd[2] + pd[3]),
-                    scale=predecessor_scale,
+                predecessor_mid = self._material_side_point(
+                    edge, predecessor, scale=predecessor_scale,
                     transformations=transformations[predecessor])
-                sd = self._face_domain(successor)
-                successor_mid = self.transformed_uv(
-                    successor, 0.5 * (sd[0] + sd[1]), 0.5 * (sd[2] + sd[3]),
-                    scale=successor_scale, transformations=chain)
+                successor_mid = self._material_side_point(
+                    edge, successor, scale=successor_scale,
+                    transformations=chain)
+                if predecessor_mid is None or successor_mid is None:
+                    pd = self._face_domain(predecessor)
+                    predecessor_mid = self.transformed_uv(
+                        predecessor, 0.5 * (pd[0] + pd[1]),
+                        0.5 * (pd[2] + pd[3]), scale=predecessor_scale,
+                        transformations=transformations[predecessor])
+                    sd = self._face_domain(successor)
+                    successor_mid = self.transformed_uv(
+                        successor, 0.5 * (sd[0] + sd[1]),
+                        0.5 * (sd[2] + sd[3]), scale=successor_scale,
+                        transformations=chain)
                 if side(predecessor_mid) * side(successor_mid) > 0:
                     successor_frame = self._edge_frame(
                         edge, successor, scale=successor_scale,
@@ -448,6 +551,18 @@ class Unfolder:
                 points, path = self._edge_entity(local)
 
                 if points_chain:
+                    if len(points_chain) == 1:
+                        # the first edge's direction is arbitrary — flip it
+                        # when the second edge attaches to its start
+                        best_tail = min(
+                            np.linalg.norm(points[0] - points_chain[0][-1]),
+                            np.linalg.norm(points[-1] - points_chain[0][-1]))
+                        best_head = min(
+                            np.linalg.norm(points[0] - points_chain[0][0]),
+                            np.linalg.norm(points[-1] - points_chain[0][0]))
+                        if best_head < best_tail:
+                            points_chain[0] = points_chain[0][::-1]
+                            path_chain[0] = _reverse_path(path_chain[0])
                     tail = points_chain[-1][-1]
                     gap_fwd = np.linalg.norm(points[0] - tail)
                     gap_rev = np.linalg.norm(points[-1] - tail)
@@ -483,9 +598,68 @@ class Unfolder:
                 "area": abs(area),
                 "length": length,
                 "closed": gap_failures == 0,
+                "edges": [edge_index for edge_index, _ in loop_edges],
             })
 
         return loops, open_wire_count
+
+    def project_ring(self, edge_ids, base_face_index, transformations, *,
+                     k_factor=0.5, thickness=0.0):
+        """Project feature edges normally onto a skin face and carry the
+        projection into the flat layout (instapart's project_feature).
+
+        Used for chamfer/countersink rings: the edges between a feature's
+        C2 groups (e.g. the cone/cylinder junction circle) project onto the
+        base face and land on the flat pattern as engraving geometry.
+        Returns (points (N,2), bulge path) or None when nothing projects.
+        """
+        from OCP.BRepAlgo import BRepAlgo_NormalProjection
+        from OCP.TopAbs import TopAbs_EDGE
+        from OCP.TopExp import TopExp_Explorer
+        from OCP.TopoDS import TopoDS
+
+        base_face = self.faces[int(base_face_index)]
+        projector = BRepAlgo_NormalProjection(base_face)
+        projector.Compute3d(True)
+        # feature rings land inside the face's own cutout (a countersink's
+        # bore circle sits within the hole) — don't clip to the trimmed face
+        projector.SetLimit(False)
+        for edge_id in edge_ids:
+            projector.Add(self._live_edge(edge_id))
+        projector.Build()
+        projected = projector.Projection()
+
+        scale = self.node_scale(int(base_face_index), thickness, k_factor)
+        chain = transformations.get(int(base_face_index), [])
+        points_chain = []
+        path_chain = []
+        explorer = TopExp_Explorer(projected, TopAbs_EDGE)
+        while explorer.More():
+            edge = TopoDS.Edge_s(explorer.Current())
+            explorer.Next()
+            try:
+                local = self.transformed_edge(edge, int(base_face_index),
+                                              scale=scale,
+                                              transformations=chain)
+                points, path = self._edge_entity(local)
+            except Exception:
+                continue
+            if points_chain:
+                tail = points_chain[-1][-1]
+                if (np.linalg.norm(points[-1] - tail)
+                        < np.linalg.norm(points[0] - tail)):
+                    points = points[::-1]
+                    path = _reverse_path(path)
+            points_chain.append(points)
+            path_chain.append(path)
+        if not points_chain:
+            return None
+
+        merged_path = list(path_chain[0])
+        for path in path_chain[1:]:
+            merged_path = merged_path[:-1] + [merged_path[-1] + [0.0]] + path[1:]
+            merged_path[-len(path)] = path[0]
+        return np.vstack(points_chain), merged_path
 
     def extract_bends(self, nodes, thickness, transformations, *,
                       k_factor=0.5, combine_bends=True):
@@ -494,9 +668,26 @@ class Unfolder:
         from OCP.BRep import BRep_Tool
         from OCP.BRepAdaptor import BRepAdaptor_Surface
 
+        import networkx as nx
+
         bends = []
         handled = set()
         nodes = [int(n) for n in nodes]
+
+        # multi-face bends merge only when C2-connected WITHIN this skin —
+        # the global C2 labels can chain physically separate bends together
+        # through geometry outside the subgraph (phantom full-length bend
+        # lines on parts with rolled edges)
+        c2_local = nx.Graph()
+        c2_local.add_nodes_from(nodes)
+        subgraph = self.graph.C1_faces.subgraph(set(nodes))
+        c2_local.add_edges_from(
+            (a, b) for a, b, continuity in subgraph.edges(data="continuity")
+            if abs(continuity) == 2)
+        local_group = {}
+        for component in nx.connected_components(c2_local):
+            for member in component:
+                local_group[member] = component
 
         for face_index in nodes:
             if face_index in handled:
@@ -508,9 +699,7 @@ class Unfolder:
 
             group = [face_index]
             if combine_bends:
-                label = self.graph.c2_group[face_index]
-                group = [f for f in nodes
-                         if self.graph.c2_group[f] == label]
+                group = sorted(local_group[face_index])
             handled.update(group)
 
             neighbors = set()
@@ -570,20 +759,17 @@ class Unfolder:
 
         try:
             domain = self._face_domain(face_index)
-            radii = self.graph.face_radii[face_index]
             curvature = self.graph.face_curvature[face_index]
-            u_curved = abs(radii[0]) > abs(radii[1])
+            u_curved, _, angle = self._bend_geometry(face_index)
 
             if u_curved:
                 mid = 0.5 * (domain[0] + domain[1])
                 start_uv = (mid, domain[2])
                 end_uv = (mid, domain[3])
-                angle = abs(domain[0] - domain[1])
             else:
                 mid = 0.5 * (domain[2] + domain[3])
                 start_uv = (domain[0], mid)
                 end_uv = (domain[1], mid)
-                angle = abs(domain[2] - domain[3])
 
             radius = abs(1.0 / curvature / 2.0)
             if (int(self.graph.face_convexity[face_index])

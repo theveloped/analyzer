@@ -10,7 +10,7 @@ import type {
 } from '../../registry/types';
 
 // keep in sync with TUBE_SCHEMA in processes/tube_laser.py
-export const TUBE_SCHEMA = 1;
+export const TUBE_SCHEMA = 2;
 
 const ROLE_LABELS = ['other', 'outer shell', 'inner shell', 'end cut'];
 const ROLE_COLORS: RGB[] = [

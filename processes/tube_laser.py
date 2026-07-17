@@ -6,7 +6,7 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             load_cached_result, store_result)
 
 # keep in sync with frontend/src/processes/tubelaser/index.ts
-TUBE_SCHEMA = 1
+TUBE_SCHEMA = 2
 
 
 def run_profile(workdir, params, progress):

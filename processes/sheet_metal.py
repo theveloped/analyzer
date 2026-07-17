@@ -6,7 +6,7 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             load_cached_result, store_result)
 
 # keep in sync with frontend/src/processes/sheetmetal/index.ts
-SHEET_SCHEMA = 1
+SHEET_SCHEMA = 2
 
 
 def _cache_params(params):
