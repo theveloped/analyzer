@@ -9,6 +9,7 @@ and conventions. Deeper references, in reading order per task:
 - TESTING.md — end-to-end workflows and performance knobs
 - docs/CODEMAP.md — file map, cache/data contracts, API routes, frontend seam
 - docs/RECIPES.md — step-by-step procedures for common change types
+- docs/BACKLOG.md — queued work items with full context, one per session
 
 Quick reminders (details in AGENTS.md): keep the `tollerance` spelling; never run
 meshlib concurrently; face indices into `fine_faces.npy` are stable and sacred;

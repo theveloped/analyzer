@@ -15,6 +15,9 @@ Read this file first. Then, depending on the task:
   contracts (npy/npz/json layouts), API routes, frontend plugin interface.
 - **docs/RECIPES.md** — step-by-step procedures for the common change types
   (add an analysis, add a view mode, add a CLI command, verify a change).
+- **docs/BACKLOG.md** — the work queue: self-contained items (problem,
+  evidence, approach, verification) meant to be tackled one per session.
+  Pick from the top tier, delete the section when it lands.
 
 ## Hard rules
 
