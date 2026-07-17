@@ -8,3 +8,6 @@ python-multipart
 cadquery-ocp
 networkx>=3
 ezdxf~=1.4
+shapely>=2.1
+pyyaml
+jsonschema
