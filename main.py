@@ -85,6 +85,43 @@ if __name__ == "__main__":
     parser_directions.add_argument("--tollerance", help="angular relaxation of the visibility test in degrees (near-vertical walls within it count as facing)", type=float, default=0.1)
     parser_directions.add_argument("--pixel", help="visibility height map pixel size (default: resolution/5)", type=float, default=None)
     
+    # Create the parser for the "explode" command
+    parser_explode = subparsers.add_parser("explode", help="import a STEP file: split assemblies into per-part workdirs (content-addressed under <root>/parts/) and extract face colors/names + PMI artifacts")
+    parser_explode.add_argument("input", help="path of the input .stp/.step file", type=PathType(type='file', dash_ok=True, exists=True))
+    parser_explode.add_argument("-r", "--root", help="parts root directory (default: current directory, matching the API server)", type=PathType(type='dir', dash_ok=True, exists=True), default=".")
+
+    # Create the parser for the "aag" command
+    parser_aag = subparsers.add_parser("aag", help="build the BREP face adjacency graph (convexity, tangency, dihedrals) shared by sheet metal / tube / feature recognition")
+    parser_aag.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_aag.add_argument("--smooth_angle", help="geometric tangency tolerance in degrees (default: 0.57)", type=float, default=None)
+    parser_aag.add_argument("--tollerance", help="geometric tolerance (default: 1e-6)", type=float, default=1e-6)
+    parser_aag.add_argument("--deflection", help="edge polyline deflection in mm (default: resolution/5)", type=float, default=None)
+
+    # Create the parser for the "sheet" command
+    parser_sheet = subparsers.add_parser("sheet", help="sheet metal recognition: skins, thickness, bends and per-face roles (flat pattern once available)")
+    parser_sheet.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_sheet.add_argument("--min_thickness", help="minimum sheet thickness in mm (default: 0.1)", type=float, default=0.1)
+    parser_sheet.add_argument("--max_thickness", help="maximum sheet thickness in mm (default: none)", type=float, default=None)
+    parser_sheet.add_argument("--detect_only", help="skip the unfold / flat pattern", action="store_true")
+    parser_sheet.add_argument("--k_factor", help="K-factor for the bend allowance (default: 0.5)", type=float, default=0.5)
+    parser_sheet.add_argument("--dxf", help="also export the flat pattern to this DXF file", type=str, default=None)
+    parser_sheet.add_argument("--serve", help="serve results in browser", action="store_true")
+
+    # Create the parser for the "tube" command
+    parser_tube = subparsers.add_parser("tube", help="tube/profile recognition: round/rectangular/square section, wall thickness, length and the unrolled cut pattern")
+    parser_tube.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_tube.add_argument("--no_unroll", help="skip the outer shell unroll", action="store_true")
+    parser_tube.add_argument("--k_factor", help="K-factor for the unroll (default: 0.5)", type=float, default=0.5)
+    parser_tube.add_argument("--serve", help="serve results in browser", action="store_true")
+
+    # Create the parser for the "features" command
+    parser_features = subparsers.add_parser("features", help="recognize machining features (through/blind holes, counterbores, countersinks, pockets) from the AAG")
+    parser_features.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_features.add_argument("--axis_angle_tol", help="coaxiality angle tolerance in degrees (default: 1.0)", type=float, default=1.0)
+    parser_features.add_argument("--axis_dist_tol", help="coaxiality axis distance tolerance in mm (default: 0.01)", type=float, default=1e-2)
+    parser_features.add_argument("--no_pockets", help="skip best-effort pocket emission", action="store_true")
+    parser_features.add_argument("--serve", help="serve results in browser", action="store_true")
+
     # Create the parser for the "options" command
     parser_options = subparsers.add_parser("options", help="rank mold orientations (plate pair + slides)")
     parser_options.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
@@ -303,6 +340,122 @@ if __name__ == "__main__":
     elif args.command == "directions":
         compute_directions(args.directory, count=args.count, axes=args.axes,
                            tollerance=args.tollerance, pixel=args.pixel)
+
+    elif args.command == "explode":
+        import step_import
+
+        manifest = step_import.import_step(args.input, args.root)
+        kind = "assembly" if manifest["assembly"] else "single part"
+        logger.info(f"Imported {kind} '{manifest['name']}' "
+                    f"(source part {manifest['source']})")
+        for part in manifest["parts"]:
+            logger.info(f"  {part['quantity']}x {part['name']} -> "
+                        f"parts/{part['part']} ({part['face_attrs']} face "
+                        f"attrs, {part['pmi']} PMI)")
+
+    elif args.command == "aag":
+        import processes
+        from processes.base import apply_defaults
+
+        analysis = processes.get_analysis("prep", "aag")
+        merged = apply_defaults(analysis, {
+            "smooth_angle": args.smooth_angle,
+            "tollerance": args.tollerance,
+            "deflection": args.deflection,
+        })
+        result = analysis.run(args.directory, merged, None)
+        logger.info(f"AAG stats: {result.stats}")
+
+    elif args.command == "sheet":
+        import processes
+        from processes.base import apply_defaults
+
+        analysis = processes.get_analysis("sheet_metal", "detect")
+        merged = apply_defaults(analysis, {
+            "min_thickness": args.min_thickness,
+            "max_thickness": args.max_thickness,
+        })
+        result = analysis.run(args.directory, merged, None)
+        stats = result.stats
+        logger.info(f"Sheet verdict: {stats['verdict']} "
+                    f"(thickness {stats['thickness']:.2f} mm, "
+                    f"{stats['bend_count']} bends)")
+        for reason in stats["reasons"]:
+            logger.warning(f"  {reason}")
+
+        if stats["verdict"] == "sheet" and not args.detect_only:
+            analysis = processes.get_analysis("sheet_metal", "flat_pattern")
+            merged = apply_defaults(analysis, {
+                "k_factor": args.k_factor,
+                "min_thickness": args.min_thickness,
+            })
+            pattern = analysis.run(args.directory, merged, None).stats
+            logger.info(
+                f"Flat pattern: {pattern['flat_size'][0]:.1f} x "
+                f"{pattern['flat_size'][1]:.1f} mm, area "
+                f"{pattern['flat_area']:.1f} mm2, {pattern['hole_count']} "
+                f"holes, {len(pattern['bends'])} bend lines, volume error "
+                f"{pattern['volume_error_pct']:.2f}% "
+                f"({'ok' if pattern['volume_ok'] else 'CHECK'}), "
+                f"{'developable' if pattern['developable'] else 'NOT developable'}")
+
+            if args.dxf:
+                import dxfexport
+                dxfexport.export_dxf(args.directory, out_path=args.dxf)
+
+        if args.serve:
+            serve_workdir(args.directory)
+
+    elif args.command == "tube":
+        import processes
+        from processes.base import apply_defaults
+
+        analysis = processes.get_analysis("tube_laser", "profile")
+        merged = apply_defaults(analysis, {
+            "unroll": not args.no_unroll,
+            "k_factor": args.k_factor,
+        })
+        result = analysis.run(args.directory, merged, None)
+        stats = result.stats
+        if stats["verdict"] == "none":
+            logger.info("Not a straight profile:")
+            for reason in stats["reasons"]:
+                logger.warning(f"  {reason}")
+        else:
+            logger.info(
+                f"Profile: {stats['verdict']} {stats['width']:.1f} x "
+                f"{stats['height']:.1f} x t{stats['thickness']:.2f}, "
+                f"length {stats['length']:.1f} mm, corner radius "
+                f"{stats['inner_radius']:.1f}/{stats['outer_radius']:.1f}")
+            if "flat_size" in stats:
+                logger.info(f"Cut pattern: {stats['flat_size'][0]:.1f} x "
+                            f"{stats['flat_size'][1]:.1f} mm, "
+                            f"{stats['hole_count']} holes")
+
+        if args.serve:
+            serve_workdir(args.directory)
+
+    elif args.command == "features":
+        import processes
+        from processes.base import apply_defaults
+
+        analysis = processes.get_analysis("cnc", "features")
+        merged = apply_defaults(analysis, {
+            "axis_angle_tol": args.axis_angle_tol,
+            "axis_dist_tol": args.axis_dist_tol,
+            "include_pockets": not args.no_pockets,
+        })
+        result = analysis.run(args.directory, merged, None)
+        logger.info(f"Feature counts: {result.stats['counts']}")
+        for feature in result.stats["features"]:
+            size = (f"D{feature['diameter']:.2f}" if feature["diameter"]
+                    else "freeform")
+            logger.info(f"  #{feature['id']} {feature['type']} {size} "
+                        f"depth {feature['depth']:.2f} "
+                        f"({len(feature['faces'])} faces)")
+
+        if args.serve:
+            serve_workdir(args.directory)
 
     elif args.command == "options":
         logger.info("Searching mold orientations")

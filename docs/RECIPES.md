@@ -15,6 +15,11 @@ in docs/CODEMAP.md; background in APPROACH.md.
 | `pipeline.compute_ray_thickness` / ray analyses | `python test_ray_thickness.py` |
 | `pipeline.wall_skeleton` | `python test_skeleton.py` |
 | `pipeline.flow_voxels` / `flow_fill` (voxel flow) | `python test_flow.py` |
+| `aag.py` (face/edge classification, sheet base) | `python test_aag.py` |
+| `step_import.py` (assemblies, colors/names, PMI) | `python test_import.py` |
+| `machining_features.py`, `cnc/features` | `python test_features.py` |
+| `sheet.py`, `unfold.py`, `dxfexport.py`, sheet_metal process | `python test_sheet.py` |
+| `tube.py`, tube_laser process | `python test_tube.py` |
 | Engine parity (zmap vs voxel) | `python benchmark_engines.py` |
 | Anything in `frontend/src/` | `cd frontend && npx tsc -b && npm run build`, then `node smoke.mjs` against a running server |
 | `api/`, `processes/` | smoke workflow below + open the viewer once |

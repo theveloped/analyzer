@@ -56,9 +56,10 @@ pip install -r requirements.txt        # meshlib>=3, numpy, scipy, loguru, fasta
 cd frontend && npm install && npm run build && cd ..   # one-time viewer build (node >= 18)
 ```
 
-- CLI entry point: `python main.py <command>` — commands: `mesh`, `directions`,
-  `options`, `thickness`, `setups`, `verdict`, `precompute`, `compose`,
-  `serve`, `view`. `python main.py <command> -h` for flags; TESTING.md for workflows.
+- CLI entry point: `python main.py <command>` — commands: `mesh`, `explode`,
+  `aag`, `directions`, `options`, `thickness`, `sheet`, `tube`, `features`,
+  `setups`, `verdict`, `precompute`, `compose`, `serve`, `view`.
+  `python main.py <command> -h` for flags; TESTING.md for workflows.
 - Typical smoke workflow (fast, small part):
   ```bash
   python main.py mesh tests/testpart_42.stp -o testpart_42 --subdivide 1.0
@@ -78,10 +79,15 @@ Test files are **plain scripts, not pytest** — run them directly:
 python test_zmap.py          # zmap engine vs analytic expectations (fast-ish)
 python test_mold.py          # mold orientation / assignment fixtures
 python test_splits.py        # user face splits (relabel, replay, split-aware runs)
-python test_thickness.py     # rolling-sphere plate/gap probes
+python test_thickness.py     # rolling sphere plate/gap probes
 python test_accessibility.py # visibility raster on a synthetic pocket part
 python test_gap_probes.py    # Euclidean gap metric probes
 python test_skeleton.py      # wall-thickness skeleton graph
+python test_aag.py           # BREP adjacency graph: convexity, dihedrals, determinism
+python test_import.py        # XCAF import: assemblies, colors/names, id bridging
+python test_features.py      # CNC feature recognition (holes family)
+python test_sheet.py         # sheet detect + K-factor unfold + DXF round-trip
+python test_tube.py          # tube/profile classification + unroll
 ```
 
 They build synthetic parts with known-correct answers and assert on them; a green

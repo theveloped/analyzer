@@ -14,6 +14,13 @@ and this document disagree, the code wins — update this file in the same commi
 | `molding.py` | Mold orientation search & face assignment (pure numpy over accessibility rows) | `mold_orientation_search`, `membership_field`, `internal_regions`, `brep_validity`, `brep_defaults`, `face_adjacency` |
 | `brep.py` | BREP-aware STEP meshing via OCCT (OCP bindings): per-face tessellation, welding, conformal subdivision | `mesh_step`, `subdivide_tagged` |
 | `splits.py` | User face splits: cuts along mesh edges relabel a BREP face's triangles into sub-face ids (no remeshing, framework-free numpy/scipy) | `add_cut`, `undo_last`, `clear`, `state`, `replay`, `cut_path`, `effective_face_ids`, `sanitize_retired` |
+| `aag.py` | Attributed adjacency graph over BREP faces (instapart port): face convexity, edge tangency continuity + signed dihedrals, persisted stage artifact with **deterministic face/edge ids** (face = `brep.iter_faces` order, edge/vertex = `TopExp.MapShapes` order) | `build_aag`, `save_aag`, `load_aag`, `get_sheet_base`, `get_connected_subgraph`, `axial_span` |
+| `step_import.py` | XCAF STEP front-end (instapart port): assembly tree + per-instance placements, face colors/names, semantic PMI; explodes assemblies into content-addressed child part workdirs, ids bridged geometrically (area+centroid signatures) | `import_step`, `extract_part_attributes`, `read_document`, `build_tree` |
+| `sheet.py` | Sheet-metal recognition + flat pattern orchestration over the AAG | `detect_sheet`, `flat_pattern` |
+| `unfold.py` | K-factor unfold onto the Z=0 plane: pcurve re-hosting with allowance scaling, BFS transform chains, topological outline loops, bend lines | `Unfolder`, `bend_allowance` |
+| `tube.py` | Straight constant-section profile classification (round/rect/square) + outer-shell unroll | `analyse_profile`, `grouped_graph`, `cluster_directions` |
+| `machining_features.py` | Rule-based CNC feature recognition (holes family + pockets) from concave C2 groups and coaxial stacks | `recognize_features` |
+| `dxfexport.py` | DXF export of stored flat-pattern results (ezdxf; layers OUTLINE/BENDS/ENGRAVING) | `export_dxf` |
 | `processes/` | Backend analysis registry (see below) | `processes.base`, one module per process |
 | `api/` | FastAPI server (see routes below) | `api.app.create_app`, `serve_app` |
 | `utils.py`, `pathtypes.py` | Small helpers: dirs, timing decorator, argparse `PathType` | |
@@ -51,6 +58,12 @@ folder and re-uploads dedupe; the human name stays in `part.json`.
 | `results/<process>/<analysis>/<hash>.json[.npz]` | registry analyses | generic results, `<hash>` = `params_hash(params)` (sha1[:12] of canonical JSON); runners salt in schema, `directions` and `mesh` fingerprints so stale results orphan instead of misindexing — mold/setups additionally salt the `splits` fingerprint (of `subfaces.npy`), so cuts orphan assignments and an undo re-validates the older result |
 | `results/<process>/<analysis>/<hash>_overrides.json` | viewer via API | user face-assignment overrides for a mold result |
 | `part.json` | API upload/registration | part metadata (gitignored) |
+| `source.stp` / `source.step` | upload / `mesh_part` (STEP input) | the retained source STEP; BREP-level stages (`prep/aag`, sheet unfold, import attributes) reload it — face/edge ids re-derive deterministically from the same bytes |
+| `aag.npz` / `aag.json` | `prep/aag` (`pipeline.compute_aag`) | AAG stage artifact: per-face convexity/curvature/area/normal + C1/C2 group labels, per-edge face pairs/continuity/signed dihedral/polylines over **canonical edge ids**; json header carries schema, `source_sha`, mesh fingerprint and stats — consumers salt `aag_fingerprint` into cache keys |
+| `face_attrs.json` | `step_import` | STEP face colors/names + PMI back-refs, keyed by 0-based BREP face id |
+| `pmi.json` | `step_import` | semantic PMI: dimensions / geometric tolerances / datums with 0-based face ids and canonical edge ids |
+| `assembly.json` | `step_import` (assembly source workdir) | instance tree (translation + quaternion per instance) linking child part ids, quantities per unique part |
+| `results/<p>/<a>/<hash>.dxf` | DXF export route / CLI `sheet --dxf` | cached DXF render of a stored flat-pattern result |
 
 ## `zcache/dir_*.npz` field keys (DirectionCache, zmap.py)
 
@@ -79,10 +92,11 @@ registry served at `/api/processes`.
 
 Registered today:
 
-- `prep` — `mesh`, `directions`
-- `cnc` — `precompute`, `compose`
+- `prep` — `mesh`, `aag`, `directions`
+- `cnc` — `features`, `setups`, `setup_verdict`, `precompute`, `compose`
 - `injection_molding` — `mold_orientation`, `thickness`, `gaps`, `ray_thickness`, `ray_gap`, `slenderness`, `thin_span`, `wall_skeleton`, `sprue_proposals`, `ejection_sticking`, `flow_voxels`, `flow_fill`
-- `sheet_metal` — empty placeholder
+- `sheet_metal` — `detect`, `flat_pattern` (SHEET_SCHEMA mirrored in `frontend/src/processes/sheetmetal/index.ts`)
+- `tube_laser` — `profile` (TUBE_SCHEMA mirrored in `frontend/src/processes/tubelaser/index.ts`; FEATURES_SCHEMA likewise in `cnc/features.ts`)
 
 `run` callables must go through `pipeline.py` functions and write only into the
 workdir cache, reporting via `progress(fraction, message)`.
@@ -106,6 +120,11 @@ GET  /api/parts/{id}/fields/{stem}/{key}          one zcache array
 GET  /api/parts/{id}/highlights                   highlights.json
 GET  /api/parts/{id}/results/{proc}/{an}/{hash}/{key}        one result npz array
 GET/PUT .../results/{proc}/{an}/{hash}/overrides  mold face-assignment overrides
+GET  .../results/{proc}/{an}/{hash}/export/dxf    flat pattern as DXF (generated + cached)
+GET  /api/parts/{id}/face_attrs                   face_attrs.json (STEP colors/names)
+GET  /api/parts/{id}/pmi                          pmi.json (semantic PMI)
+GET  /api/parts/{id}/assembly                     assembly.json (imported assembly record)
+POST /api/parts/{id}/explode                      split an uploaded assembly into child parts
 GET  /api/parts/{id}/splits          user face-split state (cuts, sub-face parents, polylines)
 POST /api/parts/{id}/splits          add a cut {face, start, end} (sync, numpy-only; 400 invalid, 409 stale mesh)
 DELETE /api/parts/{id}/splits[/last] clear all cuts / undo the last one

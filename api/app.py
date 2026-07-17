@@ -260,6 +260,75 @@ def create_app(root=".", preload=None):
                                 f"{result_hash}.npz")
         return binary(request, data, tag_path)
 
+    @app.get("/api/parts/{part_id}/face_attrs")
+    def get_face_attrs(part_id: str):
+        part = part_or_404(part_id)
+        path = os.path.join(parts_api.workdir_for(root, part["id"]),
+                            "face_attrs.json")
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail="no face attributes")
+        return FileResponse(path, media_type="application/json")
+
+    @app.get("/api/parts/{part_id}/pmi")
+    def get_pmi(part_id: str):
+        part = part_or_404(part_id)
+        path = os.path.join(parts_api.workdir_for(root, part["id"]),
+                            "pmi.json")
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail="no PMI")
+        return FileResponse(path, media_type="application/json")
+
+    @app.get("/api/parts/{part_id}/assembly")
+    def get_assembly(part_id: str):
+        part = part_or_404(part_id)
+        path = os.path.join(parts_api.workdir_for(root, part["id"]),
+                            "assembly.json")
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail="not an assembly")
+        return FileResponse(path, media_type="application/json")
+
+    @app.post("/api/parts/{part_id}/explode")
+    def explode_part(part_id: str):
+        """Split an uploaded assembly STEP into child part workdirs and
+        extract colors/names/PMI (synchronous — OCP only, no meshlib)."""
+        import step_import
+
+        part = part_or_404(part_id)
+        workdir = parts_api.workdir_for(root, part["id"])
+        try:
+            source = pipeline.source_step_path(workdir)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        try:
+            return step_import.import_step(source, root)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/api/parts/{part_id}/results/{process_id}/{analysis_id}/{result_hash}/export/dxf")
+    def get_result_dxf(part_id: str, process_id: str, analysis_id: str,
+                       result_hash: str):
+        """Flat pattern of a stored result as DXF (generated on first
+        request, cached beside the result JSON)."""
+        import re
+
+        part = part_or_404(part_id)
+        workdir = parts_api.workdir_for(root, part["id"])
+        if not all(re.fullmatch(r"[A-Za-z0-9_\-]+", value)
+                   for value in (process_id, analysis_id, result_hash)):
+            raise HTTPException(status_code=404, detail="unknown result")
+        dxf_path = os.path.join(workdir, "results", process_id, analysis_id,
+                                f"{result_hash}.dxf")
+        if not os.path.exists(dxf_path):
+            import dxfexport
+            try:
+                dxfexport.export_dxf(workdir, process_id, analysis_id,
+                                     result_hash=result_hash)
+            except ValueError as exc:
+                raise HTTPException(status_code=404, detail=str(exc))
+        return FileResponse(
+            dxf_path, media_type="application/dxf",
+            filename=f"{part['name']}_{analysis_id}.dxf")
+
     @app.get("/api/parts/{part_id}/highlights")
     def get_highlights(part_id: str):
         part = part_or_404(part_id)

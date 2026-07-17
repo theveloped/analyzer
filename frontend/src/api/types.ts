@@ -36,6 +36,17 @@ export interface ResultEntry {
   overrides_url?: string;
 }
 
+/** STEP-import artifacts (step_import.py): face colors/names + PMI refs. */
+export interface FaceAttrs {
+  part_color: [number, number, number] | null;
+  face_count: number;
+  faces: Record<string, {
+    color: [number, number, number] | null;
+    name: string | null;
+    pmi_refs: number[];
+  }>;
+}
+
 export interface Manifest {
   part: Part;
   mesh: {
@@ -50,6 +61,14 @@ export interface Manifest {
   fields: FieldDescriptor[];
   results: ResultEntry[];
   highlights_url: string | null;
+  /** present when the part carries STEP colors/names (face_attrs.json) */
+  face_attrs_url?: string;
+  /** present when the part carries semantic PMI (pmi.json) */
+  pmi_url?: string;
+  /** present on imported assembly records (assembly.json) */
+  assembly_url?: string;
+  /** AAG stage summary (prep/aag): stats + mesh staleness */
+  aag?: { schema: number; stats: Record<string, any>; stale: boolean };
 }
 
 export interface ParamSpec {
