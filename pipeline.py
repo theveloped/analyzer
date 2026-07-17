@@ -42,6 +42,11 @@ BREP_EDGES_FILE = "brep_edges.npy"
 BREP_EDGE_PAIRS_FILE = "brep_edge_pairs.npy"
 HIGHLIGHT_FILE = "highlights.json"
 
+# AAG stage artifact (aag.py owns the semantics; constants live here so
+# pipeline/manifest can reference them without importing aag)
+AAG_FILE = "aag.npz"
+AAG_META_FILE = "aag.json"
+
 # user face-split sidecars (splits.py owns their semantics; the constants
 # live here so pipeline/manifest can reference them without importing splits)
 FACE_SPLITS_FILE = "face_splits.json"
@@ -55,6 +60,29 @@ SUBFACE_META_FILE = "subface_meta.json"
 MOLD_STATS_SCHEMA = 4  # 4: brep_valid/brep_default indexed by effective ids
 
 MESH_EXTENSIONS = [".stl", ".stp", ".step"]
+STEP_EXTENSIONS = [".stp", ".step"]
+
+
+def source_step_path(workdir):
+    """Path of the part's retained source STEP inside its working directory.
+
+    API uploads store it as source.stp/.step; mesh_part copies CLI inputs to
+    the same name. BREP-level analyses (AAG, sheet metal, tube, feature
+    recognition) reload it — face and edge ids are deterministic for the
+    same file bytes, so reloading re-derives the exact indexing that
+    brep_faces.npy / brep_meta.json were written with.
+    """
+    for ext in STEP_EXTENSIONS:
+        path = os.path.join(workdir, f"source{ext}")
+        if os.path.exists(path):
+            return path
+    for name in sorted(os.listdir(workdir)) if os.path.isdir(workdir) else []:
+        if os.path.splitext(name)[1].lower() in STEP_EXTENSIONS:
+            return os.path.join(workdir, name)
+    raise ValueError(
+        "this analysis needs the part's source STEP in the working "
+        "directory — re-mesh from the STEP file (STL/healed parts carry "
+        "no BREP data)")
 
 
 def _report(progress, fraction, message):
@@ -103,6 +131,16 @@ def mesh_fingerprint(workdir):
     """
     return files_fingerprint([os.path.join(workdir, FINE_VERTS_FILE),
                               os.path.join(workdir, FINE_FACES_FILE)])
+
+
+def aag_fingerprint(workdir):
+    """Short content hash of aag.npz (None before prep/aag).
+
+    Results derived from the AAG (sheet detection, tube classification,
+    machining features) salt this in so a rebuilt graph orphans them
+    instead of silently serving mismatched face/edge classifications.
+    """
+    return file_fingerprint(os.path.join(workdir, AAG_FILE))
 
 
 def splits_fingerprint(workdir):
@@ -353,6 +391,29 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
         workdir = os.path.join(os.path.abspath("."), input_name)
 
     ensure_directory(workdir)
+
+    # retain STEP sources beside the mesh (API uploads already do): the
+    # BREP-level stages (AAG, unfold, import attributes) reload the exact
+    # bytes that produced the deterministic face/edge indexing
+    ext = os.path.splitext(input_path)[1].lower()
+    if ext in STEP_EXTENSIONS:
+        source_name = f"source{ext}"
+        source_path = os.path.join(workdir, source_name)
+        if os.path.abspath(input_path) != os.path.abspath(source_path):
+            import shutil
+            shutil.copyfile(input_path, source_path)
+        meta_path = os.path.join(workdir, "part.json")
+        meta = {}
+        if os.path.exists(meta_path):
+            with open(meta_path) as f:
+                meta = json.load(f)
+        if meta.get("source") != source_name:
+            meta.setdefault("name", os.path.splitext(
+                os.path.basename(input_path))[0])
+            meta["source"] = source_name
+            with open(meta_path, "w") as f:
+                json.dump(meta, f, indent=1)
+
     verts_path = os.path.join(workdir, FINE_VERTS_FILE)
     faces_path = os.path.join(workdir, FINE_FACES_FILE)
 
@@ -435,6 +496,56 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
                 f"or ambiguous)")
 
     return {"workdir": workdir, "counts": counts}
+
+
+def compute_aag(workdir, *, smooth_angle=None, tollerance=1e-6,
+                deflection=None, progress=None):
+    """Build and persist the AAG stage artifact (aag.npz + aag.json).
+
+    Reloads the retained source STEP — face/edge ids are deterministic for
+    the same bytes, so the graph joins exactly against brep_faces.npy /
+    brep_meta.json. ``smooth_angle`` is the geometric tangency tolerance in
+    degrees (None = aag.SMOOTH_ANGLE_TOLERANCE); ``deflection`` sets the
+    edge polyline discretization (None = resolution/5, matching the zmap
+    pixel scale).
+    """
+    import aag as aag_module
+    import brep
+
+    source = source_step_path(workdir)
+    _report(progress, 0.0, "loading STEP")
+    shape = brep.load_step_shape(source)
+
+    if smooth_angle is None:
+        smooth_angle = aag_module.SMOOTH_ANGLE_TOLERANCE
+    else:
+        smooth_angle = np.deg2rad(float(smooth_angle))
+    if deflection is None:
+        resolution = part_resolution(workdir)
+        deflection = resolution / 5.0 if resolution else 0.5
+
+    graph = aag_module.build_aag(
+        shape, smooth_angle=smooth_angle, tollerance=tollerance,
+        deflection=deflection, progress=progress)
+
+    # the graph must describe the same BREP the mesh was tagged with —
+    # a face-count mismatch means a healed/re-meshed or swapped source
+    meta_path = os.path.join(workdir, BREP_META_FILE)
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            brep_face_count = json.load(f).get("face_count")
+        if brep_face_count is not None and brep_face_count != graph.face_count:
+            raise ValueError(
+                f"AAG face count {graph.face_count} != brep_meta.json "
+                f"{brep_face_count} — the source STEP and the meshed BREP "
+                "disagree; re-run prep/mesh from the STEP first")
+
+    _report(progress, 0.98, "storing AAG artifact")
+    meta = aag_module.save_aag(
+        workdir, graph, source_sha=file_fingerprint(source),
+        mesh_fingerprint=mesh_fingerprint(workdir))
+    logger.info(f"AAG: {meta['stats']}")
+    return meta["stats"]
 
 
 def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,

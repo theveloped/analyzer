@@ -6,3 +6,5 @@ fastapi
 uvicorn[standard]
 python-multipart
 cadquery-ocp
+networkx>=3
+ezdxf~=1.4

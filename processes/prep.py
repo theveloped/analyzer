@@ -35,6 +35,14 @@ def run_mesh(workdir, params, progress):
     return AnalysisResult(stats=result["counts"])
 
 
+def run_aag(workdir, params, progress):
+    result = pipeline.compute_aag(
+        workdir, smooth_angle=params["smooth_angle"],
+        tollerance=params["tollerance"], deflection=params["deflection"],
+        progress=progress)
+    return AnalysisResult(stats=result)
+
+
 def run_directions(workdir, params, progress):
     result = pipeline.compute_directions(
         workdir, count=params["count"], axes=params["axes"],
@@ -64,6 +72,24 @@ PROCESS = ProcessDef(
                       label="BREP deflection override (blank = resolution/8)"),
             ],
             run=run_mesh,
+        ),
+        AnalysisDef(
+            id="aag",
+            label="Face adjacency graph",
+            description="Attributed adjacency graph over the BREP: face "
+                        "convexity, edge tangency continuity and dihedral "
+                        "angles — the shared stage behind sheet metal, tube "
+                        "and machining-feature recognition (STEP parts only).",
+            requires=["prep/mesh"],
+            params=[
+                Param("smooth_angle", "number", default=None, unit="deg",
+                      min=0, label="Tangency angle tolerance (blank = 0.57)"),
+                Param("tollerance", "number", default=1e-6, min=0,
+                      label="Geometric tolerance"),
+                Param("deflection", "number", default=None, unit="mm", min=0,
+                      label="Edge polyline deflection (blank = resolution/5)"),
+            ],
+            run=run_aag,
         ),
         AnalysisDef(
             id="directions",
