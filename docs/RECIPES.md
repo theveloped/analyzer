@@ -20,6 +20,12 @@ in docs/CODEMAP.md; background in APPROACH.md.
 | `machining_features.py`, `cnc/features` | `python test_features.py` |
 | `sheet.py`, `unfold.py`, `dxfexport.py`, sheet_metal process | `python test_sheet.py` |
 | `tube.py`, tube_laser process | `python test_tube.py` |
+
+Sheet/tube changes should additionally be scored against the instapart
+example corpus (166 real STEP files with expected thickness/bends/volume):
+`python benchmark/sheet_corpus.py --smoke` for a quick pass,
+no arguments for the full fast set (needs the instapart checkout as a
+sibling of the repo parent, or `--instapart <path>`). Not CI-gating.
 | Engine parity (zmap vs voxel) | `python benchmark_engines.py` |
 | Anything in `frontend/src/` | `cd frontend && npx tsc -b && npm run build`, then `node smoke.mjs` against a running server |
 | `api/`, `processes/` | smoke workflow below + open the viewer once |
