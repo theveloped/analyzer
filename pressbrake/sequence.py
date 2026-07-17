@@ -94,8 +94,13 @@ class _Evaluator:
         self._theta_cache = {}
         self._self_cache = {}
         self._envelope_cache = {}
+        # sweep geometry is tool-independent: one entry serves every
+        # (punch, die) pair evaluated for the same (state, action)
+        self._sweep_cache = {}
+        self._obstacle_cache = {}
         self.stats = {"envelopes": 0, "self_checks": 0,
-                      "envelope_hits": 0, "states": 0, "dead_states": 0}
+                      "envelope_hits": 0, "sweeps": 0,
+                      "states": 0, "dead_states": 0}
 
     def theta(self, done_mask):
         if done_mask not in self._theta_cache:
@@ -119,6 +124,16 @@ class _Evaluator:
             self._self_cache[cache_key] = bool(hits)
         return self._self_cache[cache_key]
 
+    def sweep_for(self, done_mask, group_index, rotation):
+        cache_key = (done_mask, group_index, rotation)
+        if cache_key not in self._sweep_cache:
+            key, _bend_ids = self.groups[group_index]
+            action = self.actions[(key, rotation)]
+            self.stats["sweeps"] += 1
+            self._sweep_cache[cache_key] = envelope.compute_sweep(
+                self.graph, self.theta(done_mask), action)
+        return self._sweep_cache[cache_key]
+
     def envelope_for(self, done_mask, group_index, rotation, punch, die):
         cache_key = (done_mask, group_index, rotation, punch.id, die.id)
         if cache_key in self._envelope_cache:
@@ -129,7 +144,9 @@ class _Evaluator:
         self.stats["envelopes"] += 1
         result = envelope.compute_envelope(
             self.graph, self.theta(done_mask), action, punch, die,
-            self.machine, margin=self.margin)
+            self.machine, margin=self.margin,
+            sweep=self.sweep_for(done_mask, group_index, rotation),
+            obstacle_cache=self._obstacle_cache)
         self._envelope_cache[cache_key] = result
         return result
 

@@ -374,36 +374,37 @@ part with a through-hole in the only parallel band (jaw must straddle
 or reject), a long part needing two vises. Assert positions
 analytically.
 
-### 18. Bend-plan envelope performance (upstream P4: analytic arc contacts)
+### 18. Bend-plan search-phase profiling (follow-up to the envelope rework)
 
-**Problem.** `envelope.compute_envelope` cost scales with critical-X
-intervals × panels × shapely work. Stage-1 optimizations (sector cap 64
-segments, one union+buffer per interval, 1 mm event coalescing,
-`pair_limit` in plan_graph) took one envelope on
-`instapart/examples/parts/SmartPart_01` (7 panels, 6 bends, 37 holes,
-720 mm) from 44.7 s to 5.6 s — but a full plan is still ~9 min and the
-sequence search longer. Small parts (L-bracket/U-channel class) are
-interactive (<5 s total).
+**Context.** The envelope engine was rebuilt (2026-07-17): the
+tool-independent sweep is hoisted into `envelope.compute_sweep`
+(SweepProfile, cached per `(mask, group, rotation)` in the search), and
+the hot path is an exact numpy annular-sector-vs-polygon predicate
+against pre-buffered obstacles (exclusion + t/2 moved obstacle-side via
+Minkowski identity, PEN_EPS = 1e-4 mm erosion absorbs designed
+tangency; `collision.py` oracle untouched). SmartPart_01
+(`C:\temp\claude\corpus\parts\f488820d15c3`): one envelope 5.6 s →
+0.13 s sweep + 0.24 s obstacle tests; plan-only ~9 min → 15 s
+end-to-end; full search 4.8 min (worst case: the part is infeasible on
+4/6 groups with the demo catalogue, so the DFS exhausts every
+ordering). A/B analytic-vs-shapely on all 12 first-state actions:
+identical forbidden sets.
 
-**Levers, in order of value.**
-- Upstream roadmap P4: replace `swept_region`'s annular-sector
-  approximation with analytic arc-vs-edge first-contact computation —
-  removes the per-interval shapely unions entirely. The API seam is
-  reserved (`envelope.py` swept_region docstring).
-- Simplify panel outlines/holes for envelope purposes
-  (`shapely.simplify(0.2)` — the 2 mm margin dwarfs it); discretized
-  circular holes carry ~58 vertices each and drive the event count.
-- Infeasible actions currently evaluate every catalogue pair
-  (`pair_limit` only breaks after a feasible hit) — a cheap pre-gate
-  (e.g. skip pairs whose punch profile is a superset of an
-  already-failed narrower one) would cut the worst case.
-- Cache slices across (punch, die) pairs: slices/swept regions depend
-  only on (state, action), not on the tools — hoisting them out of the
-  per-pair loop in plan_graph/sequence would cut ~pair_count×.
+**Remaining levers if search latency matters.**
+- Profile where the 4.8 min search actually goes now — likely
+  `check_self_collision` (sampled at 2° steps, pure Python pair loops)
+  and repeated `_required_intervals`, not the envelopes.
+- Dead-state pruning/beam for infeasible parts: conclude "group k has
+  no feasible pair at ANY state" once instead of retrying it per state.
+- True upstream P4 (analytic arc-vs-edge first-contact angles) is no
+  longer needed for feasibility speed; only revisit if per-angle
+  contact curves become a product feature.
 
-**Verify.** `test_pressbrake.py` (the envelope-contains-oracle
-cross-validation is the correctness guard for any approximation) +
-re-time SmartPart_01 (`main.py bendplan corpus/parts/f488820d15c3`).
+**Verify.** `test_pressbrake.py` (envelope-contains-oracle
+cross-validation + analytic-vs-shapely equivalence checks) +
+`test_bendplan.py`; re-time `main.py bendplan
+C:/temp/claude/corpus/parts/f488820d15c3` (delete
+`results/sheet_metal/bend_plan` first — results are cached).
 
 ## Meta
 

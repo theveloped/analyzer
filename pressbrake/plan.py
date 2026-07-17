@@ -87,6 +87,7 @@ def plan_graph(graph, machine=None, punches=None, dies=None, margin=2.0,
 
     report = PlanReport(graph, machine.name if machine else None)
     theta = np.zeros(graph.bend_count)
+    obstacle_cache = {}
 
     for group in ordered_groups:
         primary = graph.bends[group[0]]
@@ -116,9 +117,13 @@ def plan_graph(graph, machine=None, punches=None, dies=None, margin=2.0,
                 report.actions.append(result)
                 continue
 
+            # the sweep geometry is tool-independent: compute once per
+            # action, share across every punch/die pair
+            sweep = envelope.compute_sweep(graph, theta, action)
             for punch, die in candidates:
                 candidate_envelope = envelope.compute_envelope(
-                    graph, theta, action, punch, die, machine, margin=margin)
+                    graph, theta, action, punch, die, machine, margin=margin,
+                    sweep=sweep, obstacle_cache=obstacle_cache)
                 result.envelopes.append(candidate_envelope)
                 if candidate_envelope.feasible and (
                         result.best is None or _better(candidate_envelope,

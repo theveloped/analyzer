@@ -14,6 +14,7 @@ import math
 import sys
 
 import numpy as np
+from shapely.geometry import Polygon
 
 from pressbrake import collision, envelope, kinematics, plan, report, sequence, tooling
 from pressbrake import builders
@@ -352,6 +353,77 @@ def fixture_envelope(check):
             contained &= forbidden.contains_point(hit.x)
     check("envelope contains every sampled oracle hit",
           contained and hits_seen > 0, f"{hits_seen} hits cross-validated")
+
+    # precomputed sweep must reproduce the inline result exactly
+    graph = builders.offset_lip(width=100)
+    state = np.array([0.0, math.pi / 2])
+    action = action_for(graph, 0)
+    direct = envelope.compute_envelope(
+        graph, state, action, punch, die, machine)
+    reused = envelope.compute_envelope(
+        graph, state, action, punch, die, machine,
+        sweep=envelope.compute_sweep(graph, state, action))
+    check("sweep reuse: identical envelope",
+          direct.required == reused.required
+          and direct.forbidden_punch == reused.forbidden_punch
+          and direct.forbidden_die == reused.forbidden_die
+          and direct.forbidden_machine == reused.forbidden_machine
+          and direct.x_range == reused.x_range, "")
+
+    # analytic vs legacy shapely path: same verdicts on the fixtures, and
+    # the plain bend (wings hugging the punch flanks in exact tangency)
+    # must stay feasible despite the strict-interior predicate
+    agree = True
+    for graph, state, bend_id, machine_arg, expect_feasible in [
+            (builders.l_bracket(width=100), np.zeros(1), 0, machine, True),
+            (builders.offset_lip(width=100), np.array([0.0, math.pi / 2]),
+             0, None, False)]:
+        action = action_for(graph, bend_id)
+        analytic = envelope.compute_envelope(
+            graph, state, action, punch, die, machine_arg,
+            sweep=envelope.compute_sweep(graph, state, action, analytic=True))
+        legacy = envelope.compute_envelope(
+            graph, state, action, punch, die, machine_arg,
+            sweep=envelope.compute_sweep(graph, state, action, analytic=False))
+        agree &= analytic.feasible == legacy.feasible == expect_feasible
+    check("analytic path matches shapely path verdicts", agree, "")
+
+    # analytic sector predicate against a square off the +Y=0 axis
+    square = Polygon([(10.0, -1.0), (12.0, -1.0), (12.0, 1.0), (10.0, 1.0)])
+    arrays = envelope._obstacle_arrays(square)
+    predicate_ok = (
+        envelope._sectors_intersect(np.array([[9.0, 13.0, -0.2, 0.2]]), arrays)
+        and not envelope._sectors_intersect(
+            np.array([[9.0, 13.0, 1.0, 2.0]]), arrays)
+        and envelope._sectors_intersect(                   # full annulus
+            np.array([[9.0, 13.0, -0.2, 6.4]]), arrays)
+        and envelope._sectors_intersect(                   # sector inside
+            np.array([[10.5, 11.0, -0.01, 0.01]]), arrays)
+        and envelope._sectors_intersect(                   # pie contains it
+            np.array([[0.0, 50.0, -3.0, 3.0]]), arrays)
+        and not envelope._sectors_intersect(               # radially clear
+            np.array([[1.0, 8.0, -3.0, 3.0]]), arrays))
+    check("analytic sector predicate cases", predicate_ok, "")
+
+    # batched plane cut reproduces the per-plane oracle slicing
+    outline = np.array([[0.0, 0.0, 0.0], [80.0, 0.0, 5.0],
+                        [80.0, 40.0, 5.0], [0.0, 40.0, 0.0]])
+    hole = np.array([[20.0, 10.0, 1.25], [40.0, 10.0, 2.5],
+                     [40.0, 30.0, 2.5], [20.0, 30.0, 1.25]])
+    loops = [outline, hole]
+    xs = list(np.linspace(1.0, 79.0, 57))
+    starts, ends = envelope._loop_edges(loops)
+    batched = envelope._batched_plane_cut(starts, ends, xs, block=16)
+    slicing_ok = True
+    for index, x in enumerate(xs):
+        single = collision._plane_cut_segments(loops, x)
+        got = batched[index]
+        slicing_ok &= len(single) == len(got) and all(
+            np.allclose(a, b, atol=1e-12)
+            for a, b in zip(np.asarray(single).reshape(-1, 2),
+                            np.asarray(got).reshape(-1, 2)))
+    check("batched slicing matches per-plane slicing", slicing_ok,
+          f"{len(xs)} planes")
 
 
 def _make_tool(lengths_counts, tool_id="T", kind="punch", mass=None):
