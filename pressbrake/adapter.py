@@ -466,6 +466,28 @@ def _merge_bend_zones(kinematic, bend_zones):
         panel.outline, panel.holes = _orient_loops([outline] + holes)
 
 
+def machine_interval_segments(graph, bend_ids, rotation, x_offset, pairs):
+    """Map machine-X intervals back onto the flat frame for display.
+
+    The rigid placement maps the primary bend's axis_point to machine
+    x = x_offset with the hinge direction along +-X (negated when
+    ``rotation``), preserving arc length along the hinge line:
+    x(p) = x_offset + sign * (p - A) . d.  Returns flat-frame segment
+    endpoint pairs [((x, y), (x, y)), ...] for the given [[x0, x1], ...].
+    """
+    primary = graph.bends[bend_ids[0]]
+    anchor = np.asarray(primary.axis_point, dtype=float)
+    direction = np.asarray(primary.axis_dir, dtype=float)
+    sign = -1.0 if rotation else 1.0
+    segments = []
+    for x0, x1 in pairs:
+        p0 = anchor + sign * (x0 - x_offset) * direction
+        p1 = anchor + sign * (x1 - x_offset) * direction
+        segments.append(((float(p0[0]), float(p0[1])),
+                         (float(p1[0]), float(p1[1]))))
+    return segments
+
+
 def _validate_tree(panels, bends):
     """Every non-base panel must hang off exactly one parent.
 

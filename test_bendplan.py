@@ -177,6 +177,56 @@ def fixture_intervals(check, tmp):
           f"{result.required.to_pairs()}")
 
 
+def fixture_analysis(check, tmp):
+    import processes
+    from processes.base import apply_defaults, load_result_arrays
+    from processes.sheet_metal import BENDPLAN_SCHEMA
+
+    workdir = os.path.join(tmp, "bp_bracket")
+    analysis = processes.get_analysis("sheet_metal", "bend_plan")
+    merged = apply_defaults(analysis, {})
+    stats = analysis.run(workdir, merged, None).stats
+
+    check("analysis: L-bracket plan feasible with demo catalogue",
+          stats["feasible"] and stats["mode"] == "search"
+          and stats["plans"], "")
+    best = stats["plans"][0]
+    check("analysis: one setup, one step",
+          len(best["setups"]) == 1 and len(best["steps"]) == 1
+          and best["setups"][0]["punch"]["runs"], "")
+    feasible_actions = [a for a in stats["actions"] if a["feasible"]]
+    check("analysis: actions carry display segments",
+          feasible_actions
+          and feasible_actions[0]["display"]["required_segments"], "")
+
+    cache_params = {**merged, "schema": BENDPLAN_SCHEMA,
+                    "mesh": pipeline.mesh_fingerprint(workdir),
+                    "aag": pipeline.aag_fingerprint(workdir)}
+    arrays = load_result_arrays(workdir, "sheet_metal", "bend_plan",
+                                cache_params)
+    fine_count = len(np.load(os.path.join(workdir, "fine_faces.npy")))
+    check("analysis: line arrays + panel field stored",
+          arrays["outline_lines"].size > 0
+          and arrays["bend_axis_lines"].size > 0
+          and arrays["required_lines"].size > 0
+          and len(arrays["panel_id"]) == fine_count
+          and set(np.unique(arrays["panel_id"])) == {0, 1, 2}, "")
+
+    # cache round-trip: identical stats, no recompute
+    second = analysis.run(workdir, merged, None).stats
+    check("analysis: cache round-trip byte-identical",
+          json.dumps(stats, sort_keys=True)
+          == json.dumps(second, sort_keys=True), "")
+
+    # U-channel: search finds a single-setup two-step plan
+    workdir = os.path.join(tmp, "bp_channel")
+    stats = analysis.run(workdir, apply_defaults(analysis, {}), None).stats
+    best = stats["plans"][0]
+    check("analysis: U-channel single setup, two steps",
+          stats["feasible"] and len(best["setups"]) == 1
+          and len(best["steps"]) == 2, f"{len(best['setups'])} setups")
+
+
 def main():
     failures = []
     check = check_factory(failures)
@@ -188,6 +238,8 @@ def main():
         fixture_u_channel(check, tmp)
         print("=== fixture 3: tooling intervals on extracted parts ===")
         fixture_intervals(check, tmp)
+        print("=== fixture 4: bend_plan analysis end to end ===")
+        fixture_analysis(check, tmp)
 
     if failures:
         print(f"{len(failures)} CHECKS FAILED: {failures}")

@@ -107,6 +107,21 @@ if __name__ == "__main__":
     parser_sheet.add_argument("--dxf", help="also export the flat pattern to this DXF file", type=str, default=None)
     parser_sheet.add_argument("--serve", help="serve results in browser", action="store_true")
 
+    # Create the parser for the "bendplan" command
+    parser_bendplan = subparsers.add_parser("bendplan", help="press-brake bend planning: per-bend tooling intervals, collision envelopes and a bend-sequence + segmented-tooling search")
+    parser_bendplan.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_bendplan.add_argument("--punch", help="restrict to one catalogue punch id", type=str, default="")
+    parser_bendplan.add_argument("--die", help="restrict to one catalogue die id", type=str, default="")
+    parser_bendplan.add_argument("--machine", help="machine YAML path (default: bundled demo)", type=str, default="")
+    parser_bendplan.add_argument("--punches", help="punch catalogue YAML path (default: bundled demo)", type=str, default="")
+    parser_bendplan.add_argument("--dies", help="die catalogue YAML path (default: bundled demo)", type=str, default="")
+    parser_bendplan.add_argument("--k_factor", help="K-factor, must match the unfold allowance (default: 0.5)", type=float, default=0.5)
+    parser_bendplan.add_argument("--margin", help="collision clearance margin in mm (default: 2.0)", type=float, default=2.0)
+    parser_bendplan.add_argument("--springback", help="springback overbend delta in degrees (default: 2.0)", type=float, default=2.0)
+    parser_bendplan.add_argument("--no_search", help="skip the sequence search (fixed-order plan only)", action="store_true")
+    parser_bendplan.add_argument("--solutions", help="ranked plans to keep (default: 4)", type=int, default=4)
+    parser_bendplan.add_argument("--serve", help="serve results in browser", action="store_true")
+
     # Create the parser for the "tube" command
     parser_tube = subparsers.add_parser("tube", help="tube/profile recognition: round/rectangular/square section, wall thickness, length and the unrolled cut pattern")
     parser_tube.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
@@ -402,6 +417,59 @@ if __name__ == "__main__":
             if args.dxf:
                 import dxfexport
                 dxfexport.export_dxf(args.directory, out_path=args.dxf)
+
+        if args.serve:
+            serve_workdir(args.directory)
+
+    elif args.command == "bendplan":
+        import processes
+        from processes.base import apply_defaults
+
+        analysis = processes.get_analysis("sheet_metal", "bend_plan")
+        merged = apply_defaults(analysis, {
+            "punch_id": args.punch,
+            "die_id": args.die,
+            "machine_path": args.machine,
+            "punches_path": args.punches,
+            "dies_path": args.dies,
+            "k_factor": args.k_factor,
+            "margin": args.margin,
+            "springback_deg": args.springback,
+            "search": not args.no_search,
+            "solutions": args.solutions,
+        })
+        stats = analysis.run(args.directory, merged, None).stats
+        logger.info(
+            f"Bend plan [{stats['mode']}]: "
+            f"{'FEASIBLE' if stats['feasible'] else 'NOT FEASIBLE'} — "
+            f"{stats['panel_count']} panels, {stats['bend_count']} bends "
+            f"in {stats['sister_group_count']} groups, t "
+            f"{stats['thickness']:.2f} mm on {stats['machine']}")
+        for warning in stats["warnings"]:
+            logger.warning(f"  {warning}")
+        for action in stats["actions"]:
+            label = (f"bends {action['bend_ids']} rot {action['rotation']}"
+                     + (" flipped" if action["flip"] else ""))
+            if action["feasible"]:
+                best = action["best"]
+                required = sum(b - a for a, b in best["required"])
+                logger.info(f"  {label}: ok with {best['punch']} / "
+                            f"{best['die']} (required {required:.0f} mm)")
+            else:
+                logger.info(f"  {label}: infeasible "
+                            f"({action['collision_summary'] or 'collisions'})")
+        for rank, plan_entry in enumerate(stats["plans"], start=1):
+            order = " -> ".join(str(step["bend_ids"])
+                                for step in plan_entry["steps"])
+            objective = plan_entry["objective"]
+            logger.info(
+                f"  plan #{rank}: {order} | {int(objective[0])} setup "
+                f"changes, {int(objective[2])} sections, "
+                f"{objective[3]:.0f} mm installed")
+            for setup in plan_entry["setups"]:
+                logger.info(f"    setup {setup['punch_id']} / "
+                            f"{setup['die_id']}: steps "
+                            f"{setup['step_indices']}")
 
         if args.serve:
             serve_workdir(args.directory)
