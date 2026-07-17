@@ -1,4 +1,4 @@
-import { brepFacesMode, highlightsMode } from '../../colorizers/core';
+import { brepFacesMode, faceAttrsMode, highlightsMode } from '../../colorizers/core';
 import type { ProcessPlugin, ViewCtx } from '../../registry/types';
 import { faceLabel, handleSplitPick } from '../../splits/splits';
 import { useStore } from '../../state/store';
@@ -7,11 +7,13 @@ import { CncControls } from './Controls';
 import {
   accessMode, classMode, gapMode, stickoutMode, thinSpanMode, unifiedMode,
 } from './modes';
+import { featuresMode, inspectFeature } from './features';
 import { cncSplitHost, loadSetups, setupsMode } from './setups';
 import { currentSource, currentTip } from './sources';
 
 async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
   const lines: string[] = [];
+  lines.push(...await inspectFeature(face, ctx));
 
   try {
     const data = await loadSetups(ctx);
@@ -62,8 +64,9 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
 export const cncPlugin: ProcessPlugin = {
   processId: 'cnc',
   label: 'CNC machining',
-  modes: [setupsMode, unifiedMode, accessMode, classMode, gapMode,
-          stickoutMode, thinSpanMode, brepFacesMode, highlightsMode],
+  modes: [setupsMode, featuresMode, unifiedMode, accessMode, classMode,
+          gapMode, stickoutMode, thinSpanMode, brepFacesMode, faceAttrsMode,
+          highlightsMode],
   defaults: () => ({
     source: 0,
     tip: 0,
