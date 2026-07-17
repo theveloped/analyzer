@@ -101,9 +101,12 @@ def run_bend_plan(workdir, params, progress):
 
     if progress is not None:
         progress(0.85, "planning bend actions")
+    # pair_limit: stop after a few envelopes once one is feasible — the
+    # viewer shows the best pair, and envelopes are expensive on hole-rich
+    # parts
     plan_report = plan_mod.plan_graph(
         graph, machine, punches, dies, margin=params["margin"],
-        springback_deg=params["springback_deg"])
+        springback_deg=params["springback_deg"], pair_limit=4)
 
     search_result = None
     if params["search"]:

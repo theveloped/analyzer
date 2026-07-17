@@ -65,9 +65,14 @@ class PlanReport:
 
 
 def plan_graph(graph, machine=None, punches=None, dies=None, margin=2.0,
-               sequence=None, springback_deg=2.0):
+               sequence=None, springback_deg=2.0, pair_limit=None):
     """
     Evaluate all bend actions of a graph against the catalogue.
+
+    ``pair_limit`` stops evaluating further punch/die pairs for an action
+    once a feasible envelope was found AND that many envelopes were
+    computed — envelopes are expensive on hole-rich parts, and reporting
+    every catalogue pair is rarely needed (None = evaluate all).
     """
     punches = punches or {}
     dies = dies or {}
@@ -119,6 +124,9 @@ def plan_graph(graph, machine=None, punches=None, dies=None, margin=2.0,
                         result.best is None or _better(candidate_envelope,
                                                        result.best)):
                     result.best = candidate_envelope
+                if (pair_limit is not None and result.best is not None
+                        and len(result.envelopes) >= pair_limit):
+                    break
             if result.best is None and result.envelopes:
                 result.collision_summary = "no feasible punch/die combination"
             report.actions.append(result)

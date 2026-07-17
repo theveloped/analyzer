@@ -60,8 +60,8 @@ cd frontend && npm install && npm run build && cd ..   # one-time viewer build (
 ```
 
 - CLI entry point: `python main.py <command>` — commands: `mesh`, `explode`,
-  `aag`, `directions`, `options`, `thickness`, `sheet`, `tube`, `features`,
-  `setups`, `verdict`, `precompute`, `compose`, `serve`, `view`.
+  `aag`, `directions`, `options`, `thickness`, `sheet`, `bendplan`, `tube`,
+  `features`, `setups`, `verdict`, `precompute`, `compose`, `serve`, `view`.
   `python main.py <command> -h` for flags; TESTING.md for workflows.
 - Typical smoke workflow (fast, small part):
   ```bash
@@ -91,6 +91,8 @@ python test_import.py        # XCAF import: assemblies, colors/names, id bridgin
 python test_features.py      # CNC feature recognition (holes family)
 python test_sheet.py         # sheet detect + K-factor unfold + DXF round-trip
 python test_tube.py          # tube/profile classification + unroll
+python test_pressbrake.py    # press-brake core: kinematics, envelopes, tooling, search
+python test_bendplan.py      # bend-plan adapter + analysis on STEP fixtures
 ```
 
 They build synthetic parts with known-correct answers and assert on them; a green

@@ -160,11 +160,18 @@ def compute_envelope(graph, state_theta, action, punch, die, machine=None,
                          z_offset=graph.z_offset)
     hits = {"punch": [], "die": [], "ram": [], "table": []}
 
+    normals = {panel.id: poses[panel.id][:3, :3] @ np.array([0.0, 0.0, 1.0])
+               for panel in graph.panels}
+
     for x0, x1 in zip(events[:-1], events[1:]):
         if x1 - x0 < 1e-9:
             continue
         probes = _probe_positions(x0, x1)
-        swept_pieces = []
+        # raw sector pieces union+buffer ONCE per interval (dilation
+        # distributes over union), instead of per (panel, probe) — the
+        # dominant cost on hole-rich panels with many critical intervals
+        sector_pieces = []
+        inflated_pieces = []
         for panel in graph.panels:
             points, holes = panel_points[panel.id]
             if points[:, 0].min() > x1 or points[:, 0].max() < x0:
@@ -176,21 +183,26 @@ def compute_envelope(graph, state_theta, action, punch, die, machine=None,
                 segments = collision.slice_panel_segments(
                     points, holes, poses[panel.id], graph.thickness, x)
                 if segments:
-                    swept_pieces.append(swept_region(
-                        segments, graph.thickness / 2.0, angle_low, angle_high))
+                    sector_pieces.extend(swept_region(
+                        segments, graph.thickness / 2.0, angle_low,
+                        angle_high, raw=True))
                 # panels perpendicular to X: cover the polygon interior at
                 # the end angles too (the sector sweep covers the boundary)
-                normal = poses[panel.id][:3, :3] @ np.array([0.0, 0.0, 1.0])
-                if abs(normal[0]) > collision.PERPENDICULAR_LIMIT:
+                if abs(normals[panel.id][0]) > collision.PERPENDICULAR_LIMIT:
                     full = collision.slice_panel(
                         points, holes, poses[panel.id], graph.thickness, x)
                     if full is not None and not full.is_empty:
                         for angle in (angle_low, angle_high):
-                            swept_pieces.append(affinity.rotate(
+                            inflated_pieces.append(affinity.rotate(
                                 full, math.degrees(angle), origin=(0.0, 0.0)))
-        if not swept_pieces:
+        if not sector_pieces and not inflated_pieces:
             continue
-        swept = unary_union(swept_pieces)
+        swept_parts = list(inflated_pieces)
+        if sector_pieces:
+            swept_parts.append(unary_union(sector_pieces).buffer(
+                graph.thickness / 2.0, quad_segs=8))
+        swept = (unary_union(swept_parts) if len(swept_parts) > 1
+                 else swept_parts[0])
         workpiece = swept.difference(exclusion)
         if workpiece.is_empty:
             continue
@@ -237,9 +249,10 @@ def shrink_intervals(intervals, relief):
 
 
 ARC_STEP = math.radians(0.5)
+MIN_EVENT_SPACING = 1.0   # mm; coalesce denser critical-X clusters
 
 
-def swept_region(segments, width, angle_low, angle_high):
+def swept_region(segments, width, angle_low, angle_high, raw=False):
     """
     Region covered by material segments (inflated by ``width``) rotating
     about the origin from ``angle_low`` to ``angle_high`` (rad).
@@ -249,6 +262,10 @@ def swept_region(segments, width, angle_low, angle_high):
     polar-angle range, then buffered by ``width`` (buffering commutes with
     rotation, so inflating after sweeping is exact).  Exact for radial
     segments, conservative superset for oblique ones.
+
+    ``raw=True`` returns the UNBUFFERED sector polygons instead — callers
+    aggregating many calls union everything once and buffer the union
+    (dilation distributes over union, so the result is identical).
 
     This is the API the analytic arc-contact implementation (P4) replaces.
     """
@@ -273,6 +290,8 @@ def swept_region(segments, width, angle_low, angle_high):
             theta_low = min(theta_a, theta_b) + angle_low
             theta_high = max(theta_a, theta_b) + angle_high
             pieces.append(_annular_sector(r_min, r_max, theta_low, theta_high))
+    if raw:
+        return pieces
     if not pieces:
         return Polygon()
     return unary_union(pieces).buffer(width, quad_segs=8)
@@ -318,7 +337,10 @@ def _annular_sector(r_min, r_max, theta_low, theta_high):
     [theta_low, theta_high], arcs discretized outward-conservatively.
     """
     span = max(theta_high - theta_low, 1e-9)
-    steps = max(int(math.ceil(span / ARC_STEP)), 1)
+    # cap the discretization: the outward chord correction keeps the
+    # polygon a conservative superset at any step count, and 64 segments
+    # overshoot by <0.05% while shrinking union costs ~5x on wide sweeps
+    steps = min(max(int(math.ceil(span / ARC_STEP)), 1), 64)
     thetas = np.linspace(theta_low, theta_high, steps + 1)
     # chord correction: push the outer arc points outward so the polygon
     # contains the true arc
@@ -363,6 +385,17 @@ def _critical_x(graph, action, panel_points, poses=None, z_offset=0.0):
                 point3 = np.append(np.append(point, z_offset), 1.0)
                 values.append(np.array([float((transform @ point3)[0])]))
     events = np.unique(np.round(np.concatenate(values), 6))
+    # coalesce sub-millimetre event clusters: discretized circular holes
+    # spew dozens of near-identical X values each, and press-brake tooling
+    # margins dwarf sub-mm geometry — the 3-probe sampling per interval
+    # still sees the true geometry, only the sampling density is capped
+    if len(events) > 2:
+        keep = [events[0]]
+        for value in events[1:-1]:
+            if value - keep[-1] >= MIN_EVENT_SPACING:
+                keep.append(value)
+        keep.append(events[-1])
+        events = np.asarray(keep)
     return events
 
 

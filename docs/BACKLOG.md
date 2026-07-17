@@ -374,6 +374,37 @@ part with a through-hole in the only parallel band (jaw must straddle
 or reject), a long part needing two vises. Assert positions
 analytically.
 
+### 18. Bend-plan envelope performance (upstream P4: analytic arc contacts)
+
+**Problem.** `envelope.compute_envelope` cost scales with critical-X
+intervals × panels × shapely work. Stage-1 optimizations (sector cap 64
+segments, one union+buffer per interval, 1 mm event coalescing,
+`pair_limit` in plan_graph) took one envelope on
+`instapart/examples/parts/SmartPart_01` (7 panels, 6 bends, 37 holes,
+720 mm) from 44.7 s to 5.6 s — but a full plan is still ~9 min and the
+sequence search longer. Small parts (L-bracket/U-channel class) are
+interactive (<5 s total).
+
+**Levers, in order of value.**
+- Upstream roadmap P4: replace `swept_region`'s annular-sector
+  approximation with analytic arc-vs-edge first-contact computation —
+  removes the per-interval shapely unions entirely. The API seam is
+  reserved (`envelope.py` swept_region docstring).
+- Simplify panel outlines/holes for envelope purposes
+  (`shapely.simplify(0.2)` — the 2 mm margin dwarfs it); discretized
+  circular holes carry ~58 vertices each and drive the event count.
+- Infeasible actions currently evaluate every catalogue pair
+  (`pair_limit` only breaks after a feasible hit) — a cheap pre-gate
+  (e.g. skip pairs whose punch profile is a superset of an
+  already-failed narrower one) would cut the worst case.
+- Cache slices across (punch, die) pairs: slices/swept regions depend
+  only on (state, action), not on the tools — hoisting them out of the
+  per-pair loop in plan_graph/sequence would cut ~pair_count×.
+
+**Verify.** `test_pressbrake.py` (the envelope-contains-oracle
+cross-validation is the correctness guard for any approximation) +
+re-time SmartPart_01 (`main.py bendplan corpus/parts/f488820d15c3`).
+
 ## Meta
 
 - The port branch `claude/instapart-port` (10 commits) may still be

@@ -20,6 +20,8 @@ in docs/CODEMAP.md; background in APPROACH.md.
 | `machining_features.py`, `cnc/features` | `python test_features.py` |
 | `sheet.py`, `unfold.py`, `dxfexport.py`, sheet_metal process | `python test_sheet.py` |
 | `tube.py`, tube_laser process | `python test_tube.py` |
+| `pressbrake/` pure core (kinematics, envelope, tooling, search) | `python test_pressbrake.py` |
+| `pressbrake/adapter.py`, sheet_metal/bend_plan | `python test_bendplan.py` |
 
 Sheet/tube changes should additionally be scored against the instapart
 example corpus (166 real STEP files with expected thickness/bends/volume):

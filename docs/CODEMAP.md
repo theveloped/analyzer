@@ -21,6 +21,7 @@ and this document disagree, the code wins — update this file in the same commi
 | `tube.py` | Straight constant-section profile classification (round/rect/square) + outer-shell unroll | `analyse_profile`, `grouped_graph`, `cluster_directions` |
 | `machining_features.py` | Rule-based CNC feature recognition (holes family + pockets) from concave C2 groups and coaxial stacks | `recognize_features` |
 | `dxfexport.py` | DXF export of stored flat-pattern results (ezdxf; layers OUTLINE/BENDS/ENGRAVING) | `export_dxf` |
+| `pressbrake/` | Press-brake bend planning (instapart port): panel/hinge kinematic model with bend deduction, sampled collision oracle + analytic REQUIRED/FORBIDDEN machine-X interval envelope, YAML punch/die/machine catalogues, segmented-tooling knapsack, bitmask-memoized sequence search. `adapter.py` builds the KinematicGraph from AAG + Unfolder (the only OCP module); `report.py` is the plain-dict serialization | `adapter.build_kinematic_graph`, `plan.plan_graph`, `plan.plan_search`, `machine.load_machine/punches/dies` |
 | `processes/` | Backend analysis registry (see below) | `processes.base`, one module per process |
 | `api/` | FastAPI server (see routes below) | `api.app.create_app`, `serve_app` |
 | `utils.py`, `pathtypes.py` | Small helpers: dirs, timing decorator, argparse `PathType` | |
@@ -95,7 +96,7 @@ Registered today:
 - `prep` — `mesh`, `aag`, `directions`
 - `cnc` — `features`, `setups`, `setup_verdict`, `precompute`, `compose`
 - `injection_molding` — `mold_orientation`, `thickness`, `gaps`, `ray_thickness`, `ray_gap`, `slenderness`, `thin_span`, `wall_skeleton`, `sprue_proposals`, `ejection_sticking`, `flow_voxels`, `flow_fill`
-- `sheet_metal` — `detect`, `flat_pattern` (SHEET_SCHEMA mirrored in `frontend/src/processes/sheetmetal/index.ts`)
+- `sheet_metal` — `detect`, `flat_pattern` (SHEET_SCHEMA mirrored in `frontend/src/processes/sheetmetal/index.ts`), `bend_plan` (BENDPLAN_SCHEMA mirrored in `sheetmetal/bendplan.ts`)
 - `tube_laser` — `profile` (TUBE_SCHEMA mirrored in `frontend/src/processes/tubelaser/index.ts`; FEATURES_SCHEMA likewise in `cnc/features.ts`)
 
 `run` callables must go through `pipeline.py` functions and write only into the
