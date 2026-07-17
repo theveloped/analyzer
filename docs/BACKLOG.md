@@ -270,6 +270,110 @@ attrs already reserve `bend_radius`/`k_factor` per face in instapart's
 model — `unfold.node_scale` takes k_factor as an argument, so plumbing
 per-face overrides is straightforward).
 
+## Press-brake port, later stages (stage 1 — the pure core — is planned
+## separately; these depend on it having landed)
+
+Shared context: instapart's branch
+`claude/press-brake-planning-review-cjumom` carries a ~6,300-line
+`pressbrake/` package (panel/hinge kinematic model, sampled collision
+oracle + analytic REQUIRED/OPTIONAL/FORBIDDEN machine-X interval
+envelope, segmented-tooling knapsack solver, memoized bend-sequence
+search, YAML punch/die/machine catalogues, 10 pytest files incl.
+OCC-free synthetic builders). Machine frame: X = bend axis/machine
+width, Y toward operator, Z up, active bend line at Y=0/Z=0. Phases 5
+(tooling solver) and 6 (sequence search) are DONE upstream; phase 4
+(exact arc sweeps), 7 (backgauge/handling/tonnage), 8 (exact
+verification) are open, `check_section_seams` is a stub, hems (>150°)
+out of scope. Stage 1 ports the pure core into `pressbrake/` here with
+a `KinematicGraph` adapter built from our unfold outputs (bypassing
+their OCC `extract.py`).
+
+### 16. Stage 2 — mesh-backed fold simulation, collision oracle and viewer animation
+
+**Problem/goal.** The ported collision oracle models the part as
+thickness-inflated flat 2D slices with a crude exclusion disk standing
+in for the bend arc, and validation is matplotlib-only. We hold assets
+instapart never had: the fine mesh with per-triangle BREP provenance
+(`brep_faces.npy`), per-face flat-layout transforms from
+`unfold.Unfolder`, and meshlib's native mesh collision
+(`mrmeshpy` `findCollidingTriangles` family). Build the high-fidelity
+verifier + the interactive viewer animation on those.
+
+**Approach.**
+- Partition the fine mesh per panel via `brep_faces.npy` + the panel
+  `face_hashes`/face-id lists the stage-1 adapter records; pose panels
+  with `kinematics.fold_transforms` matrices.
+- Deform bend-zone triangles instead of excluding them: each vertex's
+  flat position along the unroll direction maps to an angle fraction of
+  the current stroke — vertex on the arc at
+  `r_neutral(k)`-based radius (the unroll already gives every bend-zone
+  vertex its scaled-u coordinate; invert that mapping). This yields a
+  true partially-folded solid at any φ — replaces `pivot_exclusion`
+  and realizes upstream roadmap phase 8 better than planned.
+- Collision: extrude punch/die/ram/table YZ profiles (already polygons
+  in `machine.ToolProfile`) into meshlib meshes across the installed
+  section X-spans; `findCollidingTriangles` against the posed part
+  mesh per sampled φ. Keep the analytic envelope as the fast
+  search-time pruner; the mesh check verifies final plans (mind hard
+  rule: meshlib never concurrent).
+- Viewer: a fold-sequence slider in the sheetmetal plugin. Needs a new
+  scene capability (per-panel transform of vertex ranges — CPU
+  re-position of the un-indexed vertex buffer per frame is fine at our
+  mesh sizes); draw installed tool sections as translucent boxes.
+- Cross-validate exactly like upstream: every mesh-collision hit must
+  fall inside the analytic envelope's forbidden intervals (their
+  `test_envelope.py::test_envelope_contains_sampled_hits` pattern).
+
+**Verify.** Synthetic builders (box, offset_lip, notched) agree between
+mesh oracle and 2D oracle within tolerance; L-bracket fold animation
+visually correct in the viewer; a plan feasible per envelope is never
+contradicted by the mesh check on the corpus smoke parts.
+
+### 17. Stage 3 — self-centering vise / workholding analysis for CNC (tooling-solver reuse)
+
+**Problem/goal.** Reuse the press-brake segmented-tooling machinery for
+CNC workholding: given jaw catalogues (a vise jaw is also an extruded
+2D cross-section with available widths), decide whether one or more
+self-centering vises with a given jaw section can hold the part, and
+where along the part's X axis they should clamp.
+
+**What ports verbatim** (confirmed clean seams): `intervals.py` (1D
+interval algebra, fully domain-agnostic) and the `tooling.py` solver
+core (`solve_tool_placement`, `_min_sections_for_span` bounded-knapsack
+on a 0.1mm grid, cluster partitioning, `solve_setup`'s
+one-setup-for-many-operations logic) — it only consumes
+required/forbidden/domain/inventory plus a tool object with
+`.sections/.mass_kg_per_m`. The press-brake-specific parts to replace
+are only the interval PRODUCERS (`envelope.compute_envelope`) and the
+±φ/2 air-bend kinematics.
+
+**New producers to write.**
+- REQUIRED: X-spans where two opposing parallel faces exist at a
+  consistent clamping width — from `aag.npz` face normals (antiparallel
+  planar pairs) plus mesh cross-sections per X (zmap heightmaps or
+  direct triangle slicing) to confirm the jaw cross-section actually
+  contacts; prefer spans low on the part and wide enough for the jaw.
+- FORBIDDEN: X-spans where the jaw solid would collide with part
+  features or block machining — join `cnc/features` (holes the jaws
+  must not cover), the setup's approach direction accessibility, and
+  raw geometry interference of the extruded jaw section.
+- Self-centering constraint: jaws are a symmetric PAIR about the vise
+  center — add a paired/symmetric placement mode to the solver (the
+  cluster machinery degrades naturally to 1–2 runs; add a symmetry
+  constraint rather than reworking the DP). Multiple vises = multiple
+  paired runs sharing one X rail.
+- Deliver as a `cnc/workholding` AnalysisDef (requires prep/aag +
+  cnc/features; salt the usual fingerprints), jaw catalogue YAML next
+  to the press-brake ones, stats = per-setup vise count/positions/jaw
+  section + infeasibility reasons, fields = clamped-face mask; feed the
+  chosen clamp spans into `cnc/setups` stats later.
+
+**Verify.** Synthetic fixtures: a prismatic block (one centered vise,
+position = centroid), a stepped part (clamp span forced off-center), a
+part with a through-hole in the only parallel band (jaw must straddle
+or reject), a long part needing two vises. Assert positions
+analytically.
+
 ## Meta
 
 - The port branch `claude/instapart-port` (10 commits) may still be
