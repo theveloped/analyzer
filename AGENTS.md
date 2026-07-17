@@ -82,6 +82,7 @@ python test_thickness.py     # rolling-sphere plate/gap probes
 python test_accessibility.py # visibility raster on a synthetic pocket part
 python test_gap_probes.py    # Euclidean gap metric probes
 python test_skeleton.py      # wall-thickness skeleton graph
+python test_nesting.py       # 2D contour nesting sandbox (NFP grids, interlock, spacing)
 ```
 
 They build synthetic parts with known-correct answers and assert on them; a green

@@ -17,6 +17,7 @@ and this document disagree, the code wins — update this file in the same commi
 | `processes/` | Backend analysis registry (see below) | `processes.base`, one module per process |
 | `api/` | FastAPI server (see routes below) | `api.app.create_app`, `serve_app` |
 | `utils.py`, `pathtypes.py` | Small helpers: dirs, timing decorator, argparse `PathType` | |
+| `nesting.py` | 2D contour nesting sandbox (sheet metal), standalone — NFP/Minkowski via pyclipper, greedy gravity placement; see docs/NESTING.md | `nest_single`, `write_svg` |
 | `inside_test.py`, `toolart.py`, `drawer.py`, `tooltest.py` | Standalone sandboxes/sketches, NOT wired into the pipeline | |
 
 Root `test_*.py` are self-checking scripts (synthetic parts with analytic
