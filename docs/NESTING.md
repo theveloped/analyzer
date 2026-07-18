@@ -121,6 +121,66 @@ lives in placement *quality*, not runtime blowup: the greedy is polynomial, and
 quality is bought with restarts/GA generations, which scale linearly and
 parallelize embarrassingly.
 
+## Tiling patterns: nest once, estimate any sheet instantly
+
+`find_tiling(contour, max_parts=N, rotations=R, spacing=s)` answers a
+different question than `nest_single`: instead of packing one specific sheet,
+it finds the best **periodic pattern** — a motif of up to N placed parts plus
+two lattice vectors `v1, v2` such that the motif repeated at every
+`m·v1 + n·v2` never collides. This is minimum-area lattice packing: the
+pattern with the smallest cell area `|v1 × v2| / k` wins, and its asymptotic
+utilization is a property of the part alone, independent of any sheet.
+
+The search reuses the NFP machinery end to end. Motifs are built from
+touching positions on the pairwise NFP arrangement (beam-pruned by convex
+hull area per rotation multiset); each motif's **self-NFP** is the union of
+pairwise NFPs offset by the parts' relative positions; candidate generators
+are sampled on the self-NFP boundary (vertices for interlock optima, exact
+axis crossings for grid/brick optima, step-multiple edge samples in between)
+and scanned in ascending cell-area order — the first *valid* basis (no
+lattice combination strictly inside the self-NFP, nearest neighbours probed
+first) is optimal up to boundary sampling. Two finite-sheet realities shaped
+the implementation:
+
+- **Equal-area bases tie-break toward axis-aligned generators.** A sheared
+  lattice that matches the grid's density asymptotically loses parts to edge
+  effects on every real sheet.
+- **Near-optimal alternates ride along.** The scan keeps every valid basis
+  within 8% of the best cell area; `TilePattern.count(w, h, margin)` evaluates
+  primary + alternates (and optimizes the lattice phase over a small grid) and
+  reports whichever fits most. A 0.2% asymptotic win can cost 30% of the parts
+  on a small sheet — counting per sheet against a handful of patterns fixes
+  that for free, since counting is closed-form interval arithmetic per lattice
+  row (~milliseconds per sheet size).
+
+Counts are conservative estimates: the pattern never exploits edge slivers a
+greedy nest could still fill — except it turns out the *pattern* usually wins
+anyway. For the benchmark bracket (2 mm spacing, 4 rotations), the optimal
+pattern reaches **79.6% asymptotic utilization vs the greedy's 64%**, because
+the greedy's local gravity metric never discovers the globally best repeat:
+
+| sheet (mm) | pattern est. | est. time | greedy | greedy time |
+|---|---|---|---|---|
+| 500×500 | 23 | 21 ms | 22 | 0.3 s |
+| 1000×500 | 50 | 33 ms | 49 | 0.6 s |
+| 2000×1000 | 233 | 123 ms | 215 | 3.3 s |
+| 3000×1500 | 547 | 269 ms | 486 | 12.1 s |
+
+The pattern search itself runs once per part: 0.33 s at `max_parts=1`, 5.2 s
+at `max_parts=2` (which bought only +0.1% here — single-part lattices already
+alternate rotations between rows via the motif choice), 187 s at
+`max_parts=3` for nothing. **Default `max_parts=2` and stop there**; larger
+motifs grow the search combinatorially and pay off only for exotic shapes.
+`TilePattern.realize(w, h, margin)` materializes a pattern as a `NestResult`
+(same invariant checks and SVG dump as greedy results), and test_nesting.py
+asserts exact optima where they are provable: 100 mm²/part squares,
+200 mm²/part 20×10 rects, and the L-shape rep-tile at 300 mm²/part — 100%
+utilization from translations alone.
+
+A greedy `nest_single` on the target sheet remains useful as a cross-check
+and for one-off sheets; the pattern is what quoting wants: one search per
+part, then instant count curves over candidate sheet sizes.
+
 ## Roadmap to a real analysis
 
 1. **Contour input.** The in-progress STEP→unfold work should hand over the

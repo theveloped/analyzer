@@ -17,6 +17,7 @@ from nesting import (
     _nfp,
     _scale_path,
     contour_area,
+    find_tiling,
     nest_single,
     write_svg,
 )
@@ -140,6 +141,76 @@ def test_count_cap():
     print("count cap: OK")
 
 
+def test_tiling_square():
+    t = find_tiling(SQUARE, max_parts=1, rotations=1)
+    assert abs(t.area_per_part - 100.0) < 1e-6, t.area_per_part
+    assert abs(t.utilization - 1.0) < 1e-6
+    assert t.count(100, 100) == 100
+    assert t.count(100, 100, margin=5) == 81
+    check_invariants(t.realize(100, 100))
+    print(f"tiling square: area/part {t.area_per_part:.1f}, "
+          f"{t.runtime:.2f}s: OK")
+
+
+def test_tiling_square_spacing():
+    # The 12mm grid gives 144 mm^2/part; the rounded spacing corners allow a
+    # slightly denser sheared lattice asymptotically, but on a small sheet
+    # the axis-aligned alternate must win and recover the full 4x4 grid.
+    t = find_tiling(SQUARE, max_parts=1, rotations=1, spacing=2)
+    assert t.area_per_part <= 144.0 + 1e-6, t.area_per_part
+    assert t.count(46, 46) == 16
+    r = t.realize(46, 46)
+    check_invariants(r)
+    check_clearance(r)
+    print(f"tiling square spacing 2: area/part {t.area_per_part:.2f} "
+          f"({len(t.alternates)} alternates): OK")
+
+
+def test_tiling_rect():
+    t = find_tiling(RECT, max_parts=1, rotations=2)
+    assert abs(t.area_per_part - 200.0) < 1e-6, t.area_per_part
+    assert t.count(100, 100) == 50
+    print(f"tiling rect: area/part {t.area_per_part:.1f}: OK")
+
+
+def test_tiling_lshape():
+    # The L is a rep-tile: translations alone tile the plane at 100%
+    # utilization (offset column packing), so even max_parts=1 with no
+    # rotations must find area/part == 300.
+    t1 = find_tiling(LSHAPE, max_parts=1, rotations=1)
+    assert abs(t1.area_per_part - 300.0) < 1e-6, t1.area_per_part
+    # A 2-part motif with rotations must not do worse.
+    t2 = find_tiling(LSHAPE, max_parts=2, rotations=4)
+    assert t2.area_per_part <= 300.0 + 1e-6, t2.area_per_part
+    n = t2.count(100, 100)
+    check_invariants(t2.realize(100, 100))
+    print(f"tiling L: 1-part {t1.area_per_part:.1f}, "
+          f"2-part {t2.area_per_part:.1f} mm^2/part, "
+          f"{n} on 100x100 (greedy found 30): OK")
+
+
+def test_tiling_estimates_match_greedy():
+    # Estimates must be internally consistent (count == len(realize)) and
+    # land in the same ballpark as the full greedy nest, fast.
+    import time
+
+    t = find_tiling(LSHAPE, max_parts=2, rotations=4)
+    t0 = time.perf_counter()
+    counts = {
+        (w, h): t.count(w, h)
+        for w in (100, 150, 200, 250, 300)
+        for h in (100, 150, 200)
+    }
+    dt = time.perf_counter() - t0
+    for (w, h), c in counts.items():
+        assert c == len(t.realize(w, h).placements)
+    greedy = nest_single(LSHAPE, 200, 200, rotations=4).count
+    est = counts[(200, 200)]
+    assert est >= 0.8 * greedy, f"estimate {est} vs greedy {greedy}"
+    print(f"tiling estimates: 15 sheet sizes in {dt * 1000:.1f} ms, "
+          f"200x200 estimate {est} vs greedy {greedy}: OK")
+
+
 if __name__ == "__main__":
     test_nfp_square()
     test_square_grid()
@@ -148,6 +219,11 @@ if __name__ == "__main__":
     test_spacing()
     test_margin()
     test_count_cap()
+    test_tiling_square()
+    test_tiling_square_spacing()
+    test_tiling_rect()
+    test_tiling_lshape()
+    test_tiling_estimates_match_greedy()
 
     import sys
 
