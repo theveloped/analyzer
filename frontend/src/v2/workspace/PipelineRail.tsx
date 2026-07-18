@@ -2,6 +2,7 @@ import { CircleDashed, Plus } from 'lucide-react';
 import { useStore } from '../../state/store';
 import type { Analysis } from '../analyses';
 import { Button } from '../components/ui/button';
+import { StatusDot } from '../components/ui/status';
 import { cn } from '../lib/utils';
 import { resultFor, selectAnalysis, useActiveAnalysis, useVisibleAnalyses } from './hooks';
 
@@ -52,11 +53,8 @@ export function PipelineRail() {
                 )}
               >
                 <div className="flex items-center gap-2">
-                  <span
-                    className={cn(
-                      'size-2.5 shrink-0 rounded-full',
-                      computed ? 'bg-success' : isActive ? 'bg-primary' : 'bg-muted-foreground/40',
-                    )}
+                  <StatusDot
+                    status={computed ? 'good' : isActive ? 'active' : 'neutral'}
                   />
                   <Icon className="size-3.5 shrink-0 text-muted-foreground" />
                   <span className="flex-1 text-sm font-medium">{a.label}</span>
@@ -64,12 +62,12 @@ export function PipelineRail() {
                     <span className="text-[9px] uppercase tracking-wide text-muted-foreground">adv</span>
                   )}
                 </div>
-                <div className="ml-[18px] mt-1 text-xs text-muted-foreground">
+                <div className="ml-[22px] mt-1 text-xs text-muted-foreground">
                   {stepSummary(a)}
                 </div>
               </button>
               {i < analyses.length - 1 && (
-                <div className="ml-[15px] h-2.5 w-px bg-border" />
+                <div className="ml-[17px] h-2.5 w-px bg-border" />
               )}
             </div>
           );

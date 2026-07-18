@@ -1,4 +1,4 @@
-import { MoreHorizontal } from 'lucide-react';
+import { CheckCircle2, MoreHorizontal } from 'lucide-react';
 import { useStore } from '../../state/store';
 import {
   Tooltip, TooltipContent, TooltipTrigger,
@@ -43,7 +43,10 @@ export function AnalysisToolbar() {
               >
                 <Icon className="size-4" />
                 {computed && !isActive && (
-                  <span className="absolute bottom-1 right-1 size-1.5 rounded-full bg-success" />
+                  <CheckCircle2
+                    className="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full bg-background"
+                    style={{ color: 'var(--status-good)' }}
+                  />
                 )}
               </button>
             </TooltipTrigger>

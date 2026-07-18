@@ -2,8 +2,8 @@ import { ChevronDown, Play, RotateCw, Settings2, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 import { useStore } from '../../state/store';
 import type { Analysis, ComputeField } from '../analyses';
-import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
+import { StatusBadge } from '../components/ui/status';
 import {
   Collapsible, CollapsibleContent, CollapsibleTrigger,
 } from '../components/ui/collapsible';
@@ -130,9 +130,9 @@ export function SettingsRail() {
           <a.icon className="size-4 text-primary" />
           <h2 className="text-sm font-semibold">{a.label}</h2>
           {computed ? (
-            <Badge variant="success">computed</Badge>
+            <StatusBadge status="good">computed</StatusBadge>
           ) : (
-            <Badge variant="secondary">not run</Badge>
+            <StatusBadge status="neutral">not run</StatusBadge>
           )}
         </div>
         <p className="mt-1 text-xs text-muted-foreground">{a.blurb}</p>
