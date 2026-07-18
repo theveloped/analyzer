@@ -11,6 +11,7 @@ import { clearFieldCache, fetchBin, fetchField } from '../fields/fields';
 import { getPlugin } from '../registry';
 import type { LegendFocus, ViewCtx } from '../registry/types';
 import { useStore } from '../state/store';
+import { setColorBackground, VIEWER_BG, type ViewerBackground } from './colormaps';
 import { Scene3D } from './scene';
 
 let scene: Scene3D | null = null;
@@ -69,6 +70,14 @@ export async function refreshParts() {
 /** Fly the camera to a legend entry's face group. */
 export function flyToFocus(focus: LegendFocus) {
   scene?.flyTo(focus.center, focus.direction, focus.radius);
+}
+
+/** Switch the viewer between light and dark: repaints the background and the
+ * background-matched colour-map variants (batlowW/K, vik/berlin). */
+export function setViewerTheme(bg: ViewerBackground) {
+  setColorBackground(bg);
+  scene?.setBackground(VIEWER_BG[bg]);
+  schedulePaint(true);
 }
 
 /** Run an action that needs the live ViewCtx (e.g. a controls button);

@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { setViewerTheme } from '../viewer/controller';
 import { SidebarInset, SidebarProvider } from './components/ui/sidebar';
 import { AppSidebar } from './nav/AppSidebar';
 import { useV2 } from './store';
@@ -14,6 +15,7 @@ export default function App() {
   const theme = useV2((s) => s.theme);
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
+    setViewerTheme(theme); // viewer background + colour-map variants follow the theme
   }, [theme]);
 
   return (

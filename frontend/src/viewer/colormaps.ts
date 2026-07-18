@@ -1,22 +1,36 @@
-// Canonical color system for the viewer and UI — one validated source of
-// truth for every "job" a color does here. Derived with the dataviz method and
-// checked with its validator against the fixed three.js viewer background
-// (#21262c); see docs at the bottom for the recorded verdicts.
+// Canonical color system for the viewer and UI — one source of truth, using
+// official perceptually-uniform, CVD-safe scientific colour maps (Crameri +
+// matplotlib) rather than hand-rolled ramps. Each field "job" gets the map the
+// literature prescribes, and — because these maps span dark→light — a
+// background-matched variant so the informative end never sinks into the
+// viewer background:
 //
-// Four continuous/quantitative jobs + a reserved semantic set:
-//   sequential(t)   unsigned magnitude   (thickness, clearance)      one hue, light→dark
-//   diverging(t)    signed magnitude     (draft ±, over/under target) two hues + neutral 0
-//   categorical(i)  few named segments   (≤8, legend)                fixed validated hues
-//   segment(id)     many raw segments    (BREP face ids)             perceptual generator
-//   STATUS/HIGHLIGHT reserved meanings   (ok/flag, too small/large, selection)
+//   magnitude (unsigned)  sequential  batlowW (dark bg) / batlowK (light bg)
+//   signed deviation      diverging   vik   (dark bg) / berlin  (light bg)
+//   risk / severity       sequential  inferno (both)
+//   segmented areas       categorical validated 8-set / OKLCH generator
+//   reserved              status / highlight / selection (icon+label, tokens)
 //
 // Colors are RGB in 0..1 to match the viewer's paintFaces contract; CSS helpers
-// render the same values for legends so a legend always equals its surface.
+// render the same values so a legend always equals its surface.
 
 import type { RGB } from '../registry/types';
 
+export type ViewerBackground = 'dark' | 'light';
+
+let BG: ViewerBackground = 'dark';
+/** Switch which background-matched variant the maps resolve to. */
+export function setColorBackground(bg: ViewerBackground): void { BG = bg; }
+export function colorBackground(): ViewerBackground { return BG; }
+
+/** Viewer clear color per theme (the three.js scene background). */
+export const VIEWER_BG: Record<ViewerBackground, string> = {
+  dark: '#21262c',
+  light: '#e9ecf0',
+};
+
 function hex(h: string): RGB {
-  const n = parseInt(h.replace('#', ''), 16);
+  const n = parseInt(h.slice(1), 16);
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 }
 
@@ -24,65 +38,71 @@ function lerp(a: RGB, b: RGB, f: number): RGB {
   return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
 }
 
-/** Sample a list of stops at t∈[0,1] (linear between adjacent stops). */
-function sample(stops: RGB[], t: number): RGB {
-  const clamped = Math.min(1, Math.max(0, t));
-  const x = clamped * (stops.length - 1);
+/** Sample evenly-spaced stops at t∈[0,1]. */
+function sampleEven(stops: RGB[], t: number): RGB {
+  const x = Math.min(1, Math.max(0, t)) * (stops.length - 1);
   const i = Math.min(stops.length - 2, Math.floor(x));
   return lerp(stops[i], stops[i + 1], x - i);
 }
 
-// ── Sequential: single-hue blue, light→dark, perceptually-even lightness.
-// Unsigned magnitude / severity. Light end recedes toward "near zero / at
-// limit"; dark end is the extreme. (dataviz sequential job.)
-export const SEQUENTIAL_STOPS: RGB[] = [
-  '#d5eeff', '#bfddff', '#a9ccf9', '#93bcef', '#7eabe5', '#689bdb',
-  '#538ad1', '#3c7ac6', '#236abc', '#0059b1', '#0048a6',
-].map(hex);
+// ── Official LUTs (downsampled to smooth anchors; interpolation is
+// imperceptible at this density since the source maps are perceptually even) ──
 
+// batlow with a WHITE top — the light high end pops on the dark viewer.
+const BATLOW_W: RGB[] = ['#011959','#0d335e','#114360','#28655f','#437254','#687f41','#948f32','#ba9333','#d8a566','#edaf8f','#f8bdaf','#fed1cd','#ffe8e7','#fff6f6','#fffefe'].map(hex);
+// batlow with a BLACK bottom — the dark low end pops on a light viewer.
+const BATLOW_K: RGB[] = ['#04050a','#131e2d','#21384f','#33505e','#49625a','#63724b','#83813d','#a38e38','#c29840','#de9f55','#f1a678','#fcb2aa','#fdbac3','#fdbfd3','#faccfa'].map(hex);
+
+// vik: dark-blue ↔ WHITE centre ↔ dark-red. Light centre = zero visible on dark.
+const VIK: RGB[] = ['#001261','#022e73','#034280','#136697','#2b79a4','#4e92b4','#74aac5','#9ac2d5','#c0d8e4','#e7e7e7','#eee3dc','#d9a486','#b08056','#af4310','#590008'].map(hex);
+const VIK_NEUTRAL = 9; // index of the near-white centre
+// berlin: light-blue ↔ near-BLACK centre ↔ light-red. Dark centre = zero visible on light.
+const BERLIN: RGB[] = ['#9eb0ff','#74aaeb','#60a5df','#122c38','#170d0b','#1d0b05','#280d01','#3c1101','#501803','#732b16','#964a36','#ba6b5f','#df8f89','#ffadad'].map(hex);
+const BERLIN_NEUTRAL = 4; // index of the darkest (centre) stop
+
+// inferno: black → purple → red → yellow. Severe = bright, pops on dark; low
+// risk recedes. Used on both backgrounds for now.
+const INFERNO: RGB[] = ['#000004','#130a30','#340a5f','#55106d','#751b6e','#942568','#b3325a','#d04545','#e55c30','#f57d15','#fca80d','#fac62d','#fafda1'].map(hex);
+
+/** Unsigned magnitude (thickness, gap, clearance). t∈[0,1]. */
 export function sequential(t: number): RGB {
-  return sample(SEQUENTIAL_STOPS, t);
+  return sampleEven(BG === 'light' ? BATLOW_K : BATLOW_W, t);
 }
 
-// ── Diverging: red ← neutral → blue, light neutral midpoint (Moreland-style).
-// Signed magnitude with a meaningful zero. t∈[-1,1]: −1 red pole, 0 neutral,
-// +1 blue pole. Poles CVD-separate at ΔE 22.8. (dataviz diverging job.)
-export const DIVERGING_STOPS: RGB[] = [
-  '#b63b32', '#c46257', '#d0847a', '#daa59e', '#e2c6c2', '#e8e8e8',
-  '#c0cfe3', '#99b7dd', '#729ed6', '#4a85ce', '#186bc5',
-].map(hex);
-
-/** Signed magnitude; t∈[-1,1], 0 = neutral. By convention negative → red
- * (e.g. undercut / below target), positive → blue (e.g. drafted / above). */
-export function diverging(t: number): RGB {
-  return sample(DIVERGING_STOPS, (Math.min(1, Math.max(-1, t)) + 1) / 2);
+/** Signed deviation with a meaningful zero (draft ±, over/under a target).
+ * s∈[-1,1], 0 = neutral (pinned to the map's neutral stop). */
+export function diverging(s: number): RGB {
+  const stops = BG === 'light' ? BERLIN : VIK;
+  const neutral = BG === 'light' ? BERLIN_NEUTRAL : VIK_NEUTRAL;
+  const clamped = Math.max(-1, Math.min(1, s));
+  const pos = clamped <= 0
+    ? (clamped + 1) * neutral
+    : neutral + clamped * (stops.length - 1 - neutral);
+  const i = Math.min(stops.length - 2, Math.max(0, Math.floor(pos)));
+  return lerp(stops[i], stops[i + 1], pos - i);
 }
 
-// ── Categorical: the dataviz 8-hue set, dark steps (the viewer bg is always
-// dark). Fixed order IS the CVD-safety mechanism — assign in sequence, never
-// cycle. Use for FEW, named segments shown in a legend. Passes all gates
-// adjacent; only the first 4 clear the harder all-pairs test.
+/** Risk / severity, where high = worse. t∈[0,1]. */
+export function severity(t: number): RGB {
+  return sampleEven(INFERNO, t);
+}
+
+// ── Categorical: validated dataviz 8-hue set (dark steps) for few named
+// segments; an OKLCH golden-angle generator for many BREP faces. ──
 export const CATEGORICAL: RGB[] = [
   '#3987e5', '#008300', '#d55181', '#c98500',
   '#199e70', '#d95926', '#9085e9', '#e66767',
 ].map(hex);
 
-/** i<8 → the fixed slot; i≥8 → the unbounded generator (see `segment`). */
 export function categorical(i: number): RGB {
   return i < CATEGORICAL.length ? CATEGORICAL[i] : segment(i);
 }
 
-// ── Many raw segments (BREP face ids): no palette makes hundreds of touching
-// patches legibly identifiable, so the goal is only "adjacent faces differ" +
-// click-to-identify. Golden-angle hue in OKLCH at a fixed in-band lightness &
-// chroma gives even, repeatable, well-separated hues. Replaces the old
-// HSL golden-ratio generator (OKLCH keeps lightness perceptually constant).
 export function segment(id: number): RGB {
   return oklchToRgb(0.62, 0.13, (id * 137.508) % 360);
 }
 
-// ── Reserved semantic colors (never used for series identity). Match the
-// validated status tokens in app.css so mesh + chrome agree.
+// ── Reserved semantic colors (match the app.css status tokens). ──
 export const STATUS = {
   good: hex('#0ca30c'),
   warning: hex('#fab219'),
@@ -90,32 +110,29 @@ export const STATUS = {
   critical: hex('#d03b3b'),
 } as const;
 
-/** Discrete highlights on the mesh. Single-sided judgments use STATUS; a
- * signed bound (too small / too large) reuses the diverging poles so a signed
- * field and its flags share one language. Selection is a reserved white. */
 export const HIGHLIGHT = {
   correct: STATUS.good,
   incorrect: STATUS.critical,
   warn: STATUS.warning,
-  tooSmall: DIVERGING_STOPS[0], // red pole
-  tooLarge: DIVERGING_STOPS[DIVERGING_STOPS.length - 1], // blue pole
-  selected: hex('#ffffff'),
+  selected: hex('#ffffff'), // outline, not a fill hue
 } as const;
 
-/** Non-data surfaces: the neutral unpainted mesh and the "no data" gray. */
+/** Neutral, unpainted mesh + no-data, per background so it never sinks in. */
+export function meshBase(): RGB {
+  return BG === 'light' ? [0.7, 0.73, 0.77] : [0.87, 0.9, 0.92];
+}
 export const MESH = {
   base: [0.87, 0.9, 0.92] as RGB,
   inaccessible: [0.28, 0.32, 0.38] as RGB,
 };
 
-/** Overlay line colors, centralized so nothing re-picks them ad hoc. */
 export const EDGE = {
   parting: [1.0, 0.85, 0.2] as RGB,
   isoline: [0.08, 0.09, 0.11] as RGB,
   weld: [1.0, 0.3, 0.75] as RGB,
 };
 
-// ── CSS helpers (legends render the exact same values as the surface) ──
+// ── CSS helpers — legends render the exact same values as the surface. ──
 export function cssRGB(c: RGB | readonly number[]): string {
   return `rgb(${Math.round(c[0] * 255)} ${Math.round(c[1] * 255)} ${Math.round(c[2] * 255)})`;
 }
@@ -126,8 +143,9 @@ function gradientCss(stops: RGB[]): string {
     .join(', ')})`;
 }
 
-export const sequentialGradientCss = () => gradientCss(SEQUENTIAL_STOPS);
-export const divergingGradientCss = () => gradientCss(DIVERGING_STOPS);
+export const sequentialGradientCss = () => gradientCss(BG === 'light' ? BATLOW_K : BATLOW_W);
+export const divergingGradientCss = () => gradientCss(BG === 'light' ? BERLIN : VIK);
+export const severityGradientCss = () => gradientCss(INFERNO);
 
 // ── OKLCH → sRGB (for the unbounded segment generator) ──
 function oklchToRgb(L: number, C: number, hDeg: number): RGB {
@@ -150,17 +168,3 @@ function oklchToRgb(L: number, C: number, hDeg: number): RGB {
     toSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s),
   ];
 }
-
-/*
-Validator verdicts (dataviz scripts/validate_palette.js, surface #21262c):
-- CATEGORICAL, adjacent (stacks/legends): PASS — worst CVD ΔE 8.4, normal 19.3,
-  all ≥3:1. Safe as a named ≤8 set.
-- CATEGORICAL, --pairs all (any-two-adjacent, e.g. face ids): first 4 slots
-  clear with secondary encoding (floor band 6.9); the full 8 cannot — so >4
-  freely-adjacent segments must use `segment()` + click-to-identify, not hue.
-- DIVERGING poles: PASS CVD ΔE 22.8 / normal 29.4; poles are mid-lightness
-  (2.7–2.9:1 vs bg) so the legend is the required relief channel.
-- SEQUENTIAL / DIVERGING ramps intentionally fail the categorical validator by
-  design (they span the lightness band) — the ramp check is lightness
-  monotonicity, which both satisfy.
-*/

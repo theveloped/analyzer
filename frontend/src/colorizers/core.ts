@@ -6,6 +6,7 @@ import type { FieldDescriptor } from '../api/types';
 import type {
   LegendEntry, LegendFocus, RGB, ViewCtx, ViewMode,
 } from '../registry/types';
+import { sequential } from '../viewer/colormaps';
 
 export const COL = {
   ok: [0.87, 0.9, 0.92] as RGB,
@@ -49,17 +50,11 @@ export function nextSetBit(x: number, after: number): number {
   return after;
 }
 
-// compact turbo-like ramp for scalar fields
+// Scalar magnitude ramp — now the perceptually-uniform, CVD-safe sequential
+// map (batlow), background-aware. Kept named `rampColor` so every existing
+// heatmap (thickness, gap, fill time, …) picks it up with no other change.
 export function rampColor(t: number): RGB {
-  t = Math.min(1, Math.max(0, t));
-  const stops = [
-    [0.19, 0.07, 0.23], [0.25, 0.27, 0.67], [0.17, 0.69, 0.5],
-    [0.99, 0.81, 0.22], [0.94, 0.36, 0.07], [0.48, 0.02, 0.01],
-  ];
-  const x = t * (stops.length - 1);
-  const i = Math.min(stops.length - 2, Math.floor(x));
-  const f = x - i;
-  return [0, 1, 2].map((k) => stops[i][k] * (1 - f) + stops[i + 1][k] * f) as unknown as RGB;
+  return sequential(t);
 }
 
 export function percentile(arr: Float32Array, p: number): number {

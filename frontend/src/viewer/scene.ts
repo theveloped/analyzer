@@ -462,6 +462,11 @@ export class Scene3D {
     this.graphKey = '';
   }
 
+  /** Set the scene clear color (viewer background), e.g. for light/dark mode. */
+  setBackground(color: string | number) {
+    this.scene.background = new THREE.Color(color as THREE.ColorRepresentation);
+  }
+
   setMeshOpacity(alpha: number) {
     if (!this.mesh) return;
     const material = this.mesh.material as THREE.MeshPhongMaterial;

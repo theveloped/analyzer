@@ -1,15 +1,8 @@
 <style>
   :root {
-    --bg: #eef1f4;
-    --panel: #ffffff;
-    --ink: #171c22;
-    --muted: #5b636e;
-    --faint: #878f9a;
-    --line: #e0e5ea;
-    --accent: #2a78d6;
-    --viewer: #21262c;          /* the fixed three.js background */
-    --viewer-ink: #e8ecf0;
-    --mesh: #dee6eb;            /* neutral unpainted mesh */
+    --bg: #eef1f4; --panel: #ffffff; --ink: #171c22; --muted: #5b636e;
+    --faint: #878f9a; --line: #e0e5ea; --accent: #2a78d6;
+    --viewer-dark: #21262c; --viewer-light: #e9ecf0;
     --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
     --radius: 12px;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -25,217 +18,146 @@
     --bg: #101317; --panel: #191d22; --ink: #e8ecf0; --muted: #9aa4b0;
     --faint: #6b7480; --line: #2a3138; --accent: #4a90e2;
   }
-
   * { box-sizing: border-box; }
-  .wrap {
-    font-family: var(--sans); color: var(--ink); background: var(--bg);
-    min-height: 100%; padding: 40px 24px 64px; line-height: 1.5;
-  }
+  .wrap { font-family: var(--sans); color: var(--ink); background: var(--bg); min-height: 100%; padding: 40px 24px 64px; line-height: 1.5; }
   .inner { max-width: 1080px; margin: 0 auto; }
-
-  .eyebrow {
-    font-family: var(--mono); font-size: 11px; letter-spacing: .16em;
-    text-transform: uppercase; color: var(--accent); margin: 0 0 10px;
-  }
+  .eyebrow { font-family: var(--mono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); margin: 0 0 10px; }
   h1 { font-size: 30px; font-weight: 680; letter-spacing: -.02em; margin: 0 0 8px; text-wrap: balance; }
-  .lede { color: var(--muted); max-width: 62ch; margin: 0 0 8px; }
-
-  .jobs {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 10px; margin: 28px 0 36px;
-  }
-  .job {
-    border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--panel);
-  }
-  .job b { font-size: 13px; }
+  .lede { color: var(--muted); max-width: 64ch; margin: 0 0 8px; }
+  .jobs { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 28px 0 36px; }
+  .job { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--panel); }
+  .job b { font-size: 13px; } .job code { font-family: var(--mono); font-size: 11px; color: var(--accent); }
   .job span { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }
-
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
-  .card {
-    border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel);
-    padding: 18px; display: flex; flex-direction: column; gap: 12px;
-  }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; }
+  .card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 18px; display: flex; flex-direction: column; gap: 12px; }
   .card.span2 { grid-column: 1 / -1; }
   .card-h { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-  .card-h .job-tag {
-    font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase;
-    color: var(--faint);
-  }
+  .card-h .job-tag { font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
   .card h2 { font-size: 16px; margin: 0; font-weight: 640; }
   .use { color: var(--muted); font-size: 13px; margin: -4px 0 2px; }
-
-  .ramp { height: 26px; border-radius: 7px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
-  .ticks {
-    display: flex; justify-content: space-between; font-family: var(--mono);
-    font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
-  }
-  .ticks.three { justify-content: space-between; }
-
+  .panelpair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .vp { border-radius: 9px; padding: 11px; display: flex; flex-direction: column; gap: 7px; }
+  .vp.dark { background: var(--viewer-dark); } .vp.light { background: var(--viewer-light); }
+  .vp .cap { font-family: var(--mono); font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; display: flex; justify-content: space-between; }
+  .vp.dark .cap { color: #9aa4b0; } .vp.light .cap { color: #5b636e; }
+  .ramp { height: 24px; border-radius: 6px; box-shadow: inset 0 0 0 1px rgba(128,128,128,.35); }
+  .ends { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; }
+  .vp.dark .ends { color: #c3c8ce; } .vp.light .ends { color: #454b52; }
   .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
-  .sw { display: flex; flex-direction: column; gap: 5px; align-items: center; width: 62px; }
-  .sw .chip { width: 100%; height: 34px; border-radius: 7px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.14); }
+  .sw { display: flex; flex-direction: column; gap: 5px; align-items: center; width: 60px; }
+  .sw .chip { width: 100%; height: 32px; border-radius: 7px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.14); }
   .sw small { font-family: var(--mono); font-size: 10px; color: var(--faint); }
-
   .strip { display: flex; height: 22px; border-radius: 6px; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(0,0,0,.12); }
   .strip > span { flex: 1 1 auto; }
-
-  /* "on the part" context — always the real dark viewer ground */
-  .onpart {
-    background: var(--viewer); border-radius: 8px; padding: 12px; color: var(--viewer-ink);
-    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  }
-  .onpart .label { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: #9aa4b0; }
-  .face {
-    width: 40px; height: 40px; border-radius: 8px;
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,.12), 0 1px 3px rgba(0,0,0,.4);
-  }
-
-  .verdict {
-    font-family: var(--mono); font-size: 11.5px; color: var(--muted);
-    border-top: 1px dashed var(--line); padding-top: 10px; margin-top: auto;
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  }
-  .pass { color: var(--good); font-weight: 600; }
-  .warn { color: var(--warning); font-weight: 600; }
-
+  .verdict { font-family: var(--mono); font-size: 11.5px; color: var(--muted); border-top: 1px dashed var(--line); padding-top: 10px; margin-top: auto; }
+  .pass { color: var(--good); font-weight: 600; } .warn { color: var(--warning); font-weight: 600; }
   .hl { display: flex; flex-wrap: wrap; gap: 8px; }
-  .pill {
-    display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px; border-radius: 999px;
-    font-size: 12.5px; font-weight: 550; background: color-mix(in oklab, var(--c) 15%, var(--panel));
-    color: var(--ink); border: 1px solid color-mix(in oklab, var(--c) 30%, transparent);
-  }
+  .pill { display: inline-flex; align-items: center; gap: 7px; padding: 6px 11px; border-radius: 999px; font-size: 12.5px; font-weight: 550; background: color-mix(in oklab, var(--c) 15%, var(--panel)); color: var(--ink); border: 1px solid color-mix(in oklab, var(--c) 30%, transparent); }
   .pill .g { color: var(--c); font-weight: 800; font-family: var(--mono); }
-  .pill.solid { background: var(--c); color: #fff; border-color: transparent; }
-
-  .foot {
-    margin-top: 34px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line);
-    padding-top: 18px; max-width: 74ch;
-  }
+  .pill.solid { background: #3b3f46; color: #fff; border-color: transparent; box-shadow: inset 0 0 0 2px #fff; }
+  .foot { margin-top: 34px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 18px; max-width: 76ch; }
   .foot code { font-family: var(--mono); font-size: 12px; background: color-mix(in oklab, var(--accent) 12%, transparent); padding: 1px 6px; border-radius: 5px; color: var(--ink); }
-  a { color: var(--accent); }
 </style>
 
 <div class="wrap">
   <div class="inner">
     <p class="eyebrow">DFM Studio · Viewer</p>
     <h1>Color system</h1>
-    <p class="lede">One validated language for every job color does in the analyzer — the 3D surface, its
-      legends, and the UI chrome. Each map below is chosen by what the data <em>is</em>, then checked with
-      the data-viz validator against the fixed viewer background <span style="font-family:var(--mono)">#21262c</span> — not by taste.</p>
+    <p class="lede">Every colour job mapped to an official perceptually-uniform, colour-blind-safe scientific
+      colour map — Crameri's <b>batlow</b> / <b>vik</b> / <b>berlin</b> and matplotlib's <b>inferno</b> — not a
+      hand-rolled ramp. Because these maps run dark→light, each shows the <b>background-matched variant</b> so the
+      informative end never sinks into the viewer, which now has a light and a dark mode.</p>
 
     <div class="jobs">
-      <div class="job"><b>Unsigned magnitude</b><span>Sequential — one hue, light→dark. Thickness, clearance.</span></div>
-      <div class="job"><b>Signed magnitude</b><span>Diverging — two poles, neutral zero. Draft ±, over/under target.</span></div>
-      <div class="job"><b>Segmented areas</b><span>Categorical ≤8, then a generator. BREP faces, regions.</span></div>
-      <div class="job"><b>Reserved meaning</b><span>Status &amp; highlights — always icon+label, never a series.</span></div>
+      <div class="job"><b>Absolute magnitude</b><span><code>batlowW / batlowK</code> — thickness, gap</span></div>
+      <div class="job"><b>Signed deviation</b><span><code>vik / berlin</code> — draft ±, over/under</span></div>
+      <div class="job"><b>Risk / severity</b><span><code>inferno</code> — high = worse</span></div>
+      <div class="job"><b>Segments &amp; state</b><span>categorical set · status · selection</span></div>
     </div>
 
     <div class="grid">
-      <!-- SEQUENTIAL -->
+      <!-- MAGNITUDE -->
       <div class="card">
-        <div class="card-h"><h2>Sequential</h2><span class="job-tag">unsigned magnitude</span></div>
-        <p class="use">Wall thickness, clearance, any “how much”. Light = near zero / at the limit, dark = the extreme.</p>
-        <div class="ramp" id="seq-ramp"></div>
-        <div class="ticks"><span>0 · at limit</span><span>½</span><span>max</span></div>
-        <div class="onpart"><span class="label">on&nbsp;part</span><span class="face" style="background:#93bcef"></span><span class="face" style="background:#3c7ac6"></span><span class="face" style="background:#0048a6"></span><span class="face" style="background:var(--mesh)"></span><span class="label">grey = ok / unmeasured</span></div>
-        <div class="verdict"><span class="pass">✓ monotonic L</span> single-hue blue · resolves against the grey mesh by hue</div>
+        <div class="card-h"><h2>Absolute magnitude</h2><span class="job-tag">sequential · batlow</span></div>
+        <p class="use">Thickness, gap, clearance. Perceptually even lightness — no false boundaries. The endpoint variant follows the background so the high end stays visible.</p>
+        <div class="panelpair">
+          <div class="vp dark"><div class="cap"><span>dark viewer</span><span>batlowW</span></div><div class="ramp" id="mag-d"></div><div class="ends"><span>low</span><span>high</span></div></div>
+          <div class="vp light"><div class="cap"><span>light viewer</span><span>batlowK</span></div><div class="ramp" id="mag-l"></div><div class="ends"><span>low</span><span>high</span></div></div>
+        </div>
+        <div class="verdict"><span class="pass">✓ perceptually uniform · CVD-safe · grayscale-safe</span></div>
       </div>
 
-      <!-- DIVERGING -->
+      <!-- SIGNED -->
       <div class="card">
-        <div class="card-h"><h2>Diverging</h2><span class="job-tag">signed magnitude</span></div>
-        <p class="use">Draft angle ±, deviation over/under a target. Neutral means exactly zero; the two poles read as opposite.</p>
-        <div class="ramp" id="div-ramp"></div>
-        <div class="ticks three"><span>− undercut</span><span>0</span><span>+ drafted</span></div>
-        <div class="onpart"><span class="label">on&nbsp;part</span><span class="face" style="background:#b63b32"></span><span class="face" style="background:#daa59e"></span><span class="face" style="background:#e8e8e8"></span><span class="face" style="background:#99b7dd"></span><span class="face" style="background:#186bc5"></span></div>
-        <div class="verdict"><span class="pass">✓ poles ΔE 22.8</span> neutral-0 · legend is the relief channel</div>
+        <div class="card-h"><h2>Signed deviation</h2><span class="job-tag">diverging · vik / berlin</span></div>
+        <p class="use">Draft ±, deviation over/under a target. The neutral centre is <b>zero</b> — and its lightness is picked to stay visible against the background.</p>
+        <div class="panelpair">
+          <div class="vp dark"><div class="cap"><span>dark viewer</span><span>vik</span></div><div class="ramp" id="sig-d"></div><div class="ends"><span>−</span><span>0 (white)</span><span>+</span></div></div>
+          <div class="vp light"><div class="cap"><span>light viewer</span><span>berlin</span></div><div class="ramp" id="sig-l"></div><div class="ends"><span>−</span><span>0 (black)</span><span>+</span></div></div>
+        </div>
+        <div class="verdict"><span class="pass">✓ poles read cool/warm</span> · white centre on dark, black centre on light</div>
+      </div>
+
+      <!-- SEVERITY -->
+      <div class="card">
+        <div class="card-h"><h2>Risk / severity</h2><span class="job-tag">sequential · inferno</span></div>
+        <p class="use">When high genuinely means worse (short-shot risk, freeze-off). Severe reads as bright &amp; hot; low risk recedes into the dark. Kept as-is on both backgrounds for now.</p>
+        <div class="panelpair">
+          <div class="vp dark"><div class="cap"><span>dark viewer</span><span>inferno</span></div><div class="ramp" id="sev-d"></div><div class="ends"><span>low risk</span><span>severe</span></div></div>
+          <div class="vp light"><div class="cap"><span>light viewer</span><span>inferno</span></div><div class="ramp" id="sev-l"></div><div class="ends"><span>low risk</span><span>severe</span></div></div>
+        </div>
+        <div class="verdict"><span class="warn">note</span> on light the pale severe-end softens — reverse (<code>inferno_r</code>) later if we want it to pop</div>
       </div>
 
       <!-- CATEGORICAL -->
       <div class="card span2">
-        <div class="card-h"><h2>Categorical &amp; the many-segment generator</h2><span class="job-tag">segmented areas</span></div>
-        <p class="use">Up to 8 <b>named</b> segments take fixed, ordered hues (a legend). Hundreds of BREP faces can’t be told apart by hue at all — they take a perceptual generator whose only promise is “neighbours differ”, with click-to-identify for the rest.</p>
+        <div class="card-h"><h2>Segmented areas &amp; the generator</h2><span class="job-tag">categorical</span></div>
+        <p class="use">Up to 8 <b>named</b> segments take fixed, ordered, validated hues. Hundreds of BREP faces can't be told apart by hue — they take a perceptual generator (neighbours differ) plus click-to-identify.</p>
         <div class="swatches" id="cat"></div>
         <div style="display:flex;flex-direction:column;gap:6px">
-          <div class="ticks"><span>generator · 96 face ids (golden-angle in OKLCH, constant lightness)</span></div>
+          <div class="ends" style="color:var(--faint)"><span>generator · 96 face ids (golden-angle in OKLCH)</span></div>
           <div class="strip" id="seg"></div>
         </div>
-        <div class="verdict"><span class="pass">✓ adjacent ΔE 8.4 · normal 19.3 · ≥3:1</span> for the 8 named slots. Freely-adjacent (any face touches any): <span class="warn">4-hue cap</span> → generator + click-to-ID beyond it.</div>
       </div>
 
-      <!-- STATUS / HIGHLIGHTS -->
-      <div class="card">
-        <div class="card-h"><h2>Status &amp; highlights</h2><span class="job-tag">reserved meaning</span></div>
-        <p class="use">Never used for a series. Single-sided judgements use the status scale; a signed bound reuses the diverging poles. Always shape + label, so state survives colour-blindness and grayscale.</p>
+      <!-- STATUS / SELECTION -->
+      <div class="card span2">
+        <div class="card-h"><h2>Status &amp; selection</h2><span class="job-tag">reserved meaning</span></div>
+        <p class="use">Never a series, never a field. Judgements use the status scale; selection is an outline, not a fill hue, so it reads over any map. Always shape + label.</p>
         <div class="hl">
           <span class="pill" style="--c:var(--good)"><span class="g">✓</span> correct</span>
           <span class="pill" style="--c:var(--critical)"><span class="g">✕</span> incorrect</span>
           <span class="pill" style="--c:var(--warning)"><span class="g">⚠</span> warning</span>
-          <span class="pill" style="--c:var(--serious)"><span class="g">▲</span> serious</span>
+          <span class="pill solid"><span class="g" style="color:#fff">◻</span> selected (outline)</span>
+          <span class="pill" style="--c:var(--accent)"><span class="g">●</span> active (UI only)</span>
         </div>
-        <div class="hl">
-          <span class="pill" style="--c:#b63b32"><span class="g">▼</span> too small</span>
-          <span class="pill" style="--c:#186bc5"><span class="g">▲</span> too large</span>
-          <span class="pill solid" style="--c:#3b3f46;box-shadow:inset 0 0 0 2px #fff"><span class="g" style="color:#fff">◻</span> selected</span>
-          <span class="pill" style="--c:var(--accent)"><span class="g">●</span> active</span>
-        </div>
-        <div class="verdict">reserved steps · <span class="warn">warning/serious sub-3:1 on light</span> → the icon+label pairing is the fix</div>
-      </div>
-
-      <!-- SHADING & EDGES -->
-      <div class="card">
-        <div class="card-h"><h2>Shading &amp; edges</h2><span class="job-tag">the quiet layer</span></div>
-        <p class="use">What everything else sits on: the neutral shaded mesh and the overlay lines. Kept low-chroma so data colour always wins.</p>
-        <div class="onpart">
-          <span class="face" style="background:var(--mesh)"></span>
-          <span class="label">base mesh</span>
-          <span class="face" style="background:#47525f"></span>
-          <span class="label">inaccessible / no&nbsp;data</span>
-        </div>
-        <div class="hl">
-          <span class="pill" style="--c:#ffd933"><span class="g">╱</span> parting line</span>
-          <span class="pill" style="--c:#14171c;background:#e8e8e8;color:#14171c"><span class="g">≈</span> isolines</span>
-          <span class="pill" style="--c:#ff4dbf"><span class="g">◠</span> weld line</span>
-        </div>
-        <div class="verdict">overlays reserve the vivid warm/pink end so they never read as data</div>
       </div>
     </div>
 
-    <p class="foot">Source of truth: <code>frontend/src/viewer/colormaps.ts</code> — the same hex values render here and paint the
-      surface, so a legend can never disagree with its part. Adopting it in the shared painter (<code>colorizers/core.ts</code>)
-      replaces today’s rainbow ramp; that touches the original viewer too, so it’s the next step to green-light rather than a
-      silent change.</p>
+    <p class="foot">Source of truth: <code>frontend/src/viewer/colormaps.ts</code> — the same official LUT values paint the
+      surface and render here, background-aware, so a legend can never disagree with its part. The viewer now switches
+      background (and colour-map variant) with the theme.</p>
   </div>
 </div>
 
 <script>
-  const SEQ = ['#d5eeff','#bfddff','#a9ccf9','#93bcef','#7eabe5','#689bdb','#538ad1','#3c7ac6','#236abc','#0059b1','#0048a6'];
-  const DIV = ['#b63b32','#c46257','#d0847a','#daa59e','#e2c6c2','#e8e8e8','#c0cfe3','#99b7dd','#729ed6','#4a85ce','#186bc5'];
-  const CAT = ['#3987e5','#008300','#d55181','#c98500','#199e70','#d95926','#9085e9','#e66767'];
-  const grad = (stops) => `linear-gradient(90deg, ${stops.map((c,i)=>`${c} ${Math.round(i/(stops.length-1)*100)}%`).join(', ')})`;
-  document.getElementById('seq-ramp').style.background = grad(SEQ);
-  document.getElementById('div-ramp').style.background = grad(DIV);
+  const MAPS = {
+    batlowW: ["#011959","#0d335e","#114360","#28655f","#437254","#687f41","#948f32","#ba9333","#d8a566","#edaf8f","#f8bdaf","#fed1cd","#ffe8e7","#fff6f6","#fffefe"],
+    batlowK: ["#04050a","#131e2d","#21384f","#33505e","#49625a","#63724b","#83813d","#a38e38","#c29840","#de9f55","#f1a678","#fcb2aa","#fdbac3","#fdbfd3","#faccfa"],
+    vik: ["#001261","#022e73","#034280","#136697","#2b79a4","#4e92b4","#74aac5","#9ac2d5","#c0d8e4","#e7e7e7","#eee3dc","#d9a486","#b08056","#af4310","#590008"],
+    berlin: ["#9eb0ff","#74aaeb","#60a5df","#122c38","#170d0b","#1d0b05","#280d01","#3c1101","#501803","#732b16","#964a36","#ba6b5f","#df8f89","#ffadad"],
+    inferno: ["#000004","#130a30","#340a5f","#55106d","#751b6e","#942568","#b3325a","#d04545","#e55c30","#f57d15","#fca80d","#fac62d","#fafda1"],
+  };
+  const CAT = ["#3987e5","#008300","#d55181","#c98500","#199e70","#d95926","#9085e9","#e66767"];
+  const grad = s => `linear-gradient(90deg, ${s.map((c,i)=>`${c} ${Math.round(i/(s.length-1)*100)}%`).join(', ')})`;
+  const set = (id, m) => { const el = document.getElementById(id); if (el) el.style.background = grad(MAPS[m]); };
+  set('mag-d','batlowW'); set('mag-l','batlowK');
+  set('sig-d','vik'); set('sig-l','berlin');
+  set('sev-d','inferno'); set('sev-l','inferno');
 
   const cat = document.getElementById('cat');
-  CAT.forEach((c,i) => {
-    const el = document.createElement('div');
-    el.className = 'sw';
-    el.innerHTML = `<div class="chip" style="background:${c}"></div><small>slot ${i+1}</small>`;
-    cat.appendChild(el);
-  });
-
-  // OKLCH -> sRGB, mirroring segment() in colormaps.ts
-  function oklch(L,C,hDeg){
-    const h=hDeg*Math.PI/180, a=C*Math.cos(h), b=C*Math.sin(h);
-    const l_=L+.3963377774*a+.2158037573*b, m_=L-.1055613458*a-.0638541728*b, s_=L-.0894841775*a-1.291485548*b;
-    const l=l_**3,m=m_**3,s=s_**3;
-    const f=x=>{x=x<=.0031308?12.92*x:1.055*x**(1/2.4)-.055;return Math.round(Math.min(1,Math.max(0,x))*255);};
-    return `rgb(${f(4.0767416621*l-3.3077115913*m+.2309699292*s)} ${f(-1.2684380046*l+2.6097574011*m-.3413193965*s)} ${f(-.0041960863*l-.7034186147*m+1.707614701*s)})`;
-  }
+  CAT.forEach((c,i) => { const el=document.createElement('div'); el.className='sw'; el.innerHTML=`<div class="chip" style="background:${c}"></div><small>slot ${i+1}</small>`; cat.appendChild(el); });
+  function oklch(L,C,hDeg){const h=hDeg*Math.PI/180,a=C*Math.cos(h),b=C*Math.sin(h);const l_=L+.3963377774*a+.2158037573*b,m_=L-.1055613458*a-.0638541728*b,s_=L-.0894841775*a-1.291485548*b;const l=l_**3,m=m_**3,s=s_**3;const f=x=>{x=x<=.0031308?12.92*x:1.055*x**(1/2.4)-.055;return Math.round(Math.min(1,Math.max(0,x))*255);};return `rgb(${f(4.0767416621*l-3.3077115913*m+.2309699292*s)} ${f(-1.2684380046*l+2.6097574011*m-.3413193965*s)} ${f(-.0041960863*l-.7034186147*m+1.707614701*s)})`;}
   const seg = document.getElementById('seg');
-  for (let id=0; id<96; id++) {
-    const s = document.createElement('span');
-    s.style.background = oklch(0.62, 0.13, (id*137.508)%360);
-    seg.appendChild(s);
-  }
+  for (let id=0; id<96; id++){ const s=document.createElement('span'); s.style.background=oklch(0.62,0.13,(id*137.508)%360); seg.appendChild(s); }
 </script>
