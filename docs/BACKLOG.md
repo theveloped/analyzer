@@ -288,46 +288,31 @@ out of scope. Stage 1 ports the pure core into `pressbrake/` here with
 a `KinematicGraph` adapter built from our unfold outputs (bypassing
 their OCC `extract.py`).
 
-### 16. Stage 2 — mesh-backed fold simulation, collision oracle and viewer animation
+### 16. Stage 2 tail — fold simulation polish (core LANDED 2026-07-18)
 
-**Problem/goal.** The ported collision oracle models the part as
-thickness-inflated flat 2D slices with a crude exclusion disk standing
-in for the bend arc, and validation is matplotlib-only. We hold assets
-instapart never had: the fine mesh with per-triangle BREP provenance
-(`brep_faces.npy`), per-face flat-layout transforms from
-`unfold.Unfolder`, and meshlib's native mesh collision
-(`mrmeshpy` `findCollidingTriangles` family). Build the high-fidelity
-verifier + the interactive viewer animation on those.
+The mesh-backed fold simulation, bend-sequence viewer animation and
+meshlib plan verifier landed (schema-2 bend_plan: fold coordinates +
+`foldmesh.pose_vertices` + `meshcheck.check_plan` + the
+`bend_sequence` viewer mode; see docs/CODEMAP.md). Deferred tail, in
+rough order of value:
 
-**Approach.**
-- Partition the fine mesh per panel via `brep_faces.npy` + the panel
-  `face_hashes`/face-id lists the stage-1 adapter records; pose panels
-  with `kinematics.fold_transforms` matrices.
-- Deform bend-zone triangles instead of excluding them: each vertex's
-  flat position along the unroll direction maps to an angle fraction of
-  the current stroke — vertex on the arc at
-  `r_neutral(k)`-based radius (the unroll already gives every bend-zone
-  vertex its scaled-u coordinate; invert that mapping). This yields a
-  true partially-folded solid at any φ — replaces `pivot_exclusion`
-  and realizes upstream roadmap phase 8 better than planned.
-- Collision: extrude punch/die/ram/table YZ profiles (already polygons
-  in `machine.ToolProfile`) into meshlib meshes across the installed
-  section X-spans; `findCollidingTriangles` against the posed part
-  mesh per sampled φ. Keep the analytic envelope as the fast
-  search-time pruner; the mesh check verifies final plans (mind hard
-  rule: meshlib never concurrent).
-- Viewer: a fold-sequence slider in the sheetmetal plugin. Needs a new
-  scene capability (per-panel transform of vertex ranges — CPU
-  re-position of the un-indexed vertex buffer per frame is fine at our
-  mesh sizes); draw installed tool sections as translucent boxes.
-- Cross-validate exactly like upstream: every mesh-collision hit must
-  fall inside the analytic envelope's forbidden intervals (their
-  `test_envelope.py::test_envelope_contains_sampled_hits` pattern).
-
-**Verify.** Synthetic builders (box, offset_lip, notched) agree between
-mesh oracle and 2D oracle within tolerance; L-bracket fold animation
-visually correct in the viewer; a plan feasible per envelope is never
-contradicted by the mesh check on the corpus smoke parts.
+- **Part-frame animation toggle** — the animation renders in the
+  machine frame per step; a part-fixed view (camera follows the base
+  panel) would read better for flip-heavy sequences. All data present
+  (invert the stored per-step `placement`).
+- **Freeform (bspline) bend zones** — `compute_fold_mesh` bails with
+  `fold_mesh.available=false` when a bend face is not an analytic
+  cylinder; ties into the rolled-part classification item above.
+- **Punch-nose contact refinement** — the v1 punch height pins the tip
+  at the sharp-corner wing intersection, which sits below the real arc
+  apex; the mesh check therefore excludes active bend zones from
+  punch/die tests (mirroring the oracle's pivot exclusion). Positioning
+  the punch tangent to the true arc per φ would let the zone be
+  tested too and drive a real formed-radius model.
+- **Per-step x_offset** — stored plan steps assume x_offset 0 (v1
+  solver convention); thread it through `step_poses` and the viewer
+  when the solver starts using it.
+- Backgauge/handling/tonnage (upstream phase 7) remain out of scope.
 
 ### 17. Stage 3 — self-centering vise / workholding analysis for CNC (tooling-solver reuse)
 
