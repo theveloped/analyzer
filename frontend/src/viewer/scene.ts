@@ -15,6 +15,10 @@ export class Scene3D {
   private overlay = new THREE.Group();
   private colorAttr: THREE.BufferAttribute | null = null;
   private faceCount = 0;
+  private meshFaces: Uint32Array | null = null;
+  private originalPositions: Float32Array | null = null;
+  private originalNormals: Float32Array | null = null;
+  private animator: ((tMs: number) => void) | null = null;
   private graphPoints: THREE.Points | null = null;
   private graphLines: THREE.LineSegments | null = null;
   private graphColorAttr: THREE.BufferAttribute | null = null;
@@ -66,6 +70,13 @@ export class Scene3D {
     const animate = () => {
       if (this.disposed) return;
       requestAnimationFrame(animate);
+      if (this.animator) {
+        try {
+          this.animator(performance.now());
+        } catch {
+          this.animator = null; // a broken animator must not kill the loop
+        }
+      }
       this.controls.update(); // damping needs a per-frame update
       this.renderer.render(this.scene, this.camera);
     };
@@ -158,7 +169,104 @@ export class Scene3D {
     });
     this.mesh = new THREE.Mesh(geometry, material);
     this.colorAttr = geometry.attributes.color as THREE.BufferAttribute;
+    this.meshFaces = faces;
+    this.originalPositions = positions.slice();
+    this.originalNormals = (geometry.attributes.normal.array as Float32Array)
+      .slice();
     this.scene.add(this.mesh);
+  }
+
+  /** Re-pose the mesh from indexed per-vertex positions (V*3), expanded
+   * through the face index into the un-indexed buffer. null restores the
+   * original mesh (including the exact BREP normals). `smooth` recomputes
+   * lighting normals — skip it during playback and recompute on pause. */
+  setVertexPositions(verts: Float32Array | null, smooth = true) {
+    if (!this.mesh || !this.meshFaces) return;
+    const geometry = this.mesh.geometry as THREE.BufferGeometry;
+    const positionAttr = geometry.attributes.position as THREE.BufferAttribute;
+    const positions = positionAttr.array as Float32Array;
+    if (verts === null) {
+      if (this.originalPositions) positions.set(this.originalPositions);
+      if (this.originalNormals) {
+        (geometry.attributes.normal.array as Float32Array)
+          .set(this.originalNormals);
+        (geometry.attributes.normal as THREE.BufferAttribute)
+          .needsUpdate = true;
+      }
+    } else {
+      const faces = this.meshFaces;
+      for (let i = 0; i < faces.length; i++) {
+        const v = faces[i];
+        positions[3 * i] = verts[3 * v];
+        positions[3 * i + 1] = verts[3 * v + 1];
+        positions[3 * i + 2] = verts[3 * v + 2];
+      }
+      if (smooth) geometry.computeVertexNormals();
+    }
+    positionAttr.needsUpdate = true;
+    geometry.computeBoundingSphere();
+  }
+
+  /** Extrude a YZ profile polygon along machine X over the given spans and
+   * add the pieces as (usually translucent) overlay meshes. */
+  addOverlayMesh(spec: {
+    profile: [number, number][];
+    spans: [number, number][];
+    color: RGB;
+    opacity?: number;
+    yzOffset?: [number, number];
+    tag?: string;
+  }) {
+    const [dy, dz] = spec.yzOffset ?? [0, 0];
+    const shape = new THREE.Shape();
+    shape.moveTo(spec.profile[0][0] + dy, spec.profile[0][1] + dz);
+    for (let i = 1; i < spec.profile.length; i++) {
+      shape.lineTo(spec.profile[i][0] + dy, spec.profile[i][1] + dz);
+    }
+    shape.closePath();
+    const opacity = spec.opacity ?? 1;
+    for (const [x0, x1] of spec.spans) {
+      const geometry = new THREE.ExtrudeGeometry(shape, {
+        depth: x1 - x0, bevelEnabled: false,
+      });
+      const material = new THREE.MeshPhongMaterial({
+        color: new THREE.Color(...spec.color),
+        transparent: opacity < 1,
+        opacity,
+        depthWrite: opacity >= 1,
+        side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      // shape (u,v) is machine (Y,Z); the extrusion axis is machine X
+      mesh.matrixAutoUpdate = false;
+      mesh.matrix.set(
+        0, 0, 1, x0,
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 0, 1,
+      );
+      if (spec.tag) mesh.userData.tag = spec.tag;
+      mesh.renderOrder = 1;
+      this.overlay.add(mesh);
+    }
+  }
+
+  /** Move every overlay mesh carrying `tag` to world height dz (absolute,
+   * not cumulative) — e.g. the punch/ram following the stroke. */
+  shiftOverlay(tag: string, dz: number) {
+    for (const child of this.overlay.children) {
+      if (child.userData.tag === tag) {
+        // Matrix4.elements is column-major: [14] is the z translation
+        child.matrix.elements[14] = dz;
+      }
+    }
+  }
+
+  /** Register a per-frame callback run inside the render loop (null to
+   * remove). Only one animator at a time; the controller resets it on
+   * every repaint. */
+  setAnimator(fn: ((tMs: number) => void) | null) {
+    this.animator = fn;
   }
 
   /** Look at the part from an approach direction, slightly tilted. */
@@ -257,7 +365,7 @@ export class Scene3D {
   clearOverlays() {
     for (const child of [...this.overlay.children]) {
       this.overlay.remove(child);
-      if (child instanceof THREE.LineSegments) {
+      if (child instanceof THREE.LineSegments || child instanceof THREE.Mesh) {
         child.geometry.dispose();
         (child.material as THREE.Material).dispose();
       } else if (child instanceof THREE.ArrowHelper) {
@@ -366,6 +474,7 @@ export class Scene3D {
   clearMesh() {
     this.clearOverlays();
     this.clearGraph();
+    this.animator = null;
     if (this.mesh) {
       this.scene.remove(this.mesh);
       this.mesh.geometry.dispose();
@@ -373,6 +482,9 @@ export class Scene3D {
       this.mesh = null;
       this.colorAttr = null;
       this.faceCount = 0;
+      this.meshFaces = null;
+      this.originalPositions = null;
+      this.originalNormals = null;
     }
   }
 

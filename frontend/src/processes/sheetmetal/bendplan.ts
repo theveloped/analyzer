@@ -16,14 +16,14 @@ const AXES: RGB = [0.95, 0.66, 0.23];
 const REQUIRED: RGB = [0.4, 0.78, 0.42];
 const FORBIDDEN: RGB = [0.88, 0.29, 0.23];
 
-function latestBendPlan(ctx: ViewCtx): ResultEntry | null {
+export function latestBendPlan(ctx: ViewCtx): ResultEntry | null {
   const results = ctx.manifest.results.filter((r) => r.process === 'sheet_metal'
     && r.analysis === 'bend_plan' && !r.stale
     && r.params.schema === BENDPLAN_SCHEMA);
   return results.length ? results[results.length - 1] : null;
 }
 
-function planField(
+export function planField(
   ctx: ViewCtx, result: ResultEntry, name: string,
 ): FieldDescriptor | null {
   return ctx.manifest.fields.find(

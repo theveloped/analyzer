@@ -132,6 +132,7 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
 }
 
 import { bendPlanMode, inspectBendPlan } from './bendplan';
+import { bendSequenceMode } from './bendsequence';
 import { SheetMetalControls } from './Controls';
 import { patternMode } from './pattern';
 
@@ -144,8 +145,8 @@ async function inspectAll(face: number, ctx: ViewCtx): Promise<string[]> {
 export const sheetMetalPlugin: ProcessPlugin = {
   processId: 'sheet_metal',
   label: 'Sheet metal',
-  modes: [patternMode, bendPlanMode, rolesMode, bendRadiusMode,
-          faceAttrsMode, brepFacesMode, highlightsMode],
+  modes: [patternMode, bendPlanMode, bendSequenceMode, rolesMode,
+          bendRadiusMode, faceAttrsMode, brepFacesMode, highlightsMode],
   defaults: () => ({}),
   Controls: SheetMetalControls,
   inspect: inspectAll,
