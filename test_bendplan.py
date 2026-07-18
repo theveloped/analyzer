@@ -329,6 +329,77 @@ def fixture_fold_mesh(check, tmp):
           and stats["tooling"]["punches"] and stats["tooling"]["dies"], "")
 
 
+def fixture_mesh_check(check, tmp):
+    import processes
+    from processes.base import apply_defaults
+    from pressbrake import envelope as envelope_mod
+    from pressbrake import foldmesh, meshcheck
+    from pressbrake import plan as plan_mod
+    from pressbrake.intervals import IntervalSet
+    from pressbrake.machine import ToolProfile, load_dies
+    from pressbrake.model import BendAction
+
+    # (a) the feasible U-channel plan verifies clean against the real mesh
+    workdir = os.path.join(tmp, "bp_channel")
+    analysis = processes.get_analysis("sheet_metal", "bend_plan")
+    merged = apply_defaults(analysis, {"mesh_check": True})
+    stats = analysis.run(workdir, merged, None).stats
+    verdict = stats["mesh_check"]
+    check("mesh check: U-channel best plan clean",
+          verdict is not None and verdict["clean"],
+          "missing" if verdict is None else f"clean={verdict['clean']}")
+
+    # (b) a deliberately fat punch must collide with the rising flange, and
+    # every mesh hit must lie inside the analytic envelope's forbidden
+    # intervals (the envelope-contains-mesh-hits cross-validation)
+    workdir = os.path.join(tmp, "bp_bracket")
+    graph, info = adapter.build_kinematic_graph(workdir, keep_unfold=True)
+    fold = adapter.compute_fold_mesh(workdir, graph, info)
+    plan_mod._apply_springback(graph, math.radians(2.0))
+    fine_faces = np.load(os.path.join(workdir, "fine_faces.npy"))
+
+    fat = ToolProfile(
+        id="FAT", kind="punch", height=60.0, tip_angle=math.radians(30),
+        profile=[[-45.0, 0.0], [45.0, 0.0], [45.0, 60.0], [-45.0, 60.0]])
+    die = load_dies()["D.V16.88"]
+    bend = graph.bends[0]
+    steps = [{"bend_ids": [0], "rotation": 0,
+              "flip": bool(bend.angle_target < 0)}]
+    steps[0].update(foldmesh.step_poses(graph, steps)[0])
+    span = {"runs": [{"sections": [{"x_start": 0.0, "x_end": 25.0}]}]}
+    plan_dict = {"steps": steps, "setups": [{
+        "punch_id": "FAT", "die_id": die.id, "step_indices": [0],
+        "punch": span, "die": span}]}
+    tooling = {
+        "punches": {"FAT": {
+            "profile": [[float(y), float(z)] for y, z in fat.profile],
+            "height": 60.0}},
+        "dies": {die.id: {
+            "profile": [[float(y), float(z)] for y, z in die.profile],
+            "height": float(die.height)}},
+        "machine": {},
+    }
+    result = meshcheck.check_plan(
+        graph, fold["flat_verts"], fold["vertex_panel"],
+        fold["vertex_bend"], fine_faces, plan_dict, tooling)
+    punch_hits = [hit for step in result["steps"] for hit in step["hits"]
+                  if hit["tool"] == "punch"]
+    check("mesh check: fat punch collides", not result["clean"]
+          and punch_hits, f"{len(punch_hits)} phi samples hit")
+
+    action = BendAction(bend_ids=(0,), flip=bend.angle_target < 0,
+                        rotation=0)
+    env = envelope_mod.compute_envelope(
+        graph, np.zeros(1), action, fat, die, None)
+    forbidden = env.forbidden_punch.buffer(meshcheck.DEFAULT_EPS + 2.0)
+    contained = all(
+        forbidden.contains(IntervalSet([tuple(hit["x"])]))
+        for hit in punch_hits)
+    check("mesh check: hits within the analytic forbidden set",
+          bool(punch_hits) and contained,
+          f"forbidden {forbidden.to_pairs()}")
+
+
 def main():
     failures = []
     check = check_factory(failures)
@@ -344,6 +415,8 @@ def main():
         fixture_analysis(check, tmp)
         print("=== fixture 5: fold mesh + partial-fold model ===")
         fixture_fold_mesh(check, tmp)
+        print("=== fixture 6: meshlib collision verification ===")
+        fixture_mesh_check(check, tmp)
 
     if failures:
         print(f"{len(failures)} CHECKS FAILED: {failures}")

@@ -109,6 +109,9 @@ export const bendSequenceMode: ViewMode = {
     const vertexPanel = await need('vertex_panel') as Uint8Array;
     const vertexBend = await need('vertex_bend') as Uint8Array;
     const panelId = await need('panel_id') as Uint8Array;
+    const collisionDesc = planField(ctx, result, 'collision_faces');
+    const collision = collisionDesc
+      ? await ctx.getField(collisionDesc) as Uint8Array : null;
 
     // face-level bend ownership (majority of the three corners)
     const faceBend = new Uint8Array(ctx.faceCount);
@@ -134,6 +137,7 @@ export const bendSequenceMode: ViewMode = {
       donePanels.add(graph.bends[bendId].child_panel);
     }
     ctx.paintFaces((f) => {
+      if (collision?.[f]) return COL.tip; // mesh-check collision faces (red)
       if (faceBend[f]) {
         const bendId = faceBend[f] - 1;
         if (activeBends.has(bendId)) return ACTIVE;

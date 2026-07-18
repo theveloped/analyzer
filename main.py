@@ -119,6 +119,7 @@ if __name__ == "__main__":
     parser_bendplan.add_argument("--margin", help="collision clearance margin in mm (default: 2.0)", type=float, default=2.0)
     parser_bendplan.add_argument("--springback", help="springback overbend delta in degrees (default: 2.0)", type=float, default=2.0)
     parser_bendplan.add_argument("--no_search", help="skip the sequence search (fixed-order plan only)", action="store_true")
+    parser_bendplan.add_argument("--mesh_check", help="verify the best plan with the meshlib collision check (posed fine mesh vs extruded tool sections)", action="store_true")
     parser_bendplan.add_argument("--solutions", help="ranked plans to keep (default: 4)", type=int, default=4)
     parser_bendplan.add_argument("--serve", help="serve results in browser", action="store_true")
 
@@ -437,8 +438,20 @@ if __name__ == "__main__":
             "springback_deg": args.springback,
             "search": not args.no_search,
             "solutions": args.solutions,
+            "mesh_check": args.mesh_check,
         })
         stats = analysis.run(args.directory, merged, None).stats
+        if stats.get("mesh_check"):
+            verdict = stats["mesh_check"]
+            logger.info(
+                f"  mesh check: {'CLEAN' if verdict['clean'] else 'COLLIDES'}"
+                f" (eps {verdict['eps']} mm, "
+                f"{verdict['phi_step_deg']:.1f} deg steps)")
+            for step in verdict["steps"]:
+                if not step["clean"]:
+                    tools = sorted({hit['tool'] for hit in step['hits']})
+                    logger.warning(f"    step {step['step']}: hits on "
+                                   f"{', '.join(tools)}")
         logger.info(
             f"Bend plan [{stats['mode']}]: "
             f"{'FEASIBLE' if stats['feasible'] else 'NOT FEASIBLE'} — "

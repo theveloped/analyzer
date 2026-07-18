@@ -299,6 +299,32 @@ def run_bend_plan(workdir, params, progress):
                 step.update(pose)
             plan_dicts.append(dumped)
 
+    tooling = _tooling_stats(machine, punches, dies, plan_dicts, actions)
+
+    # optional meshlib verification of the best plan against the posed
+    # fine mesh (single job worker: meshlib never runs concurrently)
+    mesh_check = None
+    best_plan = next((p for p in plan_dicts if p["feasible"]), None)
+    if params["mesh_check"] and fold["available"] and best_plan is not None:
+        from pressbrake import meshcheck
+        if progress is not None:
+            progress(0.96, "mesh collision check")
+        fine_faces = np.load(os.path.join(workdir,
+                                          pipeline.FINE_FACES_FILE))
+        mesh_check = meshcheck.check_plan(
+            search_graph, fold["flat_verts"], fold["vertex_panel"],
+            fold["vertex_bend"], fine_faces, best_plan, tooling,
+            progress=progress)
+        hit_faces = mesh_check.pop("hit_faces")
+        if hit_faces:
+            collision = np.zeros(len(fine_faces), dtype="<u1")
+            collision[sorted(hit_faces)] = 1
+            arrays["collision_faces"] = collision
+            field_meta["collision_faces"] = {
+                "kind": "mesh_check", "association": "face",
+                "role": "category", "dtype": "u1",
+                "labels": ["clear", "collision"]}
+
     stats = {
         "feasible": bool(search_result.feasible if search_result is not None
                          else plan_report.feasible),
@@ -320,8 +346,8 @@ def run_bend_plan(workdir, params, progress):
         "warnings": sorted(set(warnings)),
         "origin": [float(origin[0]), float(origin[1])],
         "fold_mesh": fold_stats,
-        "tooling": _tooling_stats(machine, punches, dies, plan_dicts,
-                                  actions),
+        "tooling": tooling,
+        "mesh_check": mesh_check,
     }
 
     store_result(workdir, "sheet_metal", "bend_plan", cache_params, stats,
@@ -403,6 +429,9 @@ PROCESS = ProcessDef(
                       label="Sequence search + setup optimisation"),
                 Param("solutions", "int", default=4, min=1,
                       label="Ranked plans to keep"),
+                Param("mesh_check", "bool", default=False,
+                      label="Verify the best plan with the meshlib "
+                            "collision check"),
                 Param("min_thickness", "number", default=0.1, unit="mm",
                       min=0, label="Minimum sheet thickness"),
             ],
