@@ -1,6 +1,6 @@
 """Registry of manufacturing processes and their analyses."""
 
-from processes import cnc, injection_molding, prep, sheet_metal
+from processes import cnc, injection_molding, prep, sheet_metal, tube_laser
 from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             apply_defaults)
 
@@ -9,6 +9,7 @@ REGISTRY = {process.id: process for process in (
     cnc.PROCESS,
     injection_molding.PROCESS,
     sheet_metal.PROCESS,
+    tube_laser.PROCESS,
 )}
 
 

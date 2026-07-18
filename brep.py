@@ -86,9 +86,11 @@ def _surface_params(surf):
         return {"type": "plane",
                 "normal": _xyz(surf.Plane().Axis().Direction())}
     if kind == GeomAbs_SurfaceType.GeomAbs_Cylinder:
-        axis = surf.Cylinder().Axis()
+        cylinder = surf.Cylinder()
+        axis = cylinder.Axis()
         return {"type": "cylinder", "point": _xyz(axis.Location()),
-                "axis": _xyz(axis.Direction())}
+                "axis": _xyz(axis.Direction()),
+                "radius": float(cylinder.Radius())}
     if kind == GeomAbs_SurfaceType.GeomAbs_Cone:
         cone = surf.Cone()
         axis = _xyz(cone.Axis().Direction())
@@ -99,12 +101,15 @@ def _surface_params(surf):
         return {"type": "cone", "apex": _xyz(cone.Apex()), "axis": axis,
                 "alpha": alpha}
     if kind == GeomAbs_SurfaceType.GeomAbs_Sphere:
-        return {"type": "sphere", "center": _xyz(surf.Sphere().Location())}
+        sphere = surf.Sphere()
+        return {"type": "sphere", "center": _xyz(sphere.Location()),
+                "radius": float(sphere.Radius())}
     if kind == GeomAbs_SurfaceType.GeomAbs_Torus:
         torus = surf.Torus()
         return {"type": "torus", "center": _xyz(torus.Location()),
                 "axis": _xyz(torus.Axis().Direction()),
-                "major_radius": float(torus.MajorRadius())}
+                "major_radius": float(torus.MajorRadius()),
+                "minor_radius": float(torus.MinorRadius())}
     return None
 
 

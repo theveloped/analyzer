@@ -6,6 +6,7 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             load_cached_result, store_result)
 
 SETUPS_SCHEMA = 3  # result schema version, salted into the cache key
+FEATURES_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/features.ts
 
 # default library: 3 flat endmills + 2 ball mills, each at its longest
 # practical reach (stickout 5xD) with the shank as the holder cylinder
@@ -66,6 +67,27 @@ def run_setup_verdict(workdir, params, progress):
     return AnalysisResult(stats=result["stats"], fields=list(result["arrays"]))
 
 
+def run_features(workdir, params, progress):
+    cache_params = {**params, "schema": FEATURES_SCHEMA,
+                    "mesh": pipeline.mesh_fingerprint(workdir),
+                    "aag": pipeline.aag_fingerprint(workdir)}
+    cached = load_cached_result(workdir, "cnc", "features", cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    import machining_features
+    result = machining_features.recognize_features(
+        workdir, axis_angle_tol=params["axis_angle_tol"],
+        axis_dist_tol=params["axis_dist_tol"],
+        include_pockets=params["include_pockets"], progress=progress)
+
+    store_result(workdir, "cnc", "features", cache_params, result["stats"],
+                 arrays=result["arrays"], field_meta=result["field_meta"])
+    return AnalysisResult(stats=result["stats"],
+                          fields=list(result["arrays"]))
+
+
 def _tips(params):
     """Accept tip specs as 'D:rc' strings or [D, rc] pairs."""
     tips = []
@@ -111,6 +133,24 @@ PROCESS = ProcessDef(
     label="CNC machining",
     description="Setup combinations (3-axis / indexed 3+2) and tool reachability: tip gap, holder clearance and stickout fields per approach direction.",
     analyses=[
+        AnalysisDef(
+            id="features",
+            label="Feature recognition",
+            description="Rule-based machining features from the BREP "
+                        "adjacency graph: through/blind holes, counterbores, "
+                        "countersinks (coaxial cylinder/cone stacks) and "
+                        "best-effort pockets, with diameters, depths and axes.",
+            requires=["prep/aag"],
+            params=[
+                Param("axis_angle_tol", "number", default=1.0, unit="deg",
+                      min=0, label="Coaxiality angle tolerance"),
+                Param("axis_dist_tol", "number", default=1e-2, unit="mm",
+                      min=0, label="Coaxiality axis distance tolerance"),
+                Param("include_pockets", "bool", default=True,
+                      label="Emit best-effort pockets"),
+            ],
+            run=run_features,
+        ),
         AnalysisDef(
             id="setups",
             label="Setup combinations",

@@ -194,6 +194,11 @@ function buildCtx(): ViewCtx | null {
     },
     paintGraph: (colorOf) => theScene.paintGraph(colorOf),
     setMeshOpacity: (alpha) => theScene.setMeshOpacity(alpha),
+    setVertexPositions: (positions, smooth) =>
+      theScene.setVertexPositions(positions, smooth),
+    addOverlayMesh: (spec) => theScene.addOverlayMesh(spec),
+    shiftOverlay: (tag, dz) => theScene.shiftOverlay(tag, dz),
+    setAnimator: (fn) => theScene.setAnimator(fn),
   };
 }
 
@@ -227,6 +232,9 @@ async function repaint() {
   if (!plugin || !mode) return;
   graphTouched = false;
   scene?.setMeshOpacity(1);
+  // animation state never outlives a paint: modes re-register in paint()
+  scene?.setAnimator(null);
+  scene?.setVertexPositions(null);
   try {
     scene?.clearOverlays();
     const info = await mode.paint(ctx);

@@ -48,6 +48,25 @@ export interface ViewCtx {
   paintGraph(colorOf: (node: number) => RGB): void;
   /** Mesh transparency, e.g. to see a graph overlay inside the part. */
   setMeshOpacity(alpha: number): void;
+  /** Re-pose the mesh from indexed per-vertex positions (V*3); null
+   * restores the original geometry. `smooth` recomputes lighting normals
+   * (skip during playback, recompute on pause). */
+  setVertexPositions(verts: Float32Array | null, smooth?: boolean): void;
+  /** Extrude a YZ profile along X over spans as a translucent overlay
+   * mesh (tool/machine sections). Cleared on every repaint. */
+  addOverlayMesh(spec: {
+    profile: [number, number][];
+    spans: [number, number][];
+    color: RGB;
+    opacity?: number;
+    yzOffset?: [number, number];
+    tag?: string;
+  }): void;
+  /** Move tagged overlay meshes to world height dz (absolute). */
+  shiftOverlay(tag: string, dz: number): void;
+  /** Per-frame callback inside the render loop (null to remove). Reset on
+   * every repaint — a mode must re-register in paint(). */
+  setAnimator(fn: ((tMs: number) => void) | null): void;
 }
 
 export interface ViewMode {
