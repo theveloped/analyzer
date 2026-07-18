@@ -1,0 +1,21 @@
+# Demo press brake: a generic 135t x 3100 machine.
+# Profiles are YZ polygons in mm.  The ram profile has its bottom (punch
+# clamp) edge at local z=0; the table profile has its top (die seat) edge at
+# local z=0.  They are positioned at runtime from the installed tool heights.
+machine:
+  name: generic-135t-3100
+  x_length: 3100.0
+  daylight: 470.0
+  stroke: 200.0
+  throat_depth: 410.0
+  max_force_kn: 1350.0
+  ram_profile:
+    - [-30.0, 0.0]
+    - [30.0, 0.0]
+    - [30.0, 500.0]
+    - [-30.0, 500.0]
+  table_profile:
+    - [-30.0, -500.0]
+    - [30.0, -500.0]
+    - [30.0, 0.0]
+    - [-30.0, 0.0]

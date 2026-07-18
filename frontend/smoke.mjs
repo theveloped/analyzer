@@ -46,6 +46,19 @@ await page.waitForTimeout(1500);
 report.push('IM assignment: ' + ((await page.locator('.stats').textContent().catch(() => '')) || '').split('\n')[0]);
 await page.screenshot({ path: process.env.SHOT_DIR + '/im_assignment.png' });
 
+// sheet metal tab: walk the modes; testpart_42 is not a sheet, so most
+// error into .stats (the ⚠ banner) — the walk only asserts nothing crashes
+await page.click('.tabs button:nth-child(3)');
+await page.waitForTimeout(1000);
+for (const mode of ['flat_pattern', 'bend_plan', 'bend_sequence', 'sheet_roles']) {
+  await modeSelect.selectOption(mode).catch(() => {});
+  await page.waitForTimeout(700);
+  const stats = await page.locator('.stats').textContent().catch(() => '');
+  report.push(`sheet/${mode}: stats=${(stats || '').split('\n')[0].slice(0, 90)}`);
+}
+await page.click('.tabs button:nth-child(1)');
+await page.waitForTimeout(700);
+
 // click to inspect
 await page.mouse.click(900, 450);
 await page.waitForTimeout(500);

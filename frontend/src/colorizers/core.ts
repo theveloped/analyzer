@@ -496,6 +496,68 @@ export const brepFacesMode: ViewMode = {
   },
 };
 
+/** STEP-assigned face colors and names (face_attrs.json from the import
+ * front-end), painted per source BREP face. Named / PMI-annotated faces get
+ * click-to-fly legend entries. */
+export const faceAttrsMode: ViewMode = {
+  id: 'face_attrs',
+  label: 'STEP colors / names',
+  async paint(ctx) {
+    const url = ctx.manifest.face_attrs_url;
+    if (!url) {
+      throw new Error('no STEP face attributes — import the part from a STEP file that carries colors/names (explode command or upload)');
+    }
+    const attrs = await (await fetch(url)).json();
+    const desc = ctx.manifest.fields.find((f) => f.id === 'brep_faces');
+    if (!desc) throw new Error('no BREP face ids — re-mesh the part from its STEP file');
+    const ids = await ctx.getField(desc) as Uint32Array;
+
+    const byId = new Map<number, { color: RGB | null; name: string | null; pmi_refs: number[] }>();
+    for (const [key, value] of Object.entries(attrs.faces ?? {})) {
+      byId.set(parseInt(key, 10), value as any);
+    }
+    const base: RGB = attrs.part_color ?? COL.ok;
+    const tracker = new FocusTracker(ctx);
+    ctx.paintFaces((f) => {
+      const entry = byId.get(ids[f]);
+      if (entry?.name) tracker.add(`name:${ids[f]}`, f);
+      if (entry?.pmi_refs?.length) tracker.add(`pmi:${ids[f]}`, f);
+      return (entry?.color as RGB) ?? base;
+    });
+
+    let colored = 0;
+    let named = 0;
+    let annotated = 0;
+    const legend: LegendEntry[] = [];
+    for (const [id, entry] of byId) {
+      if (entry.color) colored++;
+      if (entry.pmi_refs?.length) annotated++;
+      if (entry.name) {
+        named++;
+        if (legend.length < 10) {
+          legend.push({
+            color: (entry.color as RGB) ?? base,
+            label: `“${entry.name}”`,
+            focus: tracker.focus(`name:${id}`),
+          });
+        }
+      }
+    }
+    if (annotated) {
+      legend.push({
+        color: COL.side,
+        label: `${annotated} PMI-annotated faces`,
+        focus: tracker.merged(tracker.keys('pmi:')),
+      });
+    }
+    if (attrs.part_color) legend.push({ color: base, label: 'part color' });
+    return {
+      legend,
+      stats: `${colored} colored, ${named} named, ${annotated} PMI-annotated BREP faces`,
+    };
+  },
+};
+
 /** "Last CLI highlights.json" — process-agnostic replay of the legacy result. */
 export const highlightsMode: ViewMode = {
   id: 'highlights',
