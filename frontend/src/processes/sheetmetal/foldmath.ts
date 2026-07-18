@@ -275,10 +275,25 @@ export function poseVertices(
 
 const poseScratch = new Float32Array(6);
 
+/** Vertical descent of the bend line into the V die at stroke phi — the
+ * wings pivot on the die shoulder lines, so the part sinks as they
+ * incline. Mirror of foldmesh.stroke_descent. */
+export function strokeDescent(
+  thickness: number, vWidth: number | null | undefined, phi: number,
+): number {
+  if (!vWidth) return 0;
+  const halfAngle = Math.min(Math.abs(phi), HEM_CAP) / 2;
+  return (vWidth / 2) * Math.tan(halfAngle)
+    - (thickness / 2) / Math.cos(halfAngle) + thickness / 2;
+}
+
 /** The machine pose premultiply of one plan step at stroke phi:
- * R_x(lift_sign * phi / 2) @ placement (both stored per step). */
+ * T_z(-descent) @ R_x(lift_sign * phi / 2) @ placement. */
 export function machinePremultiply(
-  placement: number[], liftSign: number, phi: number,
+  placement: number[], liftSign: number, phi: number, descent = 0,
 ): Mat4 {
-  return matMul(rotationX(liftSign * phi / 2), Float64Array.from(placement));
+  const m = matMul(rotationX(liftSign * phi / 2),
+    Float64Array.from(placement));
+  m[11] -= descent; // row-major: the z translation
+  return m;
 }

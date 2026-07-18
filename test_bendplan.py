@@ -399,6 +399,20 @@ def fixture_mesh_check(check, tmp):
           bool(punch_hits) and contained,
           f"forbidden {forbidden.to_pairs()}")
 
+    # stroke descent: zero when flat / no V; the wing bottom surface rides
+    # the die shoulder line at every angle (the defining identity)
+    thickness, v_width = 2.0, 16.0
+    check("stroke descent: zero flat / no V width",
+          foldmesh.stroke_descent(thickness, v_width, 0.0) == 0.0
+          and foldmesh.stroke_descent(thickness, None, 1.0) == 0.0, "")
+    on_shoulder = True
+    for phi in (0.3, 0.9, math.pi / 2):
+        descent = foldmesh.stroke_descent(thickness, v_width, phi)
+        bottom = (v_width / 2) * math.tan(phi / 2) \
+            - (thickness / 2) / math.cos(phi / 2) - descent
+        on_shoulder &= abs(bottom - (-thickness / 2)) < 1e-12
+    check("stroke descent: wing bottom rides the shoulder", on_shoulder, "")
+
 
 def main():
     failures = []

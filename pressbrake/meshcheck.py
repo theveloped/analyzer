@@ -77,6 +77,9 @@ def check_plan(graph, flat_verts, vertex_panel, vertex_bend, fine_faces,
             active |= np.asarray(vertex_bend) == bend_id + 1
         zone_faces = active[fine_faces].any(axis=1)
 
+        die_stats = tooling.get("dies", {}).get(setup["die_id"]) or {}
+        v_width = die_stats.get("v_width")
+
         count = max(int(math.ceil(phi_target / phi_step)), 1)
         for phi in np.linspace(phi_target / count, phi_target, count):
             theta = np.array(theta_before)
@@ -86,8 +89,13 @@ def check_plan(graph, flat_verts, vertex_panel, vertex_bend, fine_faces,
                 graph, flat_verts, vertex_panel, vertex_bend, theta)
             machine = kinematics.rotation_x(lift_sign * phi / 2.0) @ placement
             posed = posed @ machine[:3, :3].T + machine[:3, 3]
+            # the part sinks into the V as the wings pivot on the die
+            # shoulders; the punch/ram ride down with it
+            descent = foldmesh.stroke_descent(thickness, v_width, phi)
+            posed[:, 2] -= descent
 
-            shift = _punch_shift(thickness, phi) - _punch_shift(thickness, 0)
+            shift = _punch_shift(thickness, phi) - _punch_shift(thickness, 0) \
+                - descent
             hits = _collisions(posed, fine_faces, tools, shift, zone_faces,
                                mm)
             for name, faces in hits:

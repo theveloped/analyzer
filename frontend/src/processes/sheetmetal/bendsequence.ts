@@ -11,7 +11,7 @@ import type { LegendEntry, RGB, ViewMode } from '../../registry/types';
 import { useStore } from '../../state/store';
 import { latestBendPlan, planField } from './bendplan';
 import type { GraphStats } from './foldmath';
-import { machinePremultiply, poseVertices } from './foldmath';
+import { machinePremultiply, poseVertices, strokeDescent } from './foldmath';
 
 const ACTIVE: RGB = [0.95, 0.66, 0.23];
 const PENDING: RGB = [0.6, 0.62, 0.66];
@@ -201,6 +201,7 @@ export const bendSequenceMode: ViewMode = {
     const posed = new Float32Array(flat.length);
     const theta = new Float64Array(graph.bends.length);
     const phiRelaxed = Math.abs(primary.angle_relaxed);
+    const dieVWidth = setup ? tooling.dies?.[setup.die_id]?.v_width : null;
     let lastKey = '';
     let lastTime: number | null = null;
     ctx.setAnimator((tMs) => {
@@ -232,13 +233,16 @@ export const bendSequenceMode: ViewMode = {
       for (const bendId of step.bend_ids) {
         theta[bendId] = Math.sign(graph.bends[bendId].angle_overbend) * phi;
       }
+      // the part sinks into the V as the wings pivot on the die
+      // shoulders; the punch/ram ride down with it
+      const descent = strokeDescent(thickness, dieVWidth, phi);
       const machine = machinePremultiply(
-        step.placement, step.lift_sign, phi);
+        step.placement, step.lift_sign, phi, descent);
       poseVertices(graph, flat, vertexPanel, vertexBend, theta,
         machine, posed);
       ctx.setVertexPositions(posed, !playhead.playing);
       ctx.shiftOverlay('punch', punchShift(thickness, phi)
-        - punchShift(thickness, 0));
+        - punchShift(thickness, 0) - descent);
     });
 
     const legend: LegendEntry[] = [

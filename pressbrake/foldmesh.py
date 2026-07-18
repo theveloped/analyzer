@@ -149,6 +149,26 @@ def _pose_bend_zone(graph, bend, transforms, flat, theta):
     return posed
 
 
+def stroke_descent(thickness, v_width, phi):
+    """Vertical descent of the bend line into the V die at stroke ``phi``.
+
+    The air-bending wings pivot on the die shoulder lines (y = +-v/2 at
+    the die top plane z = -t/2), so as the wings incline the bend line
+    sinks into the V opening.  Derived from keeping the wing BOTTOM
+    surface on the shoulder contact: descent = (v/2) tan(phi/2)
+    - (t/2)/cos(phi/2) + t/2 — zero when flat, and zero for dies without
+    a V width (flat tools).  The 2D oracle/envelope keep the v1
+    pinned-pivot convention (descent folded into the clearance margin);
+    the viewer animation and the mesh verifier apply this consistently.
+    """
+    if not v_width:
+        return 0.0
+    half_angle = min(abs(phi), HEM_CAP) / 2.0
+    return (float(v_width) / 2.0 * math.tan(half_angle)
+            - (thickness / 2.0) / math.cos(half_angle)
+            + thickness / 2.0)
+
+
 def step_poses(graph, steps):
     """Per-plan-step machine pose data for the viewer and mesh verifier.
 
