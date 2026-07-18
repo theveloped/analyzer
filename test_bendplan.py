@@ -227,6 +227,108 @@ def fixture_analysis(check, tmp):
           and len(best["steps"]) == 2, f"{len(best['setups'])} setups")
 
 
+def fixture_fold_mesh(check, tmp):
+    from pressbrake import foldmesh
+
+    for name, label in (("bp_bracket", "bracket"),
+                        ("bp_channel", "channel"),
+                        ("bp_notched", "notched")):
+        workdir = os.path.join(tmp, name)
+        graph, info = adapter.build_kinematic_graph(workdir,
+                                                    keep_unfold=True)
+        fold = adapter.compute_fold_mesh(workdir, graph, info)
+        check(f"{label}: fold mesh available", fold["available"],
+              str(fold.get("reason")))
+        if not fold["available"]:
+            continue
+
+        vertex_panel = fold["vertex_panel"]
+        vertex_bend = fold["vertex_bend"]
+        orphans = int(np.count_nonzero((vertex_panel == 0)
+                                       & (vertex_bend == 0)))
+        check(f"{label}: every vertex assigned",
+              fold["unassigned"] == 0 and orphans == 0,
+              f"{orphans} orphans")
+
+        flat = fold["flat_verts"].astype(float)
+        height = flat[:, 2] * np.sign(graph.z_offset)
+        check(f"{label}: flat heights within the sheet",
+              float(height.min()) > -0.2
+              and float(height.max()) < graph.thickness + 0.2,
+              f"[{height.min():.2f}, {height.max():.2f}]")
+
+        # THE invariant: refolding the flat coordinates at the target
+        # angles reproduces the source mesh (base-aligned)
+        verts = np.load(os.path.join(workdir, "fine_verts.npy")) \
+            .astype(float)
+        theta = np.array([bend.angle_target for bend in graph.bends])
+        posed = foldmesh.pose_vertices(graph, flat, vertex_panel,
+                                       vertex_bend, theta)
+        base = np.asarray(fold["base_transform"])
+        expected = verts @ base[:3, :3].T + base[:3, 3]
+        deviation = np.linalg.norm(posed - expected, axis=1)
+        check(f"{label}: refold reproduces the mesh (<0.2mm)",
+              float(deviation.max()) < 0.2,
+              f"max {deviation.max():.3f} mm")
+
+    # partial-fold model: zone edges rigid with their panels, the arc
+    # continuous across the zone, at every stroke fraction incl. overbend
+    workdir = os.path.join(tmp, "bp_bracket")
+    graph, info = adapter.build_kinematic_graph(workdir, keep_unfold=True)
+    bend = graph.bends[0]
+    normal = np.array([-bend.axis_dir[1], bend.axis_dir[0]])
+    mid = bend.axis_point + bend.axis_dir * bend.length / 2.0
+    edge_parent = bend.zone_width / 2.0 + bend.zone_shift
+    edge_child = bend.zone_width / 2.0 - bend.zone_shift
+
+    edges_ok = True
+    smooth_ok = True
+    samples = np.linspace(0.0, bend.zone_width, 200)
+    for fraction in (0.25, 0.5, 0.75, 1.0, 1.1):
+        theta = np.array([bend.angle_target * fraction])
+        transforms = graph.fold_transforms(theta)
+        for zeta in (-graph.thickness / 2, 0.0, graph.thickness / 2):
+            z = graph.z_offset + zeta
+            flat = np.column_stack([
+                mid[0] + (samples - edge_parent) * normal[0],
+                mid[1] + (samples - edge_parent) * normal[1],
+                np.full(len(samples), z)])
+            posed = foldmesh.pose_vertices(
+                graph, flat, np.zeros(len(flat), dtype=int),
+                np.full(len(flat), bend.id + 1, dtype=int), theta)
+            for pose, index in ((transforms[bend.parent_panel], 0),
+                                (transforms[bend.child_panel], -1)):
+                rigid = flat[index] @ pose[:3, :3].T + pose[:3, 3]
+                edges_ok &= bool(np.linalg.norm(rigid - posed[index]) < 1e-6)
+            steps = np.linalg.norm(np.diff(posed, axis=0), axis=1)
+            smooth_ok &= bool(steps.max() < 2.5 * bend.zone_width / 199)
+    check("bracket: zone edges rigid with their panels", edges_ok, "")
+    check("bracket: arc continuous across the zone", smooth_ok, "")
+
+    # step poses: rigid placements and a full theta trail
+    from processes.base import apply_defaults
+    import processes
+    analysis = processes.get_analysis("sheet_metal", "bend_plan")
+    stats = analysis.run(workdir, apply_defaults(analysis, {}), None).stats
+    steps = stats["plans"][0]["steps"]
+    rigid_ok = True
+    for step in steps:
+        placement = np.asarray(step["placement"]).reshape(4, 4)
+        rotation = placement[:3, :3]
+        rigid_ok &= bool(
+            np.allclose(rotation @ rotation.T, np.eye(3), atol=1e-9)
+            and np.isclose(np.linalg.det(rotation), 1.0, atol=1e-9)
+            and abs(step["lift_sign"]) == 1.0
+            and step["phi_target"] > 0
+            and len(step["theta_before"]) == graph.bend_count)
+    check("plan steps carry rigid machine placements",
+          bool(steps) and rigid_ok, f"{len(steps)} steps")
+    check("fold mesh stats stored",
+          stats["fold_mesh"]["available"]
+          and stats["fold_mesh"]["unassigned"] == 0
+          and stats["tooling"]["punches"] and stats["tooling"]["dies"], "")
+
+
 def main():
     failures = []
     check = check_factory(failures)
@@ -240,6 +342,8 @@ def main():
         fixture_intervals(check, tmp)
         print("=== fixture 4: bend_plan analysis end to end ===")
         fixture_analysis(check, tmp)
+        print("=== fixture 5: fold mesh + partial-fold model ===")
+        fixture_fold_mesh(check, tmp)
 
     if failures:
         print(f"{len(failures)} CHECKS FAILED: {failures}")

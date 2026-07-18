@@ -48,6 +48,12 @@ class Bend:
                                      # this bend; 0 = sharp hinge (synthetic
                                      # parts).  Drives the bend-deduction
                                      # translation in kinematics.fold_transforms.
+    zone_shift: float = 0.0          # distance the hinge axis sits from the
+                                     # BA center line toward the child (the
+                                     # virtual-corner shift); the flat zone
+                                     # spans [-(zone_width/2 + zone_shift),
+                                     # zone_width/2 - zone_shift] around the
+                                     # axis.  0 for synthetic builders.
     face_hashes: tuple = ()          # source cylindrical face hashes
 
     def __post_init__(self):

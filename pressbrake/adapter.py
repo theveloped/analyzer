@@ -54,13 +54,15 @@ class ExtractionError(RuntimeError):
 
 def build_kinematic_graph(workdir, *, k_factor=0.5, min_thickness=0.1,
                           deflection=0.05, merge_bend_zones=True,
-                          progress=None):
+                          keep_unfold=False, progress=None):
     """Build the press-brake KinematicGraph for a sheet part workdir.
 
     Returns (graph, info): info carries the BREP-face-id maps for viewer
     fields ({panel_id: [...]}, {bend_id: [...]}), the base/opposite face
     ids, thickness and the flat-frame display origin (min corner over all
-    panel outlines).
+    panel outlines).  ``keep_unfold`` additionally stashes the live
+    ``(unfolder, transformations, k_factor)`` on ``info["_unfold"]`` for
+    ``compute_fold_mesh`` (underscore key: never serialize it).
     """
     import aag as aag_module
     import brep
@@ -203,6 +205,7 @@ def build_kinematic_graph(workdir, *, k_factor=0.5, min_thickness=0.1,
             child_panel=child_id,
             zone_width=abs(entity["angle"]) * (
                 entity["inner_radius"] + k_factor * thickness),
+            zone_shift=shift,
             face_hashes=tuple(sorted(member_component)),
         ))
         bend_zones.append((parent_id, child_id, start, direction,
@@ -231,6 +234,8 @@ def build_kinematic_graph(workdir, *, k_factor=0.5, min_thickness=0.1,
         "thickness": float(thickness),
         "origin": [float(origin[0]), float(origin[1])],
     }
+    if keep_unfold:
+        info["_unfold"] = (unfolder, transformations, k_factor)
     logger.info(f"kinematic graph: {kinematic.panel_count} panels, "
                 f"{kinematic.bend_count} bends, thickness {thickness:.2f}, "
                 f"z_offset {kinematic.z_offset:+.2f}")
@@ -512,6 +517,382 @@ def _validate_tree(panels, bends):
             raise ExtractionError(
                 f"panel {child} hangs off {len(parents)} parents — the "
                 "profile closes a loop the fold tree cannot express")
+
+
+# --- per-vertex fold coordinates (schema-2 bend_plan arrays) ----------------
+
+FOLD_TOL = 0.05          # mm: height/band plausibility slack
+ANGLE_MARGIN = 0.2       # rad: cylinder angular-domain slack for off-face hits
+
+
+def compute_fold_mesh(workdir, graph, info, progress=None):
+    """Express every fine-mesh vertex in flat fold coordinates.
+
+    Needs ``info["_unfold"]`` (build the graph with ``keep_unfold=True``).
+    Returns a dict: ``available`` (bool) + ``reason`` when not, else
+    ``flat_verts`` f4 (V,3) (pattern frame, z = material height, the
+    unfolded skin at 0 and mid-surface at graph.z_offset), ``vertex_panel``
+    / ``vertex_bend`` u1 (+1 encoded, 0 = none), ``bend_t`` f4 (fraction
+    across the owning bend zone), ``base_transform`` (4,4) mapping source
+    3D coordinates into the flat frame for the base panel (the global
+    alignment: posing at the target angles reproduces base_transform @
+    original mesh), and ``unassigned`` (vertex count that needed the
+    neighbor fallback and still failed).
+    """
+    import pipeline
+
+    if "_unfold" not in info:
+        raise ExtractionError("compute_fold_mesh needs keep_unfold=True")
+    unfolder, transformations, k_factor = info["_unfold"]
+    thickness = float(graph.thickness)
+    material_sign = 1.0 if graph.z_offset >= 0 else -1.0
+
+    if graph.panel_count > 254 or graph.bend_count > 254:
+        return {"available": False,
+                "reason": "more than 254 panels or bends (u1 ids)"}
+
+    verts = np.load(os.path.join(workdir, pipeline.FINE_VERTS_FILE)) \
+        .astype(float)
+    faces = np.load(os.path.join(workdir, pipeline.FINE_FACES_FILE))
+    brep_ids = np.load(os.path.join(workdir, pipeline.BREP_FACES_FILE))
+    vertex_count = len(verts)
+
+    # --- per-panel rigid 3D->flat maps and per-bend cylinder maps ---------
+    triangle_counts = np.bincount(brep_ids, minlength=len(unfolder.faces))
+    panel_maps = {}
+    for panel in graph.panels:
+        result = _panel_flat_map(unfolder, transformations, panel,
+                                 triangle_counts)
+        if result is None:
+            return {"available": False,
+                    "reason": f"panel {panel.id} has no planar seed face"}
+        panel_maps[panel.id] = result
+
+    bend_face_maps = {}
+    for bend in graph.bends:
+        maps = []
+        for face_index in bend.face_hashes:
+            face_map = _bend_face_map(unfolder, transformations, face_index,
+                                      thickness, k_factor, graph)
+            if face_map is None:
+                return {"available": False,
+                        "reason": f"bend {bend.id} face {face_index} is not "
+                                  "an analytic cylinder"}
+            maps.append(face_map)
+        bend_face_maps[bend.id] = maps
+
+    # --- vertex ownership -------------------------------------------------
+    face_panel = np.zeros(len(unfolder.faces), dtype=np.int32)   # +1 ids
+    face_bend = np.zeros(len(unfolder.faces), dtype=np.int32)
+    for panel in graph.panels:
+        face_panel[list(panel.face_hashes)] = panel.id + 1
+    for bend in graph.bends:
+        face_bend[list(bend.face_hashes)] = bend.id + 1
+
+    corner_vertices = faces.ravel()
+    vertex_bend = np.zeros(vertex_count, dtype=np.int32)
+    np.maximum.at(vertex_bend, corner_vertices,
+                  np.repeat(face_bend[brep_ids], 3))
+    vertex_panel = np.zeros(vertex_count, dtype=np.int32)
+    np.maximum.at(vertex_panel, corner_vertices,
+                  np.repeat(face_panel[brep_ids], 3))
+    vertex_panel[vertex_bend > 0] = 0     # bend ownership wins at seams
+
+    unassigned = (vertex_panel == 0) & (vertex_bend == 0)
+
+    # opposite skin / wall vertices over a bend arc: cylinder band test
+    for bend in graph.bends:
+        if not np.any(unassigned):
+            break
+        for face_map in bend_face_maps[bend.id]:
+            candidates = np.nonzero(unassigned)[0]
+            if not len(candidates):
+                break
+            in_band = _cylinder_band(face_map, verts[candidates], thickness)
+            hits = candidates[in_band]
+            vertex_bend[hits] = bend.id + 1
+            unassigned[hits] = False
+
+    # remaining wall/feature vertices: flat image inside a panel outline
+    # (wall vertices lie EXACTLY on the outline, so near-boundary points
+    # count as inside — a strict test would orphan every wall boundary
+    # vertex and the neighbor fallback would mis-propagate them)
+    for panel in graph.panels:
+        candidates = np.nonzero(unassigned)[0]
+        if not len(candidates):
+            break
+        flat = _apply_map(panel_maps[panel.id][0], verts[candidates])
+        height = flat[:, 2] * material_sign
+        plausible = (height >= -FOLD_TOL) & (height <= thickness + FOLD_TOL)
+        inside = _points_in_polygon(flat[:, :2], panel.outline)
+        boundary = plausible & ~inside
+        if np.any(boundary):
+            inside[boundary] = _distance_to_ring(
+                flat[boundary, :2], panel.outline) <= FOLD_TOL
+        hits = candidates[plausible & inside]
+        vertex_panel[hits] = panel.id + 1
+        unassigned[hits] = False
+
+    # neighbor propagation over mesh edges for the stragglers
+    edge_a = faces[:, [0, 1, 2]].ravel()
+    edge_b = faces[:, [1, 2, 0]].ravel()
+    for _ in range(20):
+        if not np.any(unassigned):
+            break
+        assigned = ~unassigned
+        grow = assigned[edge_a] & unassigned[edge_b]
+        if not np.any(grow):
+            break
+        vertex_panel[edge_b[grow]] = vertex_panel[edge_a[grow]]
+        vertex_bend[edge_b[grow]] = vertex_bend[edge_a[grow]]
+        unassigned[edge_b[grow]] = False
+    leftover = int(np.count_nonzero(unassigned))
+    if leftover:
+        logger.warning(f"fold mesh: {leftover} vertices unassigned "
+                       "(kept at their source position)")
+
+    # --- flat coordinates -------------------------------------------------
+    flat_verts = np.array(verts, dtype=float)
+    for panel in graph.panels:
+        sel = vertex_panel == panel.id + 1
+        if np.any(sel):
+            flat_verts[sel] = _apply_map(panel_maps[panel.id][0], verts[sel])
+
+    for bend in graph.bends:
+        sel = np.nonzero(vertex_bend == bend.id + 1)[0]
+        if not len(sel):
+            continue
+        mapped = np.zeros(len(sel), dtype=bool)
+        for gate in (True, False):
+            for face_map in bend_face_maps[bend.id]:
+                remaining = sel[~mapped]
+                if not len(remaining):
+                    break
+                flat, ok = _cylinder_flat(face_map, verts[remaining],
+                                          material_sign, domain_gate=gate)
+                flat_verts[remaining[ok]] = flat[ok]
+                mapped[~mapped] |= ok
+            if mapped.all():
+                break
+
+    # --- bend_t fraction across each owning zone --------------------------
+    bend_t = np.zeros(vertex_count, dtype=float)
+    for bend in graph.bends:
+        sel = vertex_bend == bend.id + 1
+        if not np.any(sel) or bend.zone_width <= 0:
+            continue
+        normal = np.array([-bend.axis_dir[1], bend.axis_dir[0]])
+        d = (flat_verts[sel, :2] - bend.axis_point) @ normal
+        edge_parent = bend.zone_width / 2.0 + bend.zone_shift
+        bend_t[sel] = np.clip((d + edge_parent) / bend.zone_width, 0.0, 1.0)
+
+    return {
+        "available": True,
+        "reason": None,
+        "flat_verts": flat_verts.astype("<f4"),
+        "vertex_panel": np.clip(vertex_panel, 0, 255).astype("<u1"),
+        "vertex_bend": np.clip(vertex_bend, 0, 255).astype("<u1"),
+        "bend_t": bend_t.astype("<f4"),
+        "base_transform": panel_maps[graph.base_panel][0],
+        "unassigned": leftover,
+    }
+
+
+def _trsf_matrix(trsf):
+    matrix = np.eye(4)
+    for row in range(3):
+        for column in range(4):
+            matrix[row, column] = trsf.Value(row + 1, column + 1)
+    return matrix
+
+
+def _chain_matrix(chain):
+    """The gp_Trsf chain as one 4x4 (applied in list order, like
+    transformed_edge/transformed_uv do)."""
+    matrix = np.eye(4)
+    for trsf in chain:
+        matrix = _trsf_matrix(trsf) @ matrix
+    return matrix
+
+
+def _apply_map(matrix, points):
+    return points @ matrix[:3, :3].T + matrix[:3, 3]
+
+
+def _plane_embed(face):
+    """Rigid 4x4 mapping world coordinates into a planar face's (u, v, w)
+    parameter frame (w = height off the surface)."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+
+    plane = BRepAdaptor_Surface(face).Plane()
+    position = plane.Position()
+    location = position.Location()
+    axes = []
+    for direction in (position.XDirection(), position.YDirection(),
+                      position.Direction()):
+        axes.append([direction.X(), direction.Y(), direction.Z()])
+    rotation = np.asarray(axes, dtype=float)
+    embed = np.eye(4)
+    embed[:3, :3] = rotation
+    embed[:3, 3] = -rotation @ np.array(
+        [location.X(), location.Y(), location.Z()])
+    return embed
+
+
+def _panel_flat_map(unfolder, transformations, panel, triangle_counts):
+    """(4x4 world->flat map, seed face) of a rigid panel: chain of the seed
+    face composed with its plane embedding.  All member faces of a coplanar
+    panel must agree; disagreement is logged and the seed map kept."""
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    planar = [f for f in panel.face_hashes
+              if BRepAdaptor_Surface(unfolder.faces[f]).GetType()
+              == GeomAbs_SurfaceType.GeomAbs_Plane]
+    if not planar:
+        return None
+    seed = max(planar, key=lambda f: triangle_counts[f])
+    seed_map = _chain_matrix(transformations.get(seed, [])) \
+        @ _plane_embed(unfolder.faces[seed])
+
+    probe = np.array([[0.0, 0.0, 0.0], [50.0, 0.0, 0.0], [0.0, 50.0, 0.0]])
+    for face_index in planar:
+        if face_index == seed:
+            continue
+        face_map = _chain_matrix(transformations.get(face_index, [])) \
+            @ _plane_embed(unfolder.faces[face_index])
+        # compare on world points near the seed plane origin
+        anchor = np.linalg.inv(seed_map) @ np.append(probe.T, np.ones((1, 3)),
+                                                     axis=0)
+        deviation = np.max(np.abs(_apply_map(face_map, anchor[:3].T) - probe))
+        if deviation > 1e-3:
+            logger.warning(
+                f"panel {panel.id}: face {face_index} flat map deviates "
+                f"{deviation:.4f} mm from seed face {seed}")
+    return seed_map, seed
+
+
+def _bend_face_map(unfolder, transformations, face_index, thickness,
+                   k_factor, graph):
+    """Cylinder-unroll data of one bend member face, or None if freeform."""
+    import aag as aag_module
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepTools import BRepTools
+    from OCP.GeomAbs import GeomAbs_SurfaceType
+
+    surface = BRepAdaptor_Surface(unfolder.faces[face_index])
+    if surface.GetType() != GeomAbs_SurfaceType.GeomAbs_Cylinder:
+        return None
+    cylinder = surface.Cylinder()
+    position = cylinder.Position()
+    location = np.array([position.Location().X(), position.Location().Y(),
+                         position.Location().Z()])
+    x_dir = np.array([position.XDirection().X(), position.XDirection().Y(),
+                      position.XDirection().Z()])
+    y_dir = np.array([position.YDirection().X(), position.YDirection().Y(),
+                      position.YDirection().Z()])
+    axis = np.array([position.Direction().X(), position.Direction().Y(),
+                     position.Direction().Z()])
+
+    scale = unfolder.node_scale(face_index, thickness, k_factor) or (1.0, 1.0)
+    domain = BRepTools.UVBounds_s(unfolder.faces[face_index])
+    inner_skin = (int(unfolder.graph.face_convexity[face_index])
+                  == aag_module.FACE_CONCAVE)
+    return {
+        "face": face_index,
+        "location": location,
+        "x_dir": x_dir,
+        "y_dir": y_dir,
+        "axis": axis,
+        "radius": float(cylinder.Radius()),
+        "scale": (float(scale[0]), float(scale[1])),
+        "domain": tuple(float(v) for v in domain),
+        "inner_skin": inner_skin,
+        "chain": _chain_matrix(transformations.get(face_index, [])),
+    }
+
+
+def _cylinder_uv(face_map, points):
+    """(wrapped angle u, axial v, radial distance) of world points against a
+    bend face's cylinder frame."""
+    rel = points - face_map["location"]
+    v = rel @ face_map["axis"]
+    radial = rel - np.outer(v, face_map["axis"])
+    r = np.linalg.norm(radial, axis=1)
+    u_raw = np.arctan2(radial @ face_map["y_dir"], radial @ face_map["x_dir"])
+    u0, u1 = face_map["domain"][0], face_map["domain"][1]
+    center = 0.5 * (u0 + u1)
+    u = u_raw + 2.0 * math.pi * np.round((center - u_raw) / (2.0 * math.pi))
+    return u, v, r
+
+
+def _material_depth(face_map, r):
+    """Depth into the material measured from the unfolded skin surface."""
+    if face_map["inner_skin"]:
+        return r - face_map["radius"]
+    return face_map["radius"] - r
+
+
+def _cylinder_band(face_map, points, thickness):
+    """Vertices lying within the bend face's swept material band."""
+    u, v, r = _cylinder_uv(face_map, points)
+    u0, u1, v0, v1 = face_map["domain"]
+    depth = _material_depth(face_map, r)
+    return ((depth >= -FOLD_TOL) & (depth <= thickness + FOLD_TOL)
+            & (u >= u0 - ANGLE_MARGIN) & (u <= u1 + ANGLE_MARGIN)
+            & (v >= min(v0, v1) - FOLD_TOL) & (v <= max(v0, v1) + FOLD_TOL))
+
+
+def _cylinder_flat(face_map, points, material_sign, domain_gate=True):
+    """Flat coordinates of vertices through one bend face's unroll map.
+
+    Returns (flat (N,3), ok mask).  With ``domain_gate`` vertices outside
+    the face's angular domain (+margin) are rejected so multi-face bends
+    pick the member face that actually covers them.
+    """
+    u, v, r = _cylinder_uv(face_map, points)
+    if domain_gate:
+        u0, u1 = face_map["domain"][0], face_map["domain"][1]
+        ok = (u >= u0 - ANGLE_MARGIN) & (u <= u1 + ANGLE_MARGIN)
+    else:
+        ok = np.ones(len(points), dtype=bool)
+    scaled = np.column_stack([face_map["scale"][0] * u,
+                              face_map["scale"][1] * v,
+                              np.zeros(len(points))])
+    flat = _apply_map(face_map["chain"], scaled)
+    flat[:, 2] = material_sign * _material_depth(face_map, r)
+    return flat, ok
+
+
+def _distance_to_ring(points, polygon):
+    """Vectorized distance of (N,2) points to a closed ring's segments."""
+    polygon = np.asarray(polygon, dtype=float)
+    starts = polygon
+    ends = np.roll(polygon, -1, axis=0)
+    direction = ends - starts                                    # (E,2)
+    length_sq = np.einsum("ij,ij->i", direction, direction)
+    safe = np.where(length_sq > 1e-18, length_sq, 1.0)
+    rel = points[:, None, :] - starts[None, :, :]                # (N,E,2)
+    t = np.clip(np.einsum("nej,ej->ne", rel, direction) / safe, 0.0, 1.0)
+    foot = starts[None, :, :] + t[..., None] * direction[None, :, :]
+    return np.min(np.linalg.norm(points[:, None, :] - foot, axis=2), axis=1)
+
+
+def _points_in_polygon(points, polygon):
+    """Vectorized even-odd containment of (N,2) points in one CCW ring."""
+    polygon = np.asarray(polygon, dtype=float)
+    x0 = polygon[:, 0]
+    y0 = polygon[:, 1]
+    x1 = np.roll(x0, -1)
+    y1 = np.roll(y0, -1)
+    px = points[:, 0][:, None]
+    py = points[:, 1][:, None]
+    crosses = (y0[None, :] > py) != (y1[None, :] > py)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        x_at = x0[None, :] + (py - y0[None, :]) * \
+            (x1 - x0)[None, :] / (y1 - y0)[None, :]
+    inside = crosses & (px < x_at)
+    return np.count_nonzero(inside, axis=1) % 2 == 1
 
 
 def _material_z_offset(graph, shape, base_index, thickness):

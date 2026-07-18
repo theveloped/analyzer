@@ -8,7 +8,7 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
 # keep in sync with frontend/src/processes/sheetmetal/index.ts
 SHEET_SCHEMA = 2
 # keep in sync with frontend/src/processes/sheetmetal/bendplan.ts
-BENDPLAN_SCHEMA = 1
+BENDPLAN_SCHEMA = 2
 
 
 def _cache_params(params):
@@ -61,6 +61,53 @@ def run_flat_pattern(workdir, params, progress):
                           fields=list(result["arrays"]))
 
 
+def _tooling_stats(machine, punches, dies, plan_dicts, actions):
+    """YZ profiles + heights of every tool the stored result references, so
+    the viewer/verifier can build tool geometry without reloading the
+    catalogue.  Raw catalogue coordinates; consumers replicate the
+    thickness/max_phi shifts of machine.transformed_profile."""
+    punch_ids = set()
+    die_ids = set()
+    for plan in plan_dicts:
+        for setup in plan["setups"]:
+            punch_ids.add(setup["punch_id"])
+            die_ids.add(setup["die_id"])
+    for action in actions:
+        best = action.get("best")
+        if best:
+            punch_ids.add(best["punch"])
+            die_ids.add(best["die"])
+
+    def dump_tool(tool):
+        return {
+            "profile": [[float(y), float(z)] for y, z in tool.profile],
+            "height": float(tool.height),
+            "tip_angle": (float(tool.tip_angle)
+                          if tool.tip_angle is not None else None),
+            "tip_radius": float(tool.tip_radius),
+            "v_width": (float(tool.v_width)
+                        if tool.v_width is not None else None),
+            "v_angle": (float(tool.v_angle)
+                        if tool.v_angle is not None else None),
+            "mass_kg_per_m": (float(tool.mass_kg_per_m)
+                              if tool.mass_kg_per_m is not None else None),
+        }
+
+    return {
+        "punches": {tool_id: dump_tool(punches[tool_id])
+                    for tool_id in sorted(punch_ids) if tool_id in punches},
+        "dies": {tool_id: dump_tool(dies[tool_id])
+                 for tool_id in sorted(die_ids) if tool_id in dies},
+        "machine": {
+            "ram_profile": [[float(y), float(z)]
+                            for y, z in machine.ram_profile],
+            "table_profile": [[float(y), float(z)]
+                              for y, z in machine.table_profile],
+            "x_length": float(machine.x_length),
+        },
+    }
+
+
 def run_bend_plan(workdir, params, progress):
     cache_params = {**params, "schema": BENDPLAN_SCHEMA,
                     "mesh": pipeline.mesh_fingerprint(workdir),
@@ -84,7 +131,8 @@ def run_bend_plan(workdir, params, progress):
 
     graph, info = adapter.build_kinematic_graph(
         workdir, k_factor=params["k_factor"],
-        min_thickness=params["min_thickness"], progress=progress)
+        min_thickness=params["min_thickness"], keep_unfold=True,
+        progress=progress)
 
     machine = machine_mod.load_machine(params["machine_path"] or None)
     punches = machine_mod.load_punches(params["punches_path"] or None)
@@ -209,6 +257,48 @@ def run_bend_plan(workdir, params, progress):
         "role": "category", "dtype": "u1",
         "labels": ["none"] + [f"panel {p.id}" for p in graph.panels]}
 
+    # per-vertex fold coordinates for the bend-sequence animation and the
+    # mesh verifier (schema 2)
+    if progress is not None:
+        progress(0.95, "fold coordinates")
+    fold = adapter.compute_fold_mesh(workdir, graph, info)
+    fold_stats = {"available": bool(fold["available"]),
+                  "reason": fold["reason"] if not fold["available"] else None}
+    if fold["available"]:
+        fold_stats["unassigned"] = int(fold["unassigned"])
+        fold_stats["base_transform"] = [
+            float(v) for v in np.asarray(fold["base_transform"]).reshape(-1)]
+        arrays["flat_verts"] = fold["flat_verts"].reshape(-1)
+        arrays["vertex_panel"] = fold["vertex_panel"]
+        arrays["vertex_bend"] = fold["vertex_bend"]
+        arrays["bend_t"] = fold["bend_t"]
+        vertex_count = len(fold["vertex_panel"])
+        field_meta["flat_verts"] = {
+            "kind": "fold_mesh", "association": "none", "role": "fold",
+            "dtype": "f4", "length": int(arrays["flat_verts"].size),
+            "count": vertex_count}
+        field_meta["vertex_panel"] = {
+            "kind": "fold_mesh", "association": "vertex", "role": "category",
+            "dtype": "u1"}
+        field_meta["vertex_bend"] = {
+            "kind": "fold_mesh", "association": "vertex", "role": "category",
+            "dtype": "u1"}
+        field_meta["bend_t"] = {
+            "kind": "fold_mesh", "association": "vertex", "role": "fold",
+            "dtype": "f4"}
+
+    # ranked plans, each step annotated with its machine pose (placement,
+    # lift sign, pre-stroke state) for the bend-sequence animation
+    from pressbrake import foldmesh
+    plan_dicts = []
+    if search_result is not None:
+        for plan in search_result.plans:
+            dumped = report_mod.dump_plan(plan)
+            poses = foldmesh.step_poses(search_graph, dumped["steps"])
+            for step, pose in zip(dumped["steps"], poses):
+                step.update(pose)
+            plan_dicts.append(dumped)
+
     stats = {
         "feasible": bool(search_result.feasible if search_result is not None
                          else plan_report.feasible),
@@ -224,13 +314,14 @@ def run_bend_plan(workdir, params, progress):
         "sister_group_count": len(graph.sister_groups()),
         "graph": report_mod.dump_graph(graph),
         "actions": actions,
-        "plans": ([report_mod.dump_plan(plan) for plan
-                   in search_result.plans]
-                  if search_result is not None else []),
+        "plans": plan_dicts,
         "search_stats": (dict(search_result.stats)
                          if search_result is not None else {}),
         "warnings": sorted(set(warnings)),
         "origin": [float(origin[0]), float(origin[1])],
+        "fold_mesh": fold_stats,
+        "tooling": _tooling_stats(machine, punches, dies, plan_dicts,
+                                  actions),
     }
 
     store_result(workdir, "sheet_metal", "bend_plan", cache_params, stats,

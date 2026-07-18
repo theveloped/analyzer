@@ -9,7 +9,7 @@ import type {
 } from '../../registry/types';
 
 // keep in sync with BENDPLAN_SCHEMA in processes/sheet_metal.py
-export const BENDPLAN_SCHEMA = 1;
+export const BENDPLAN_SCHEMA = 2;
 
 const OUTLINE: RGB = [0.7, 0.7, 0.75];
 const AXES: RGB = [0.95, 0.66, 0.23];

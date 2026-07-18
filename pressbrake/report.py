@@ -44,6 +44,7 @@ def dump_bend(bend):
         "k_factor": _f(bend.k_factor),
         "length": _f(bend.length),
         "zone_width": _f(bend.zone_width),
+        "zone_shift": _f(bend.zone_shift),
         "parent_panel": int(bend.parent_panel),
         "child_panel": int(bend.child_panel),
         "moving_mask": int(bend.moving_mask),
