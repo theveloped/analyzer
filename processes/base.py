@@ -43,13 +43,38 @@ class Param:
 
 @dataclass
 class AnalysisDef:
-    """A runnable analysis: declared params + a run(workdir, params, progress)."""
+    """A runnable analysis: declared params + a run(workdir, params, progress).
+
+    ``is_current(workdir, params) -> bool`` is an optional gate the dependency
+    resolver uses to decide whether a *prerequisite* needs re-running: it
+    returns True when this analysis's on-disk artifact is present and not stale
+    with respect to its inputs. Analyses that set it (the ``prep`` stages,
+    which overwrite fixed-name artifacts and have no internal result cache) are
+    the ones the resolver will auto-run as prerequisites; analyses that leave it
+    None (the results-tier analyses, whose ``run`` self-caches and whose
+    prerequisite params must be derived, not defaulted) are never auto-run — the
+    resolver leaves their prerequisite handling to the existing runner/manual
+    flow, so param-sensitive chains keep working unchanged.
+    """
     id: str
     label: str
     params: list
     run: callable
     requires: list = field(default_factory=list)
     description: str = ""
+    is_current: callable = None
+    # results-tier cache-key inputs, folded in by resolver.cache_key:
+    #   schema     — this analysis's result schema version
+    #   salts      — extra salt names beyond the auto prep fingerprints; only
+    #                "splits" today (per-face-split fingerprint)
+    #   key_extra  — literal discriminators for analyses sharing a store dir
+    #                (setup_verdict rides in the setups dir with {"verdict": 1})
+    #   salt_fields(workdir) -> dict — a prep artifact's fingerprint
+    #                contribution, collected transitively for downstream keys
+    schema: object = None
+    salts: tuple = ()
+    key_extra: dict = None
+    salt_fields: callable = None
 
     def to_dict(self):
         return {

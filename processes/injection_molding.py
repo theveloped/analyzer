@@ -13,6 +13,7 @@ import numpy as np
 
 import gating
 import pipeline
+from processes import prep, resolver
 from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             load_cached_result, load_result_arrays,
                             params_hash, store_result)
@@ -22,14 +23,15 @@ MOLD_SCHEMA = 4  # result schema version, salted into the cache key
 SPRUE_SCHEMA = 2  # sprue_proposals schema version, salted into the cache key
 SKELETON_SCHEMA = 5  # wall_skeleton schema (5: unbounded-marker normalization)
 EJECTION_SCHEMA = 2  # ejection_sticking schema version, cache salt
-FLOW_SCHEMA = 1  # flow_voxels / flow_fill schema version, cache salt
+# the SDF voxel grid lives in prep/voxels now; flow_fill shares its schema value
+# (== prep.VOXEL_SCHEMA, mirrored client-side as voxels.ts FLOW_SCHEMA)
+FLOW_SCHEMA = prep.VOXEL_SCHEMA
 SLENDER_SCHEMA = 1  # slenderness schema version, cache salt
 SPAN_SCHEMA = 1  # thin_span schema version, cache salt
 RAY_SCHEMA = 1  # ray_thickness / ray_gap schema version, cache salt
 
 SKELETON_PARAMS = ("max_radius", "min_radius", "cluster_factor",
                    "absorb_factor")
-FLOW_VOXEL_PARAMS = ("voxel",)
 
 
 def _field_stats(values, max_radius, excluded):
@@ -50,7 +52,8 @@ def _field_stats(values, max_radius, excluded):
 
 def _run_sphere_field(workdir, analysis_id, member, kind, inverted, params,
                       progress):
-    cache_params = {**params, "mesh": pipeline.mesh_fingerprint(workdir)}
+    cache_params = resolver.cache_key(
+        workdir, f"injection_molding/{analysis_id}", params)
     cached = load_cached_result(workdir, "injection_molding", analysis_id,
                                 cache_params)
     if cached is not None:
@@ -119,8 +122,8 @@ def _ray_field_stats(values, max_distance):
 
 def _run_ray_field(workdir, analysis_id, member, kind, inverted, params,
                    progress):
-    cache_params = {**params, "schema": RAY_SCHEMA,
-                    "mesh": pipeline.mesh_fingerprint(workdir)}
+    cache_params = resolver.cache_key(
+        workdir, f"injection_molding/{analysis_id}", params)
     cached = load_cached_result(workdir, "injection_molding", analysis_id,
                                 cache_params)
     if cached is not None:
@@ -150,18 +153,9 @@ def run_ray_gap(workdir, params, progress):
                           True, params, progress)
 
 
-def slenderness_cache_params(workdir, params):
-    """slenderness cache key: declared params + schema/directions/
-    accessibility/mesh salts (the direction index is only meaningful for one
-    directions.npy, and off-half vertices are zeroed via accessibility)."""
-    return {**params, "schema": SLENDER_SCHEMA,
-            "directions": pipeline.directions_fingerprint(workdir),
-            "accessibility": pipeline.accessibility_fingerprint(workdir),
-            "mesh": pipeline.mesh_fingerprint(workdir)}
-
-
 def run_slenderness(workdir, params, progress):
-    cache_params = slenderness_cache_params(workdir, params)
+    cache_params = resolver.cache_key(
+        workdir, "injection_molding/slenderness", params)
     cached = load_cached_result(workdir, "injection_molding", "slenderness",
                                 cache_params)
     if cached is not None:
@@ -187,15 +181,9 @@ def run_slenderness(workdir, params, progress):
     return AnalysisResult(stats=stats, fields=list(arrays))
 
 
-def span_cache_params(workdir, params):
-    """thin_span cache key: declared params + schema/mesh salts (no
-    directions — the field is direction-independent)."""
-    return {**params, "schema": SPAN_SCHEMA,
-            "mesh": pipeline.mesh_fingerprint(workdir)}
-
-
 def run_thin_span(workdir, params, progress):
-    cache_params = span_cache_params(workdir, params)
+    cache_params = resolver.cache_key(
+        workdir, "injection_molding/thin_span", params)
     cached = load_cached_result(workdir, "injection_molding", "thin_span",
                                 cache_params)
     if cached is not None:
@@ -212,7 +200,8 @@ def run_thin_span(workdir, params, progress):
     thick_params = {"max_radius": params["max_radius"], "sharp_deg": 25.0,
                     "contact_angles": False}
     run_thickness(workdir, thick_params, scaled(0.0, 0.7))
-    thick_cache = {**thick_params, "mesh": pipeline.mesh_fingerprint(workdir)}
+    thick_cache = resolver.cache_key(workdir, "injection_molding/thickness",
+                                     thick_params)
     thick_arrays = load_result_arrays(workdir, "injection_molding",
                                       "thickness", thick_cache)
 
@@ -239,11 +228,8 @@ def run_thin_span(workdir, params, progress):
 
 
 def run_mold_orientation(workdir, params, progress):
-    cache_params = {**params, "schema": MOLD_SCHEMA,
-                    "directions": pipeline.directions_fingerprint(workdir),
-                    "accessibility": pipeline.accessibility_fingerprint(workdir),
-                    "mesh": pipeline.mesh_fingerprint(workdir),
-                    "splits": pipeline.splits_fingerprint(workdir)}
+    cache_params = resolver.cache_key(
+        workdir, "injection_molding/mold_orientation", params)
     cached = load_cached_result(workdir, "injection_molding",
                                 "mold_orientation", cache_params)
     if cached is not None:
@@ -262,15 +248,9 @@ def run_mold_orientation(workdir, params, progress):
     return AnalysisResult(stats=result["stats"], fields=list(result["arrays"]))
 
 
-def skeleton_cache_params(workdir, params):
-    """wall_skeleton cache key: declared params + schema/mesh salts."""
-    return {**{name: params[name] for name in SKELETON_PARAMS},
-            "schema": SKELETON_SCHEMA,
-            "mesh": pipeline.mesh_fingerprint(workdir)}
-
-
 def run_wall_skeleton(workdir, params, progress):
-    cache_params = skeleton_cache_params(workdir, params)
+    cache_params = resolver.cache_key(
+        workdir, "injection_molding/wall_skeleton", params)
     cached = load_cached_result(workdir, "injection_molding",
                                 "wall_skeleton", cache_params)
     if cached is not None:
@@ -289,8 +269,8 @@ def run_wall_skeleton(workdir, params, progress):
 
 
 def run_sprue_proposals(workdir, params, progress):
-    cache_params = {**params, "schema": SPRUE_SCHEMA,
-                    "mesh": pipeline.mesh_fingerprint(workdir)}
+    cache_params = resolver.cache_key(
+        workdir, "injection_molding/sprue_proposals", params)
     cached = load_cached_result(workdir, "injection_molding",
                                 "sprue_proposals", cache_params)
     if cached is not None:
@@ -304,7 +284,8 @@ def run_sprue_proposals(workdir, params, progress):
 
     # the skeleton is a cache-aware sub-run: shared params -> shared result
     skel_result = run_wall_skeleton(workdir, params, scaled(0.0, 0.4))
-    skel_cache = skeleton_cache_params(workdir, params)
+    skel_cache = resolver.cache_key(workdir, "injection_molding/wall_skeleton",
+                                    params)
     skeleton = load_result_arrays(workdir, "injection_molding",
                                   "wall_skeleton", skel_cache)
 
@@ -327,8 +308,8 @@ def run_sprue_proposals(workdir, params, progress):
 
 
 def run_ejection_sticking(workdir, params, progress):
-    cache_params = {**params, "schema": EJECTION_SCHEMA,
-                    "mesh": pipeline.mesh_fingerprint(workdir)}
+    cache_params = resolver.cache_key(
+        workdir, "injection_molding/ejection_sticking", params)
     cached = load_cached_result(workdir, "injection_molding",
                                 "ejection_sticking", cache_params)
     if cached is not None:
@@ -342,7 +323,8 @@ def run_ejection_sticking(workdir, params, progress):
 
     # the skeleton is a cache-aware sub-run: shared params -> shared result
     skel_result = run_wall_skeleton(workdir, params, scaled(0.0, 0.6))
-    skel_cache = skeleton_cache_params(workdir, params)
+    skel_cache = resolver.cache_key(workdir, "injection_molding/wall_skeleton",
+                                    params)
     skeleton = load_result_arrays(workdir, "injection_molding",
                                   "wall_skeleton", skel_cache)
 
@@ -359,28 +341,11 @@ def run_ejection_sticking(workdir, params, progress):
     return AnalysisResult(stats=stats, fields=list(arrays))
 
 
-def flow_voxel_cache_params(workdir, params):
-    """flow_voxels cache key: the voxel params + schema/mesh salts, so
-    flow_fill's extra params still share the voxel result."""
-    return {**{name: params[name] for name in FLOW_VOXEL_PARAMS},
-            "schema": FLOW_SCHEMA,
-            "mesh": pipeline.mesh_fingerprint(workdir)}
-
-
 def run_flow_voxels(workdir, params, progress):
-    cache_params = flow_voxel_cache_params(workdir, params)
-    cached = load_cached_result(workdir, "injection_molding",
-                                "flow_voxels", cache_params)
-    if cached is not None:
-        return AnalysisResult(stats=cached["stats"],
-                              fields=list(cached["arrays"]))
-
-    stats, arrays, field_meta = pipeline.flow_voxels(
-        workdir, voxel=params["voxel"], progress=progress)
-
-    store_result(workdir, "injection_molding", "flow_voxels", cache_params,
-                 stats, arrays=arrays, field_meta=field_meta)
-    return AnalysisResult(stats=stats, fields=list(arrays))
+    """Thin forwarder to the shared prep/voxels stage (kept so the injection
+    plugin's existing flow_voxels submit still works, now backed by prep)."""
+    return resolver.ensure(workdir, "prep/voxels",
+                           {"voxel": params["voxel"]}, progress)
 
 
 def run_flow_fill(workdir, params, progress):
@@ -388,8 +353,8 @@ def run_flow_fill(workdir, params, progress):
         raise ValueError("flow_fill needs a gate point: gate = [x, y, z] "
                          "(click the part in the flow fill view or pass "
                          "--gate on the CLI)")
-    cache_params = {**params, "schema": FLOW_SCHEMA,
-                    "mesh": pipeline.mesh_fingerprint(workdir)}
+    cache_params = resolver.cache_key(workdir, "injection_molding/flow_fill",
+                                      params)
     cached = load_cached_result(workdir, "injection_molding",
                                 "flow_fill", cache_params)
     if cached is not None:
@@ -401,11 +366,14 @@ def run_flow_fill(workdir, params, progress):
             return None
         return lambda f, m: progress(lo + (hi - lo) * f, m)
 
-    # the voxel grid is a cache-aware sub-run: shared params -> shared result
-    voxel_result = run_flow_voxels(workdir, params, scaled(0.0, 0.4))
-    voxel_cache = flow_voxel_cache_params(workdir, params)
-    voxels = load_result_arrays(workdir, "injection_molding", "flow_voxels",
-                                voxel_cache)
+    # the voxel grid is a cache-aware sub-run of the shared prep/voxels stage:
+    # same voxel size -> same grid, reused across processes
+    voxel_result = resolver.ensure(workdir, "prep/voxels",
+                                   {"voxel": params["voxel"]},
+                                   scaled(0.0, 0.4))
+    voxel_cache = resolver.cache_key(workdir, "prep/voxels",
+                                     {"voxel": params["voxel"]})
+    voxels = load_result_arrays(workdir, "prep", "voxels", voxel_cache)
 
     stats, arrays, field_meta = pipeline.flow_fill(
         workdir, voxels=voxels, grid=voxel_result.stats["grid"],
@@ -442,6 +410,8 @@ PROCESS = ProcessDef(
                       label="Min faces a slide must gain"),
             ],
             run=run_mold_orientation,
+            schema=MOLD_SCHEMA,
+            salts=("splits",),
         ),
         AnalysisDef(
             id="thickness",
@@ -486,6 +456,7 @@ PROCESS = ProcessDef(
                       label="Max ray distance (blank = auto bbox diagonal)"),
             ],
             run=run_ray_thickness,
+            schema=RAY_SCHEMA,
         ),
         AnalysisDef(
             id="ray_gap",
@@ -498,6 +469,7 @@ PROCESS = ProcessDef(
                       label="Max ray distance (blank = auto bbox diagonal)"),
             ],
             run=run_ray_gap,
+            schema=RAY_SCHEMA,
         ),
         AnalysisDef(
             id="thin_span",
@@ -518,6 +490,7 @@ PROCESS = ProcessDef(
                       label="Span saturation (blank = bbox diagonal)"),
             ],
             run=run_thin_span,
+            schema=SPAN_SCHEMA,
         ),
         AnalysisDef(
             id="slenderness",
@@ -534,12 +507,14 @@ PROCESS = ProcessDef(
                       label="Width sweep step (finer = smoother, slower)"),
             ],
             run=run_slenderness,
+            schema=SLENDER_SCHEMA,
         ),
         AnalysisDef(
             id="wall_skeleton",
             label="Wall thickness skeleton",
             description="Inscribed-sphere wall thickness plus a medial skeleton graph for fill-flow estimation.",
-            requires=[],
+            requires=["prep/mesh"],
+            schema=SKELETON_SCHEMA,
             params=[
                 Param("max_radius", "number", default=5.0, unit="mm",
                       label="Max sphere radius"),
@@ -556,7 +531,9 @@ PROCESS = ProcessDef(
             id="sprue_proposals",
             label="Sprue / gate proposals",
             description="Ranked automatic injection gate locations: skeleton fill screening, moldability filters and an explainable score.",
-            requires=[],  # skeleton computed internally; mold_orientation optional
+            # skeleton is a sub-run; mold_orientation optional
+            requires=["prep/mesh"],
+            schema=SPRUE_SCHEMA,
             params=[
                 Param("max_radius", "number", default=5.0, unit="mm",
                       label="Max sphere radius (skeleton)"),
@@ -604,7 +581,7 @@ PROCESS = ProcessDef(
             id="flow_voxels",
             label="Flow voxels (SDF)",
             description="Signed-distance voxelization of the part interior — the mesh-independent basis for fill, freeze-off and cooling estimates.",
-            requires=[],
+            requires=[],  # forwards to the shared prep/voxels stage (derived voxel param)
             params=[
                 Param("voxel", "number", default=None, unit="mm", min=0.05,
                       label="Voxel size (blank = auto from resolution)"),
@@ -615,7 +592,8 @@ PROCESS = ProcessDef(
             id="flow_fill",
             label="Flow fill (voxel)",
             description="Gate-seeded Hele-Shaw fill over the voxel grid with frozen-skin hesitation — arrival times, weld/short-shot risk regions.",
-            requires=[],  # flow_voxels computed internally
+            requires=["prep/mesh"],  # drives the shared prep/voxels stage internally
+            schema=FLOW_SCHEMA,
             params=[
                 Param("voxel", "number", default=None, unit="mm", min=0.05,
                       label="Voxel size (blank = auto from resolution)"),
@@ -640,7 +618,9 @@ PROCESS = ProcessDef(
             id="ejection_sticking",
             label="Ejection sticking",
             description="Draft-scaled mold sticking forces per face and per skeleton node — the loads the interactive ejector-pin simulation solves against.",
-            requires=[],  # skeleton computed internally; mold_orientation optional
+            # skeleton is a sub-run; mold_orientation optional
+            requires=["prep/mesh"],
+            schema=EJECTION_SCHEMA,
             params=[
                 Param("max_radius", "number", default=5.0, unit="mm",
                       label="Max sphere radius (skeleton)"),

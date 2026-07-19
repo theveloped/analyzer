@@ -15,10 +15,13 @@ that move triangles across BREP face boundaries, whereas midpoint splitting
 lets every child inherit its parent's face id exactly.
 """
 
+import threading
+from collections import OrderedDict
+
 import numpy as np
 from loguru import logger
 
-from utils import log_execution_time
+from utils import file_fingerprint, log_execution_time
 
 # surface type enum values (GeomAbs_SurfaceType) recorded per BREP face for
 # later draft/AAG work
@@ -37,6 +40,72 @@ def load_step_shape(path):
         raise ValueError(f"failed to read STEP file: {path}")
     reader.TransferRoots()
     return reader.OneShape()
+
+
+# Parsing a STEP through OCCT is the dominant cost several stages pay
+# redundantly (mesh, AAG, sheet unfold, tube, import all reload the same
+# source.stp within a first-load bundle). Cache the parsed shape by content
+# fingerprint so the parse happens once. The subtlety: mesh_shape tessellates
+# the shape *in place* (BRepMesh_IncrementalMesh attaches a triangulation and
+# will not replace an existing one at a different deflection), so a consumer
+# that tessellates must not be handed a shape triangulated at another
+# deflection. We therefore key tessellating consumers by (fingerprint,
+# deflection); read-only consumers (topology only — AAG, tube, import) pass
+# deflection=None and may reuse any cached shape for the same content.
+_SHAPE_CACHE = OrderedDict()   # (fingerprint, deflection) -> TopoDS_Shape
+_SHAPE_CACHE_MAX = 4
+_SHAPE_CACHE_LOCK = threading.Lock()
+
+
+def load_step_shape_cached(path, *, deflection=None):
+    """Content-addressed parse of a STEP file (see cache note above).
+
+    ``deflection`` is the tessellation sag a tessellating caller will apply to
+    the returned shape (so distinct deflections never share a mutated handle);
+    read-only callers pass ``None`` and reuse whatever parse is already cached.
+    Falls back to an uncached parse if the file can't be fingerprinted.
+    """
+    fingerprint = file_fingerprint(path)
+    if fingerprint is None:
+        return load_step_shape(path)
+    key = (fingerprint, deflection)
+    with _SHAPE_CACHE_LOCK:
+        hit = _SHAPE_CACHE.get(key)
+        if hit is not None:
+            _SHAPE_CACHE.move_to_end(key)
+            return hit
+        if deflection is None:
+            # topology-only consumer: any cached parse of this content is fine,
+            # triangulated or not (reading faces/edges ignores triangulation)
+            for (cached_fp, _), shape in reversed(_SHAPE_CACHE.items()):
+                if cached_fp == fingerprint:
+                    return shape
+    shape = load_step_shape(path)
+    _cache_shape(key, shape)
+    return shape
+
+
+def _cache_shape(key, shape):
+    with _SHAPE_CACHE_LOCK:
+        _SHAPE_CACHE[key] = shape
+        _SHAPE_CACHE.move_to_end(key)
+        while len(_SHAPE_CACHE) > _SHAPE_CACHE_MAX:
+            _SHAPE_CACHE.popitem(last=False)
+
+
+def remember_step_shape(path, shape, *, deflection=None):
+    """Register an already-parsed (possibly tessellated) shape in the cache.
+
+    mesh_part must fresh-parse (it derives the deflection from the shape, and
+    reusing a shape tessellated at a different deflection would be stale), but
+    once it has tessellated it can seed the cache so the read-only consumers of
+    the same source bytes in a first-load bundle (AAG, sheet, tube, import)
+    reuse this parse instead of re-reading the STEP.
+    """
+    fingerprint = file_fingerprint(path)
+    if fingerprint is None:
+        return
+    _cache_shape((fingerprint, deflection), shape)
 
 
 def iter_faces(shape):

@@ -363,7 +363,7 @@ def _unroll(workdir, graph, outer_face, thickness, k_factor):
     import sheet
     import unfold as unfold_module
 
-    shape = brep.load_step_shape(pipeline.source_step_path(workdir))
+    shape = brep.load_step_shape_cached(pipeline.source_step_path(workdir))
     component = aag_module.get_connected_subgraph(graph, outer_face,
                                                   ignore_complex=True)
     nodes = sorted(int(n) for n in component.nodes())

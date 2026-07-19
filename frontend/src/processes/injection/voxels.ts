@@ -10,7 +10,8 @@
 import type { Manifest, ResultEntry } from '../../api/types';
 import type { ViewCtx } from '../../registry/types';
 
-/** keep in sync with FLOW_SCHEMA in processes/injection_molding.py */
+/** keep in sync with VOXEL_SCHEMA in processes/prep.py (re-exported as
+ *  injection_molding.FLOW_SCHEMA) — the voxel artifact contract */
 export const FLOW_SCHEMA = 1;
 
 /** vert_voxel entry for a vertex with no interior voxel */
@@ -39,8 +40,11 @@ export interface FlowFill {
 }
 
 export function flowVoxelResults(manifest: Manifest): ResultEntry[] {
+  // the SDF voxel grid is a shared prep/voxels artifact now; still accept the
+  // legacy injection_molding/flow_voxels location so old results keep loading
   return manifest.results.filter(
-    (r) => r.process === 'injection_molding' && r.analysis === 'flow_voxels'
+    (r) => ((r.process === 'prep' && r.analysis === 'voxels')
+      || (r.process === 'injection_molding' && r.analysis === 'flow_voxels'))
       && r.params.schema === FLOW_SCHEMA);
 }
 

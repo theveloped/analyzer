@@ -263,6 +263,8 @@ def build_manifest(root, part):
     manifest = {
         "part": part,
         "mesh": None,
+        "coarse_mesh": None,
+        "fine_pending": False,
         "directions": [],
         "directions_stale": False,
         "fields": [],
@@ -270,7 +272,45 @@ def build_manifest(root, part):
         "highlights_url": None,
     }
 
-    if part["status"] != "meshed":
+    # coarse preview + first-load-ready artifacts (BREP colors/names/PMI, AAG)
+    # are exposed even before the fine mesh exists, so the viewer can render and
+    # take input immediately after the first-load bundle
+    is_meshed = part["status"] == "meshed"
+    if os.path.exists(os.path.join(workdir, pipeline.COARSE_FACES_FILE)):
+        cmeta = {}
+        cmeta_path = os.path.join(workdir, pipeline.COARSE_META_FILE)
+        if os.path.exists(cmeta_path):
+            with open(cmeta_path) as f:
+                cmeta = json.load(f)
+        manifest["coarse_mesh"] = {
+            "counts": {"faces": cmeta.get("coarse_faces")},
+            "verts_url": f"{base_url}/mesh/coarse_verts",
+            "faces_url": f"{base_url}/mesh/coarse_faces",
+            "normals_url": f"{base_url}/mesh/coarse_normals",
+            "brep_faces_url": f"{base_url}/mesh/coarse_brep_faces",
+        }
+        manifest["fine_pending"] = not is_meshed
+
+    if os.path.exists(os.path.join(workdir, "face_attrs.json")):
+        manifest["face_attrs_url"] = f"{base_url}/face_attrs"
+    if os.path.exists(os.path.join(workdir, "pmi.json")):
+        manifest["pmi_url"] = f"{base_url}/pmi"
+    if os.path.exists(os.path.join(workdir, "assembly.json")):
+        manifest["assembly_url"] = f"{base_url}/assembly"
+    aag_meta_path = os.path.join(workdir, pipeline.AAG_META_FILE)
+    if os.path.exists(aag_meta_path):
+        with open(aag_meta_path) as f:
+            aag_meta = json.load(f)
+        manifest["aag"] = {
+            "schema": aag_meta.get("schema"),
+            "stats": _json_safe(aag_meta.get("stats", {})),
+            "stale": bool(
+                aag_meta.get("mesh_fingerprint")
+                and aag_meta["mesh_fingerprint"]
+                != pipeline.mesh_fingerprint(workdir)),
+        }
+
+    if not is_meshed:
         return manifest
 
     manifest["mesh"] = {
@@ -303,27 +343,5 @@ def build_manifest(root, part):
 
     if os.path.exists(os.path.join(workdir, pipeline.HIGHLIGHT_FILE)):
         manifest["highlights_url"] = f"{base_url}/highlights"
-
-    # STEP import artifacts (step_import.py): presence flags + fetch URLs
-    if os.path.exists(os.path.join(workdir, "face_attrs.json")):
-        manifest["face_attrs_url"] = f"{base_url}/face_attrs"
-    if os.path.exists(os.path.join(workdir, "pmi.json")):
-        manifest["pmi_url"] = f"{base_url}/pmi"
-    if os.path.exists(os.path.join(workdir, "assembly.json")):
-        manifest["assembly_url"] = f"{base_url}/assembly"
-
-    # AAG stage artifact (aag.py): stats + staleness for consumers
-    aag_meta_path = os.path.join(workdir, pipeline.AAG_META_FILE)
-    if os.path.exists(aag_meta_path):
-        with open(aag_meta_path) as f:
-            aag_meta = json.load(f)
-        manifest["aag"] = {
-            "schema": aag_meta.get("schema"),
-            "stats": _json_safe(aag_meta.get("stats", {})),
-            "stale": bool(
-                aag_meta.get("mesh_fingerprint")
-                and aag_meta["mesh_fingerprint"]
-                != pipeline.mesh_fingerprint(workdir)),
-        }
 
     return manifest

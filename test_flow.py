@@ -225,9 +225,12 @@ def main():
 
         # --- result store / manifest / serving round-trip ----------------
         print("=== analysis result round-trip ===")
+        from processes import resolver
         from processes.base import apply_defaults, params_hash
-        from processes.injection_molding import (PROCESS,
-                                                 flow_voxel_cache_params)
+        from processes.injection_molding import PROCESS
+
+        def voxel_cache(wd, voxel_params):
+            return resolver.cache_key(wd, "prep/voxels", voxel_params)
 
         voxel_analysis = PROCESS.analysis("flow_voxels")
         voxel_params = apply_defaults(voxel_analysis, {"voxel": 0.15})
@@ -248,8 +251,7 @@ def main():
         fill_params = apply_defaults(fill_analysis,
                                      {"voxel": 0.15, "gate": gate})
         fill_result = fill_analysis.run(workdir, fill_params, None)
-        voxel_hash = params_hash(flow_voxel_cache_params(workdir,
-                                                         voxel_params))
+        voxel_hash = params_hash(voxel_cache(workdir, voxel_params))
         check("fill result binds the voxel grid by hash",
               fill_result.stats["voxels_hash"] == voxel_hash,
               fill_result.stats["voxels_hash"])
@@ -263,7 +265,9 @@ def main():
         manifest = build_manifest(os.path.dirname(workdir), part)
         by_id = {}
         for entry in manifest["fields"]:
-            if ".flow_voxels." in entry["id"] or ".flow_fill." in entry["id"]:
+            # voxels live in the shared prep/voxels stage now; fill stays in
+            # injection_molding/flow_fill
+            if ".voxels." in entry["id"] or ".flow_fill." in entry["id"]:
                 by_id[entry["id"].rsplit(".", 1)[-1]] = entry
         expected = set(first.fields) | set(fill_result.fields)
         check("manifest exposes all flow fields",
@@ -293,17 +297,17 @@ def main():
 
         from api.fields import result_field_bytes
         sizes = {"u1": 1, "u4": 4, "f4": 4}
-        for analysis_id, result, params in (
-                ("flow_voxels", first,
-                 flow_voxel_cache_params(workdir, voxel_params)),
-                ("flow_fill", fill_result,
+        for process_id, analysis_id, result, params in (
+                ("prep", "voxels", first,
+                 voxel_cache(workdir, voxel_params)),
+                ("injection_molding", "flow_fill", fill_result,
                  {**fill_params, "schema": 1,
                   "mesh": pipeline.mesh_fingerprint(workdir)})):
             result_hash = params_hash(params)
             for name in result.fields:
                 entry = by_id[name]
                 data, dtype = result_field_bytes(
-                    workdir, "injection_molding", analysis_id, result_hash,
+                    workdir, process_id, analysis_id, result_hash,
                     name)
                 ok = (dtype == "<" + entry["dtype"]
                       and len(data) == entry["length"] * sizes[entry["dtype"]])

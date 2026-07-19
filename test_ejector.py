@@ -25,9 +25,13 @@ import ejection
 import pipeline
 from analysis import get_mesh_data, subdivide_mesh
 from api.ejector import simulate
+from processes import resolver
 from processes.base import (apply_defaults, params_hash, store_result)
-from processes.injection_molding import (EJECTION_SCHEMA, PROCESS,
-                                         skeleton_cache_params)
+from processes.injection_molding import EJECTION_SCHEMA, PROCESS
+
+
+def skeleton_cache_params(workdir, params):
+    return resolver.cache_key(workdir, "injection_molding/wall_skeleton", params)
 
 
 def make_box():

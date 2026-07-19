@@ -2,6 +2,7 @@
 accessibility matrix, plus tool-field precompute and composition."""
 
 import pipeline
+from processes import resolver
 from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             load_cached_result, store_result)
 
@@ -20,11 +21,7 @@ DEFAULT_TOOLS = [
 
 
 def run_setups(workdir, params, progress):
-    cache_params = {**params, "schema": SETUPS_SCHEMA,
-                    "directions": pipeline.directions_fingerprint(workdir),
-                    "accessibility": pipeline.accessibility_fingerprint(workdir),
-                    "mesh": pipeline.mesh_fingerprint(workdir),
-                    "splits": pipeline.splits_fingerprint(workdir)}
+    cache_params = resolver.cache_key(workdir, "cnc/setups", params)
     cached = load_cached_result(workdir, "cnc", "setups", cache_params)
     if cached is not None:
         return AnalysisResult(stats=cached["stats"],
@@ -42,11 +39,9 @@ def run_setups(workdir, params, progress):
 
 
 def run_setup_verdict(workdir, params, progress):
-    cache_params = {**params, "schema": SETUPS_SCHEMA, "verdict": 1,
-                    "directions": pipeline.directions_fingerprint(workdir),
-                    "accessibility": pipeline.accessibility_fingerprint(workdir),
-                    "mesh": pipeline.mesh_fingerprint(workdir),
-                    "splits": pipeline.splits_fingerprint(workdir)}
+    # rides in the setups store dir (the frontend reads both from cnc/setups,
+    # distinguished by stats.verdict); key_extra={"verdict":1} keeps it distinct
+    cache_params = resolver.cache_key(workdir, "cnc/setup_verdict", params)
     cached = load_cached_result(workdir, "cnc", "setups", cache_params)
     if cached is not None:
         return AnalysisResult(stats=cached["stats"],
@@ -68,9 +63,7 @@ def run_setup_verdict(workdir, params, progress):
 
 
 def run_features(workdir, params, progress):
-    cache_params = {**params, "schema": FEATURES_SCHEMA,
-                    "mesh": pipeline.mesh_fingerprint(workdir),
-                    "aag": pipeline.aag_fingerprint(workdir)}
+    cache_params = resolver.cache_key(workdir, "cnc/features", params)
     cached = load_cached_result(workdir, "cnc", "features", cache_params)
     if cached is not None:
         return AnalysisResult(stats=cached["stats"],
@@ -136,11 +129,12 @@ PROCESS = ProcessDef(
         AnalysisDef(
             id="features",
             label="Feature recognition",
+            # broadcasts BREP-face results onto the fine mesh (brep_faces.npy)
             description="Rule-based machining features from the BREP "
                         "adjacency graph: through/blind holes, counterbores, "
                         "countersinks (coaxial cylinder/cone stacks) and "
                         "best-effort pockets, with diameters, depths and axes.",
-            requires=["prep/aag"],
+            requires=["prep/mesh", "prep/aag"],
             params=[
                 Param("axis_angle_tol", "number", default=1.0, unit="deg",
                       min=0, label="Coaxiality angle tolerance"),
@@ -150,6 +144,7 @@ PROCESS = ProcessDef(
                       label="Emit best-effort pockets"),
             ],
             run=run_features,
+            schema=FEATURES_SCHEMA,
         ),
         AnalysisDef(
             id="setups",
@@ -171,6 +166,8 @@ PROCESS = ProcessDef(
                       label="Plans with per-face assignment fields"),
             ],
             run=run_setups,
+            schema=SETUPS_SCHEMA,
+            salts=("splits",),
         ),
         AnalysisDef(
             id="setup_verdict",
@@ -204,6 +201,9 @@ PROCESS = ProcessDef(
                       label="Plans with per-face assignment fields"),
             ],
             run=run_setup_verdict,
+            schema=SETUPS_SCHEMA,
+            salts=("splits",),
+            key_extra={"verdict": 1},
         ),
         AnalysisDef(
             id="precompute",

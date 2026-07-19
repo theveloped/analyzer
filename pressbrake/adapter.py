@@ -73,7 +73,7 @@ def build_kinematic_graph(workdir, *, k_factor=0.5, min_thickness=0.1,
     source = pipeline.source_step_path(workdir)
     if progress is not None:
         progress(0.05, "loading STEP")
-    shape = brep.load_step_shape(source)
+    shape = brep.load_step_shape_cached(source)  # topology only — reuse parse
     faces = list(brep.iter_faces(shape))
     if len(faces) != graph.face_count:
         raise ExtractionError("source STEP face count does not match the "

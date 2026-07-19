@@ -47,14 +47,31 @@ export interface FaceAttrs {
   }>;
 }
 
+/** the fine mesh: raw typed-array URLs the viewer fetches directly */
+export interface MeshLevel {
+  counts: { verts: number; faces: number };
+  verts_url: string;
+  faces_url: string;
+  normals_url: string;
+}
+
+/** the cheap coarse display preview (partial counts; display-only geometry) */
+export interface CoarseMesh {
+  counts: { verts?: number; faces?: number };
+  verts_url: string;
+  faces_url: string;
+  normals_url: string;
+  /** per-coarse-triangle BREP id for preview coloring */
+  brep_faces_url?: string;
+}
+
 export interface Manifest {
   part: Part;
-  mesh: {
-    counts: { verts: number; faces: number };
-    verts_url: string;
-    faces_url: string;
-    normals_url: string;
-  } | null;
+  mesh: MeshLevel | null;
+  /** cheap display preview available before the fine mesh (first-load bundle) */
+  coarse_mesh?: CoarseMesh | null;
+  /** the coarse preview is showing while the fine mesh is still pending */
+  fine_pending?: boolean;
   directions: number[][];
   /** directions were computed on an older mesh — re-run prep/directions */
   directions_stale?: boolean;

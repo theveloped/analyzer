@@ -645,7 +645,8 @@ def write_part_artifacts(workdir, proto, source_shape=None):
     import pipeline
 
     if source_shape is None:
-        source_shape = brep.load_step_shape(pipeline.source_step_path(workdir))
+        source_shape = brep.load_step_shape_cached(
+            pipeline.source_step_path(workdir))  # topology only — reuse parse
 
     has_attrs = bool(proto.face_attrs) or proto.part_color is not None
     has_pmi = proto.pmi is not None
@@ -885,4 +886,4 @@ def extract_part_attributes(workdir):
     if not idoc.pmi_degraded:
         extract_pmi(idoc, prototypes)
     return write_part_artifacts(
-        workdir, proto, source_shape=brep.load_step_shape(source))
+        workdir, proto, source_shape=brep.load_step_shape_cached(source))

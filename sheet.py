@@ -278,7 +278,7 @@ def detect_sheet(workdir, *, min_thickness=0.1, max_thickness=None,
     source = pipeline.source_step_path(workdir)
     if progress is not None:
         progress(0.1, "loading STEP for thickness ray cast")
-    shape = brep.load_step_shape(source)
+    shape = brep.load_step_shape_cached(source)  # topology only — reuse parse
     faces = list(brep.iter_faces(shape))
     if len(faces) != graph.face_count:
         raise ValueError("source STEP face count does not match the AAG — "
@@ -416,7 +416,7 @@ def flat_pattern(workdir, *, k_factor=0.5, combine_bends=True,
     source = pipeline.source_step_path(workdir)
     if progress is not None:
         progress(0.05, "loading STEP")
-    shape = brep.load_step_shape(source)
+    shape = brep.load_step_shape_cached(source)  # topology only — reuse parse
     faces = list(brep.iter_faces(shape))
     if len(faces) != graph.face_count:
         raise ValueError("source STEP face count does not match the AAG — "
