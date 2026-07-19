@@ -1,7 +1,7 @@
-/** Static CAD orientation triad, bottom-right of the viewer (page 4a). */
+/** Static CAD orientation triad, bottom-right of the viewer. */
 export function OrientationTriad() {
   return (
-    <div className="absolute bottom-3 right-3 size-[68px] rounded-lg border bg-background/92 shadow-sm backdrop-blur">
+    <div className="absolute bottom-3 right-3 size-[68px] rounded-lg border border-zinc-950/10 bg-white/90 text-zinc-950 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/90 dark:text-white dark:ring-white/10">
       <svg viewBox="0 0 74 74" className="size-full">
         <g strokeWidth="2" fill="none">
           <path d="M37,44 L37,14" stroke="#2a78d6" />

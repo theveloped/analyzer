@@ -1,15 +1,16 @@
 import { useEffect } from 'react';
+import { Navbar, NavbarSpacer } from '../catalyst/navbar';
+import { SidebarLayout } from '../catalyst/sidebar-layout';
 import { setViewerTheme } from '../viewer/controller';
-import { SidebarInset, SidebarProvider } from './components/ui/sidebar';
 import { AppSidebar } from './nav/AppSidebar';
 import { useV2 } from './store';
 import { Workspace } from './workspace/Workspace';
 
 /**
- * The shell: a collapsible left navigation sidebar (global / cross-part
- * concerns) beside a floating content card — the shadcn "inset" layout. The
- * card holds the single-part workspace, whose own right rail carries settings
- * scoped to what's on screen.
+ * The shell: Catalyst's SidebarLayout — a fixed left nav rail beside a floating
+ * content card (matching the Wefabricate Partner Portal). The card holds the
+ * single-part workspace; its own right rail carries settings scoped to what's
+ * on screen.
  */
 export default function App() {
   const theme = useV2((s) => s.theme);
@@ -19,11 +20,11 @@ export default function App() {
   }, [theme]);
 
   return (
-    <SidebarProvider>
-      <AppSidebar />
-      <SidebarInset>
-        <Workspace />
-      </SidebarInset>
-    </SidebarProvider>
+    <SidebarLayout
+      sidebar={<AppSidebar />}
+      navbar={<Navbar><NavbarSpacer /></Navbar>}
+    >
+      <Workspace />
+    </SidebarLayout>
   );
 }

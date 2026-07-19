@@ -1,16 +1,14 @@
 import {
-  Boxes, ClipboardCheck, FolderKanban, Layers, Moon, Package, SlidersHorizontal,
-  Sun, Wrench,
+  Boxes, ClipboardCheck, FolderKanban, Layers, Moon, Package,
+  SlidersHorizontal, Sun, Wrench,
 } from 'lucide-react';
+import {
+  Sidebar, SidebarBody, SidebarFooter, SidebarHeader, SidebarHeading,
+  SidebarItem, SidebarLabel, SidebarSection, SidebarSpacer,
+} from '../../catalyst/sidebar';
+import { Switch } from '../../catalyst/switch';
 import { useStore } from '../../state/store';
 import { selectPart } from '../../viewer/controller';
-import { Switch } from '../components/ui/switch';
-import {
-  Sidebar, SidebarContent, SidebarFooter, SidebarGroup, SidebarGroupLabel,
-  SidebarHeader, SidebarLabelText, SidebarMenu, SidebarMenuButton,
-  SidebarMenuItem, SidebarSeparator, useSidebar,
-} from '../components/ui/sidebar';
-import { cn } from '../lib/utils';
 import { useV2 } from '../store';
 
 const NAV = [
@@ -21,117 +19,73 @@ const NAV = [
   { id: 'materials', label: 'Materials', icon: Wrench, enabled: false },
 ];
 
-function GlobalSettings() {
-  const { open } = useSidebar();
+export function AppSidebar() {
+  const parts = useStore((s) => s.parts);
+  const partId = useStore((s) => s.partId);
   const advanced = useV2((s) => s.advanced);
   const setAdvanced = useV2((s) => s.setAdvanced);
   const theme = useV2((s) => s.theme);
   const toggleTheme = useV2((s) => s.toggleTheme);
 
-  if (!open) {
-    return (
-      <SidebarMenu>
-        <SidebarMenuItem>
-          <SidebarMenuButton
-            tooltip={advanced ? 'Advanced mode: on' : 'Advanced mode: off'}
-            isActive={advanced}
-            onClick={() => setAdvanced(!advanced)}
-          >
-            <SlidersHorizontal />
-          </SidebarMenuButton>
-        </SidebarMenuItem>
-        <SidebarMenuItem>
-          <SidebarMenuButton tooltip="Toggle theme" onClick={toggleTheme}>
-            {theme === 'dark' ? <Sun /> : <Moon />}
-          </SidebarMenuButton>
-        </SidebarMenuItem>
-      </SidebarMenu>
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-2 rounded-md bg-sidebar-accent/50 p-2">
-      <label className="flex items-center justify-between gap-2 text-sm">
-        <span className="flex items-center gap-2">
-          <SlidersHorizontal className="size-4" /> Advanced mode
-        </span>
-        <Switch checked={advanced} onCheckedChange={setAdvanced} aria-label="Advanced mode" />
-      </label>
-      <button
-        type="button"
-        onClick={toggleTheme}
-        className="flex items-center gap-2 rounded-md px-1 py-1 text-sm text-muted-foreground hover:text-foreground"
-      >
-        {theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
-        {theme === 'dark' ? 'Light theme' : 'Dark theme'}
-      </button>
-    </div>
-  );
-}
-
-export function AppSidebar() {
-  const parts = useStore((s) => s.parts);
-  const partId = useStore((s) => s.partId);
-  const { open } = useSidebar();
-
   return (
     <Sidebar>
       <SidebarHeader>
-        <div className={cn('flex items-center gap-2 px-1 py-1', !open && 'justify-center')}>
-          <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <Package className="size-4" />
-          </div>
-          <SidebarLabelText className="text-sm font-semibold">DFM Studio</SidebarLabelText>
-        </div>
+        <img
+          src="/wefabricate_Logo_Inline_Black.svg"
+          alt="Wefabricate"
+          className="h-8 w-auto self-start dark:invert"
+        />
       </SidebarHeader>
 
-      <SidebarSeparator />
+      <SidebarBody>
+        <SidebarSection>
+          {NAV.map((item) => (
+            <SidebarItem
+              key={item.id}
+              current={item.enabled && item.id === 'parts'}
+              disabled={!item.enabled}
+              title={item.enabled ? undefined : 'Coming soon'}
+            >
+              <item.icon data-slot="icon" />
+              <SidebarLabel>{item.label}</SidebarLabel>
+            </SidebarItem>
+          ))}
+        </SidebarSection>
 
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Navigate</SidebarGroupLabel>
-          <SidebarMenu>
-            {NAV.map((item) => (
-              <SidebarMenuItem key={item.id}>
-                <SidebarMenuButton
-                  isActive={item.enabled}
-                  disabled={!item.enabled}
-                  tooltip={item.enabled ? item.label : `${item.label} — coming soon`}
-                  className={cn(!item.enabled && 'opacity-50')}
-                >
-                  <item.icon />
-                  <SidebarLabelText>{item.label}</SidebarLabelText>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            ))}
-          </SidebarMenu>
-        </SidebarGroup>
+        <SidebarSection>
+          <SidebarHeading>Parts</SidebarHeading>
+          {parts.length === 0 && (
+            <p className="px-2 text-sm/5 text-zinc-500 dark:text-zinc-400">No parts yet.</p>
+          )}
+          {parts.map((p) => (
+            <SidebarItem
+              key={p.id}
+              current={p.id === partId}
+              onClick={() => void selectPart(p.id)}
+            >
+              <Package data-slot="icon" />
+              <SidebarLabel>{p.name}</SidebarLabel>
+            </SidebarItem>
+          ))}
+        </SidebarSection>
 
-        <SidebarGroup>
-          <SidebarGroupLabel>Parts</SidebarGroupLabel>
-          <SidebarMenu>
-            {parts.length === 0 && open && (
-              <p className="px-2 py-1 text-xs text-muted-foreground">No parts yet.</p>
-            )}
-            {parts.map((p) => (
-              <SidebarMenuItem key={p.id}>
-                <SidebarMenuButton
-                  isActive={p.id === partId}
-                  tooltip={p.name}
-                  onClick={() => void selectPart(p.id)}
-                >
-                  <Package />
-                  <SidebarLabelText>{p.name}</SidebarLabelText>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            ))}
-          </SidebarMenu>
-        </SidebarGroup>
-      </SidebarContent>
+        <SidebarSpacer />
+      </SidebarBody>
 
       <SidebarFooter>
-        <SidebarSeparator />
-        <GlobalSettings />
+        <SidebarSection>
+          <div className="flex items-center justify-between gap-3 rounded-lg px-2 py-2.5 text-sm/5 font-medium text-zinc-950 sm:py-2 dark:text-white">
+            <span className="flex items-center gap-3">
+              <SlidersHorizontal className="size-5 text-zinc-500 dark:text-zinc-400" />
+              Advanced mode
+            </span>
+            <Switch checked={advanced} onChange={setAdvanced} aria-label="Advanced mode" />
+          </div>
+          <SidebarItem onClick={toggleTheme}>
+            {theme === 'dark' ? <Sun data-slot="icon" /> : <Moon data-slot="icon" />}
+            <SidebarLabel>{theme === 'dark' ? 'Light theme' : 'Dark theme'}</SidebarLabel>
+          </SidebarItem>
+        </SidebarSection>
       </SidebarFooter>
     </Sidebar>
   );

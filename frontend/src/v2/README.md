@@ -22,11 +22,26 @@ what makes an incremental migration real rather than a rewrite:
 - `src/processes/injection` — the existing `thickness` / `gaps` view modes and
   their client-side threshold recolor.
 
+## UI kit — Tailwind Plus Catalyst
+
+The chrome uses **Tailwind Plus Catalyst (Tailwind v4 edition) + Headless UI**,
+copied from the Wefabricate Partner Portal (`wf-api`) so this tool matches it:
+
+- `src/catalyst/*` — the vendored Catalyst kit (Button, Sidebar, SidebarLayout,
+  Input, Select, Switch, Badge, Dropdown, Disclosure via Headless UI, …). Two
+  files are adapted for this repo: `link.tsx` (no router → plain anchor) and
+  `sidebar-layout.tsx` (full-bleed content card for the 3D workspace). Everything
+  else is stock — re-copy from wf-api to update.
+- Theme (`app.css`): Catalyst's zinc/blue palette, `system-ui` font, and the
+  `@tailwindcss/forms` plugin, mirroring wf-api's `styles/index.css`. Dark mode
+  is our own **class-based `.dark`** toggle (wf-api is OS-only) so it can also
+  drive the 3D viewer background + colour-map variants.
+- `components/status.tsx` — the one app-level addition on top of Catalyst: the
+  dataviz `StatusDot` / `StatusBadge` (icon + label, validated status colours),
+  which Catalyst's Badge doesn't cover.
+
 ## What it adds (the new shell)
 
-- `components/ui/*` — a small vendored subset of shadcn/ui (Tailwind v4) plus a
-  compact `sidebar` port (the "inset" layout: collapsible left nav + floating
-  content card).
 - `nav/AppSidebar.tsx` — the left **outer** sidebar: cross-part navigation and
   global settings (advanced-mode + theme). Deliberately holds things *not* tied
   to the current card.
