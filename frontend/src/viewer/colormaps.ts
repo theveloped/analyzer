@@ -49,9 +49,12 @@ function sampleEven(stops: RGB[], t: number): RGB {
 // imperceptible at this density since the source maps are perceptually even) ──
 
 // batlow with a WHITE top — the light high end pops on the dark viewer.
-const BATLOW_W: RGB[] = ['#011959','#0d335e','#114360','#28655f','#437254','#687f41','#948f32','#ba9333','#d8a566','#edaf8f','#f8bdaf','#fed1cd','#ffe8e7','#fff6f6','#fffefe'].map(hex);
+export const BATLOW_W: RGB[] = ['#011959','#0d335e','#114360','#28655f','#437254','#687f41','#948f32','#ba9333','#d8a566','#edaf8f','#f8bdaf','#fed1cd','#ffe8e7','#fff6f6','#fffefe'].map(hex);
 // batlow with a BLACK bottom — the dark low end pops on a light viewer.
-const BATLOW_K: RGB[] = ['#04050a','#131e2d','#21384f','#33505e','#49625a','#63724b','#83813d','#a38e38','#c29840','#de9f55','#f1a678','#fcb2aa','#fdbac3','#fdbfd3','#faccfa'].map(hex);
+export const BATLOW_K: RGB[] = ['#04050a','#131e2d','#21384f','#33505e','#49625a','#63724b','#83813d','#a38e38','#c29840','#de9f55','#f1a678','#fcb2aa','#fdbac3','#fdbfd3','#faccfa'].map(hex);
+// viridis (matplotlib) — perceptually-uniform, dark-purple → yellow. Same map
+// on both backgrounds (its dark low end suits the dark viewer).
+const VIRIDIS: RGB[] = ['#440154','#482878','#3e4a89','#31688e','#26828e','#1f9e89','#35b779','#6ece58','#b5de2b','#fde725'].map(hex);
 
 // vik: dark-blue ↔ WHITE centre ↔ dark-red. Light centre = zero visible on dark.
 const VIK: RGB[] = ['#001261','#022e73','#034280','#136697','#2b79a4','#4e92b4','#74aac5','#9ac2d5','#c0d8e4','#e7e7e7','#eee3dc','#d9a486','#b08056','#af4310','#590008'].map(hex);
@@ -66,7 +69,8 @@ const INFERNO: RGB[] = ['#000004','#130a30','#340a5f','#55106d','#751b6e','#9425
 
 /** Unsigned magnitude (thickness, gap, clearance). t∈[0,1]. */
 export function sequential(t: number): RGB {
-  return sampleEven(BG === 'light' ? BATLOW_K : BATLOW_W, t);
+  // trying viridis; revert to `BG === 'light' ? BATLOW_K : BATLOW_W` for batlow
+  return sampleEven(VIRIDIS, t);
 }
 
 /** Signed deviation with a meaningful zero (draft ±, over/under a target).
@@ -143,7 +147,7 @@ function gradientCss(stops: RGB[]): string {
     .join(', ')})`;
 }
 
-export const sequentialGradientCss = () => gradientCss(BG === 'light' ? BATLOW_K : BATLOW_W);
+export const sequentialGradientCss = () => gradientCss(VIRIDIS);
 export const severityGradientCss = () => gradientCss(INFERNO);
 
 /** Diverging gradient sampled through the neutral-pinned `diverging()` map, so
