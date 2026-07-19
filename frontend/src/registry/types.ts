@@ -18,9 +18,24 @@ export interface LegendEntry {
   focus?: LegendFocus;
 }
 
+export interface ColorBar {
+  /** Domain endpoints. For a diverging bar these are symmetric (−M, +M). */
+  min: number;
+  max: number;
+  unit?: string;
+  /** true → 0 sits at the centre of the bar (symmetric domain). */
+  diverging?: boolean;
+  /** CSS linear-gradient matching the painted colormap (WYSIWYG). */
+  gradient: string;
+  /** Optional limit value to mark as a tick. */
+  threshold?: number;
+}
+
 export interface PaintInfo {
   legend: LegendEntry[];
   stats?: string;
+  /** A continuous colour scale to render as a colorbar legend. */
+  colorbar?: ColorBar;
 }
 
 /** Everything a view mode needs to paint the mesh, independent of process. */

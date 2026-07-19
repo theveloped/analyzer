@@ -11,6 +11,7 @@ import { clearFieldCache, fetchBin, fetchField } from '../fields/fields';
 import { getPlugin } from '../registry';
 import type { LegendFocus, ViewCtx } from '../registry/types';
 import { useStore } from '../state/store';
+import { setColorBackground, VIEWER_BG, type ViewerBackground } from './colormaps';
 import { Scene3D } from './scene';
 
 let scene: Scene3D | null = null;
@@ -69,6 +70,14 @@ export async function refreshParts() {
 /** Fly the camera to a legend entry's face group. */
 export function flyToFocus(focus: LegendFocus) {
   scene?.flyTo(focus.center, focus.direction, focus.radius);
+}
+
+/** Switch the viewer between light and dark: repaints the background and the
+ * background-matched colour-map variants (batlowW/K, vik/berlin). */
+export function setViewerTheme(bg: ViewerBackground) {
+  setColorBackground(bg);
+  scene?.setBackground(VIEWER_BG[bg]);
+  schedulePaint(true);
 }
 
 /** Run an action that needs the live ViewCtx (e.g. a controls button);
@@ -238,12 +247,15 @@ async function repaint() {
   try {
     scene?.clearOverlays();
     const info = await mode.paint(ctx);
-    useStore.getState().set({ legend: info.legend, stats: info.stats ?? '', error: null });
+    useStore.getState().set({
+      legend: info.legend, colorbar: info.colorbar ?? null,
+      stats: info.stats ?? '', error: null,
+    });
   } catch (err) {
     scene?.clearOverlays();
     ctx.paintFaces(() => [0.87, 0.9, 0.92]);
     useStore.getState().set({
-      legend: [], stats: `⚠ ${err instanceof Error ? err.message : err}`,
+      legend: [], colorbar: null, stats: `⚠ ${err instanceof Error ? err.message : err}`,
     });
   } finally {
     // modes that showed a graph re-key it every paint; anyone else clears it

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { Job, Manifest, Part, ProcessInfo } from '../api/types';
-import type { LegendEntry } from '../registry/types';
+import type { ColorBar, LegendEntry } from '../registry/types';
 
 export interface AppState {
   catalog: ProcessInfo[];
@@ -17,6 +17,8 @@ export interface AppState {
   viewerParams: Record<string, Record<string, any>>;
 
   legend: LegendEntry[];
+  /** Continuous colour scale for the active heatmap (null for other views). */
+  colorbar: ColorBar | null;
   stats: string;
   pick: string;
   error: string | null;
@@ -46,6 +48,7 @@ export const useStore = create<AppState>()((set) => ({
   viewerParams: {},
 
   legend: [],
+  colorbar: null,
   stats: '',
   pick: 'click a face to inspect',
   error: null,
