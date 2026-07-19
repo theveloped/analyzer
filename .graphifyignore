@@ -1,0 +1,28 @@
+# Keep the graph to real source + docs. graphify already honours .gitignore
+# (node_modules, dist, zcache, results, parts, __pycache__); this adds the rest.
+
+# Committed sample part workdirs — binary geometry caches, not source
+large_part/
+21007-010-rev1-240103_assy-wireless_top/
+21007-010-rev1-240103_assy-wireless_bottom/
+
+# Test fixtures (binary CAD); the root test_*.py scripts are kept
+tests/
+
+# Binary / data / asset files
+*.npy
+*.npz
+*.obj
+*.stl
+*.stp
+*.step
+*.iges
+*.glb
+*.dxf
+*.svg
+*.png
+*.jpg
+*.gif
+
+# Graphify's own output
+graphify-out/

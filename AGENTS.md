@@ -19,6 +19,21 @@ Read this file first. Then, depending on the task:
   evidence, approach, verification) meant to be tackled one per session.
   Pick from the top tier, delete the section when it lands.
 
+## Code navigation — graphify
+
+A local, queryable code+docs knowledge graph is available (graphify, AST, 0-token).
+A post-commit hook keeps `graphify-out/graph.json` fresh (gitignored). Prefer it
+over blind grepping when tracing across the codebase:
+
+- `graphify explain "params_hash"` — a symbol, its location and connections
+- `graphify path "A" "B"` — shortest path between two symbols
+- `graphify query "<question>" --budget 1500` — BFS traversal for a question
+- `graphify affected "X"` — reverse impact (what depends on X)
+
+Rebuild after big refactors with `graphify update .` (no API cost). A richer
+semantic pass (`graphify extract . --mode deep --backend claude`) adds inferred
+contract edges but drives the claude CLI — run it deliberately, not by default.
+
 ## Hard rules
 
 1. **Do not "fix" the spelling `tollerance`.** CLI flags, function kwargs and cached

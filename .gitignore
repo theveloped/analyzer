@@ -9,3 +9,7 @@ normals.npy
 part.json
 frontend/node_modules/
 frontend/dist/
+
+# graphify knowledge-graph output (trial)
+graphify-out/
+.graphify_*
