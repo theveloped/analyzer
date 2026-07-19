@@ -25,9 +25,13 @@ from meshlib import mrmeshpy as mm
 import gating
 import pipeline
 from analysis import get_mesh_data, subdivide_mesh
+from processes import resolver
 from processes.base import apply_defaults, params_hash, store_result
-from processes.injection_molding import (PROCESS, SPRUE_SCHEMA,
-                                         skeleton_cache_params)
+from processes.injection_molding import PROCESS, SPRUE_SCHEMA
+
+
+def skeleton_cache_params(workdir, params):
+    return resolver.cache_key(workdir, "injection_molding/wall_skeleton", params)
 
 
 def make_plate():

@@ -225,9 +225,12 @@ def main():
 
         # --- result store / manifest / serving round-trip ----------------
         print("=== analysis result round-trip ===")
+        from processes import resolver
         from processes.base import apply_defaults, params_hash
-        from processes.injection_molding import (PROCESS,
-                                                 flow_voxel_cache_params)
+        from processes.injection_molding import PROCESS
+
+        def voxel_cache(wd, voxel_params):
+            return resolver.cache_key(wd, "prep/voxels", voxel_params)
 
         voxel_analysis = PROCESS.analysis("flow_voxels")
         voxel_params = apply_defaults(voxel_analysis, {"voxel": 0.15})
@@ -248,8 +251,7 @@ def main():
         fill_params = apply_defaults(fill_analysis,
                                      {"voxel": 0.15, "gate": gate})
         fill_result = fill_analysis.run(workdir, fill_params, None)
-        voxel_hash = params_hash(flow_voxel_cache_params(workdir,
-                                                         voxel_params))
+        voxel_hash = params_hash(voxel_cache(workdir, voxel_params))
         check("fill result binds the voxel grid by hash",
               fill_result.stats["voxels_hash"] == voxel_hash,
               fill_result.stats["voxels_hash"])
@@ -297,7 +299,7 @@ def main():
         sizes = {"u1": 1, "u4": 4, "f4": 4}
         for process_id, analysis_id, result, params in (
                 ("prep", "voxels", first,
-                 flow_voxel_cache_params(workdir, voxel_params)),
+                 voxel_cache(workdir, voxel_params)),
                 ("injection_molding", "flow_fill", fill_result,
                  {**fill_params, "schema": 1,
                   "mesh": pipeline.mesh_fingerprint(workdir)})):

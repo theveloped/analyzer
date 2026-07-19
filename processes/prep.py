@@ -12,16 +12,6 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
 # voxels.ts, and re-exported as injection_molding.FLOW_SCHEMA; the
 # (process, analysis, params.schema) triple is the cross-side contract.
 VOXEL_SCHEMA = 1
-VOXEL_PARAMS = ("voxel",)
-
-
-def voxel_cache_params(workdir, params):
-    """Cache key for the shared SDF voxel artifact: the voxel params plus the
-    schema and mesh salts, so any consumer voxelizing at the same size shares
-    the grid regardless of which process requested it."""
-    return {**{name: params[name] for name in VOXEL_PARAMS},
-            "schema": VOXEL_SCHEMA,
-            "mesh": pipeline.mesh_fingerprint(workdir)}
 
 
 def find_source(workdir):
@@ -93,10 +83,29 @@ def directions_current(workdir, params):
 
 def voxels_current(workdir, params):
     """A voxel artifact for these params exists and indexes the current mesh."""
+    from processes import resolver
     if pipeline.mesh_fingerprint(workdir) is None:
         return False
-    return load_cached_result(workdir, "prep", "voxels",
-                              voxel_cache_params(workdir, params)) is not None
+    key = resolver.cache_key(workdir, "prep/voxels", params)
+    return load_cached_result(workdir, "prep", "voxels", key) is not None
+
+
+# salt_fields: each prep artifact's fingerprint contribution to a downstream
+# results-tier cache key (collected transitively by resolver.cache_key). The
+# coarse preview contributes nothing — it co-varies with the fine mesh and is
+# display-only.
+
+def mesh_salt(workdir):
+    return {"mesh": pipeline.mesh_fingerprint(workdir)}
+
+
+def directions_salt(workdir):
+    return {"directions": pipeline.directions_fingerprint(workdir),
+            "accessibility": pipeline.accessibility_fingerprint(workdir)}
+
+
+def aag_salt(workdir):
+    return {"aag": pipeline.aag_fingerprint(workdir)}
 
 
 def coarse_current(workdir, params):
@@ -212,14 +221,15 @@ def run_bundle(workdir, params, progress):
 def run_voxels(workdir, params, progress):
     """Signed-distance voxelization of the part interior, cached as a shared
     prep artifact (results/prep/voxels/<hash>) any process can reuse."""
-    cache_params = voxel_cache_params(workdir, params)
-    cached = load_cached_result(workdir, "prep", "voxels", cache_params)
+    from processes import resolver
+    key = resolver.cache_key(workdir, "prep/voxels", params)
+    cached = load_cached_result(workdir, "prep", "voxels", key)
     if cached is not None:
         return AnalysisResult(stats=cached["stats"],
                               fields=list(cached["arrays"]))
     stats, arrays, field_meta = pipeline.flow_voxels(
         workdir, voxel=params["voxel"], progress=progress)
-    store_result(workdir, "prep", "voxels", cache_params, stats,
+    store_result(workdir, "prep", "voxels", key, stats,
                  arrays=arrays, field_meta=field_meta)
     return AnalysisResult(stats=stats, fields=list(arrays))
 
@@ -246,6 +256,7 @@ PROCESS = ProcessDef(
             ],
             run=run_mesh,
             is_current=mesh_current,
+            salt_fields=mesh_salt,
         ),
         AnalysisDef(
             id="mesh_coarse",
@@ -305,6 +316,7 @@ PROCESS = ProcessDef(
             ],
             run=run_aag,
             is_current=aag_current,
+            salt_fields=aag_salt,
         ),
         AnalysisDef(
             id="directions",
@@ -322,6 +334,7 @@ PROCESS = ProcessDef(
             ],
             run=run_directions,
             is_current=directions_current,
+            salt_fields=directions_salt,
         ),
         AnalysisDef(
             id="voxels",
@@ -331,6 +344,7 @@ PROCESS = ProcessDef(
                         "freeze-off and cooling estimates, shared across "
                         "processes.",
             requires=["prep/mesh"],
+            schema=VOXEL_SCHEMA,
             params=[
                 Param("voxel", "number", default=None, unit="mm", min=0.05,
                       label="Voxel size (blank = auto from resolution)"),

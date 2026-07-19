@@ -1,7 +1,7 @@
 """Tube / profile laser process: straight constant-section profile
 classification (round / rectangular / square) with an optional unroll."""
 
-import pipeline
+from processes import resolver
 from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             load_cached_result, store_result)
 
@@ -10,9 +10,7 @@ TUBE_SCHEMA = 2
 
 
 def run_profile(workdir, params, progress):
-    cache_params = {**params, "schema": TUBE_SCHEMA,
-                    "mesh": pipeline.mesh_fingerprint(workdir),
-                    "aag": pipeline.aag_fingerprint(workdir)}
+    cache_params = resolver.cache_key(workdir, "tube_laser/profile", params)
     cached = load_cached_result(workdir, "tube_laser", "profile",
                                 cache_params)
     if cached is not None:
@@ -53,6 +51,7 @@ PROCESS = ProcessDef(
                       label="K-factor (neutral fiber position)"),
             ],
             run=run_profile,
+            schema=TUBE_SCHEMA,
         ),
     ],
 )

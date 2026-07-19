@@ -82,6 +82,59 @@ def _split(target_id):
     return process_id, analysis_id
 
 
+def cache_key(workdir, target_id, params):
+    """The content-addressed results-tier cache key for an analysis.
+
+    One place builds every runner's key: the declared params, the analysis's
+    `schema`, the fingerprints of its transitive prep prerequisites (each prep
+    stage contributes via `salt_fields`), the `splits` salt when opted in, and
+    any literal `key_extra` discriminators. Passed to `load_cached_result` /
+    `store_result` (which apply `params_hash`). Replaces the per-runner
+    hand-salted `{**params, "mesh": mesh_fingerprint(...), ...}` dicts, so
+    invalidation is derived from `requires` rather than duplicated by hand.
+    """
+    from processes import get_analysis
+
+    process_id, analysis_id = _split(target_id)
+    analysis = get_analysis(process_id, analysis_id)
+    # key on this analysis's own declared params only — so a cache-aware sub-run
+    # that hands a runner a superset dict (e.g. sprue → wall_skeleton) keys the
+    # sub-result on just its own knobs, sharing it with a standalone run
+    own = {p.name for p in analysis.params}
+    key = {name: value for name, value in params.items() if name in own}
+    if analysis.schema is not None:
+        key["schema"] = analysis.schema
+    for salt in _prep_salts(workdir, analysis):
+        key.update(salt)
+    if "splits" in analysis.salts:
+        import pipeline
+        key["splits"] = pipeline.splits_fingerprint(workdir)
+    if analysis.key_extra:
+        key.update(analysis.key_extra)
+    return key
+
+
+def _prep_salts(workdir, analysis, *, seen=None):
+    """Fingerprint contributions of every transitive prep prerequisite.
+
+    Walks the full `requires` DAG (through results-tier nodes too, e.g.
+    setup_verdict → setups → prep/directions) and yields each prep stage's
+    `salt_fields(workdir)` dict once.
+    """
+    from processes import get_analysis
+
+    if seen is None:
+        seen = set()
+    for req in analysis.requires:
+        if req in seen:
+            continue
+        seen.add(req)
+        req_analysis = get_analysis(*_split(req))
+        if req_analysis.salt_fields is not None:
+            yield req_analysis.salt_fields(workdir)
+        yield from _prep_salts(workdir, req_analysis, seen=seen)
+
+
 def _gateable(target_id):
     """True if the analysis declares an is_current gate (prep-tier)."""
     from processes import get_analysis

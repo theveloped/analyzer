@@ -63,6 +63,18 @@ class AnalysisDef:
     requires: list = field(default_factory=list)
     description: str = ""
     is_current: callable = None
+    # results-tier cache-key inputs, folded in by resolver.cache_key:
+    #   schema     — this analysis's result schema version
+    #   salts      — extra salt names beyond the auto prep fingerprints; only
+    #                "splits" today (per-face-split fingerprint)
+    #   key_extra  — literal discriminators for analyses sharing a store dir
+    #                (setup_verdict rides in the setups dir with {"verdict": 1})
+    #   salt_fields(workdir) -> dict — a prep artifact's fingerprint
+    #                contribution, collected transitively for downstream keys
+    schema: object = None
+    salts: tuple = ()
+    key_extra: dict = None
+    salt_fields: callable = None
 
     def to_dict(self):
         return {

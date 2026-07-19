@@ -98,6 +98,14 @@ registry served at `/api/processes`.
 `processes/resolver.py` (framework-free) walks `AnalysisDef.requires` and runs
 missing/stale prerequisites before the target, inline on the single job worker
 (`api/jobs.py:_run` calls `resolver.ensure` instead of `analysis.run` directly).
+`resolver.cache_key(workdir, "proc/analysis", params)` is the single builder for
+every results-tier cache key: the analysis's own declared params + its `schema` +
+the fingerprints of its transitive prep prerequisites (each prep stage's
+`salt_fields`) + the `splits` salt (opt-in via `salts=("splits",)`) + any
+`key_extra` discriminator (setup_verdict's `{"verdict": 1}`, which rides in the
+`cnc/setups` store dir). Runners call it instead of hand-salting
+`{**params, "mesh": mesh_fingerprint(...), ...}` — so the fingerprint set is
+derived from `requires`, not duplicated per runner.
 Only prerequisites declaring an `is_current(workdir, params)` gate (the `prep`
 stages) are auto-run; results-tier analyses self-cache and are never auto-run, so
 param-sensitive chains (e.g. CNC precompute→compose) are untouched. Invalidation

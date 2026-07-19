@@ -202,9 +202,10 @@ def main():
               str({k: by_id['cluster_nodes'][k] for k in ('dtype', 'length')}))
 
         from api.fields import result_field_bytes
+        from processes import resolver
         from processes.base import params_hash
-        from processes.injection_molding import skeleton_cache_params
-        cache_key = skeleton_cache_params(workdir, params)
+        cache_key = resolver.cache_key(
+            workdir, "injection_molding/wall_skeleton", params)
         check("cache key carries schema 5",
               cache_key["schema"] == 5, f"schema {cache_key['schema']}")
         result_hash = params_hash(cache_key)
@@ -245,12 +246,13 @@ def main():
 
             result = INJ.analysis("wall_skeleton").run(
                 wd, apply_defaults(INJ.analysis("wall_skeleton"), {}), None)
+            from processes import resolver
             from processes.base import load_result_arrays
-            from processes.injection_molding import skeleton_cache_params
             skel = load_result_arrays(
                 wd, "injection_molding", "wall_skeleton",
-                skeleton_cache_params(wd, apply_defaults(
-                    INJ.analysis("wall_skeleton"), {})))
+                resolver.cache_key(wd, "injection_molding/wall_skeleton",
+                                   apply_defaults(
+                                       INJ.analysis("wall_skeleton"), {})))
             check("thickness field aligns to disk vertices",
                   len(skel["thickness"]) == len(verts),
                   f"{len(skel['thickness'])} vs {len(verts)}")

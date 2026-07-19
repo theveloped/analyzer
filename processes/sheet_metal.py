@@ -2,6 +2,7 @@
 (flat_pattern) over the AAG stage artifact."""
 
 import pipeline
+from processes import resolver
 from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             load_cached_result, store_result)
 
@@ -11,14 +12,8 @@ SHEET_SCHEMA = 2
 BENDPLAN_SCHEMA = 2
 
 
-def _cache_params(params):
-    return {**params, "schema": SHEET_SCHEMA}
-
-
 def run_detect(workdir, params, progress):
-    cache_params = {**params, "schema": SHEET_SCHEMA,
-                    "mesh": pipeline.mesh_fingerprint(workdir),
-                    "aag": pipeline.aag_fingerprint(workdir)}
+    cache_params = resolver.cache_key(workdir, "sheet_metal/detect", params)
     cached = load_cached_result(workdir, "sheet_metal", "detect", cache_params)
     if cached is not None:
         return AnalysisResult(stats=cached["stats"],
@@ -37,9 +32,8 @@ def run_detect(workdir, params, progress):
 
 
 def run_flat_pattern(workdir, params, progress):
-    cache_params = {**params, "schema": SHEET_SCHEMA,
-                    "mesh": pipeline.mesh_fingerprint(workdir),
-                    "aag": pipeline.aag_fingerprint(workdir)}
+    cache_params = resolver.cache_key(workdir, "sheet_metal/flat_pattern",
+                                      params)
     cached = load_cached_result(workdir, "sheet_metal", "flat_pattern",
                                 cache_params)
     if cached is not None:
@@ -109,9 +103,7 @@ def _tooling_stats(machine, punches, dies, plan_dicts, actions):
 
 
 def run_bend_plan(workdir, params, progress):
-    cache_params = {**params, "schema": BENDPLAN_SCHEMA,
-                    "mesh": pipeline.mesh_fingerprint(workdir),
-                    "aag": pipeline.aag_fingerprint(workdir)}
+    cache_params = resolver.cache_key(workdir, "sheet_metal/bend_plan", params)
     cached = load_cached_result(workdir, "sheet_metal", "bend_plan",
                                 cache_params)
     if cached is not None:
@@ -376,6 +368,7 @@ PROCESS = ProcessDef(
                       min=0, label="Maximum sheet thickness (blank = none)"),
             ],
             run=run_detect,
+            schema=SHEET_SCHEMA,
         ),
         AnalysisDef(
             id="flat_pattern",
@@ -398,6 +391,7 @@ PROCESS = ProcessDef(
                       label="Outline gap bridged as filler"),
             ],
             run=run_flat_pattern,
+            schema=SHEET_SCHEMA,
         ),
         AnalysisDef(
             id="bend_plan",
@@ -436,6 +430,7 @@ PROCESS = ProcessDef(
                       min=0, label="Minimum sheet thickness"),
             ],
             run=run_bend_plan,
+            schema=BENDPLAN_SCHEMA,
         ),
     ],
 )

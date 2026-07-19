@@ -292,8 +292,8 @@ if __name__ == "__main__":
         logger.info("Computing pocket slenderness field")
 
         import processes
+        from processes import resolver
         from processes.base import apply_defaults, load_result_arrays
-        from processes.injection_molding import slenderness_cache_params
 
         analysis = processes.get_analysis("injection_molding", "slenderness")
         params = {"direction": args.direction}
@@ -305,7 +305,8 @@ if __name__ == "__main__":
         result = analysis.run(args.directory, merged, None)
         logger.info(f"slenderness stats: {result.stats}")
 
-        cache_key = slenderness_cache_params(args.directory, merged)
+        cache_key = resolver.cache_key(args.directory,
+                                       "injection_molding/slenderness", merged)
         arrays = load_result_arrays(args.directory, "injection_molding",
                                     "slenderness", cache_key)
         ratio = arrays["slenderness"]
@@ -324,8 +325,8 @@ if __name__ == "__main__":
         logger.info("Computing thin-span stiffness proxy field")
 
         import processes
+        from processes import resolver
         from processes.base import apply_defaults, load_result_arrays
-        from processes.injection_molding import span_cache_params
 
         analysis = processes.get_analysis("injection_molding", "thin_span")
         params = {}
@@ -338,7 +339,8 @@ if __name__ == "__main__":
         result = analysis.run(args.directory, merged, None)
         logger.info(f"thin_span stats: {result.stats}")
 
-        cache_key = span_cache_params(args.directory, merged)
+        cache_key = resolver.cache_key(args.directory,
+                                       "injection_molding/thin_span", merged)
         arrays = load_result_arrays(args.directory, "injection_molding",
                                     "thin_span", cache_key)
         ratio = arrays["span_ratio"]
