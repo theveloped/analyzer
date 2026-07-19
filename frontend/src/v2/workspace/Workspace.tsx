@@ -1,7 +1,6 @@
 import { useStore } from '../../state/store';
 import { AnalysisToolbar } from './AnalysisToolbar';
 import { Legend } from './Legend';
-import { OrientationTriad } from './OrientationTriad';
 import { PipelineRail } from './PipelineRail';
 import { SettingsRail } from './SettingsRail';
 import { TopBar } from './TopBar';
@@ -28,7 +27,6 @@ export function Workspace() {
           <Viewer />
           <AnalysisToolbar />
           <Legend />
-          <OrientationTriad />
           {(!partId || !meshReady) && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <div className="rounded-lg bg-white/90 px-3 py-2 text-sm/6 text-zinc-600 shadow-xs ring-1 ring-zinc-950/5 dark:bg-zinc-900/90 dark:text-zinc-300 dark:ring-white/10">

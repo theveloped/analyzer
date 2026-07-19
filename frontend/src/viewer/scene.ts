@@ -4,6 +4,7 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import type { RGB } from '../registry/types';
 
 export class Scene3D {
@@ -27,6 +28,10 @@ export class Scene3D {
   private raycaster = new THREE.Raycaster();
   private downAt: [number, number] | null = null;
   private disposed = false;
+  // interactive axis gizmo (bottom-right): rotates with the camera, click an
+  // axis to align the view. Assigned in the constructor.
+  private viewHelper!: ViewHelper;
+  private clock = new THREE.Clock();
 
   onPick: ((faceIndex: number, point: [number, number, number]) => void) | null = null;
 
@@ -38,8 +43,13 @@ export class Scene3D {
     // which captures its orbit basis from camera.up at construction time
     // (setting it later leaves the controls tumbling around +Y)
     this.camera.up.set(0, 0, 1);
+    // a default framing so the empty viewer is a real 3D view (orbitable, and
+    // the axis gizmo reads correctly) before a part loads; frame() overrides it
+    this.camera.position.set(4, -4, 3);
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
+    // we clear manually each frame so the ViewHelper can overlay the gizmo
+    this.renderer.autoClear = false;
     container.appendChild(this.renderer.domElement);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -52,6 +62,13 @@ export class Scene3D {
       MIDDLE: THREE.MOUSE.ROTATE,
       RIGHT: THREE.MOUSE.PAN,
     };
+
+    // Axis gizmo. `center` shares the controls' orbit target (a live reference,
+    // so a double-click re-center moves the gizmo pivot too).
+    this.viewHelper = new ViewHelper(this.camera, this.renderer.domElement);
+    this.viewHelper.center = this.controls.target;
+    this.viewHelper.setLabelStyle('bold 22px system-ui, sans-serif', '#18181b', 15);
+    this.viewHelper.setLabels('X', 'Y', 'Z');
 
     this.scene.add(this.overlay);
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.0));
@@ -70,6 +87,7 @@ export class Scene3D {
     const animate = () => {
       if (this.disposed) return;
       requestAnimationFrame(animate);
+      const delta = this.clock.getDelta();
       if (this.animator) {
         try {
           this.animator(performance.now());
@@ -77,8 +95,14 @@ export class Scene3D {
           this.animator = null; // a broken animator must not kill the loop
         }
       }
+      // While a gizmo click is animating, ViewHelper drives the camera position
+      // along the arc to the axis; controls.update() then re-derives the
+      // orientation for our Z-up world, so there is no roll snap at the end.
+      if (this.viewHelper.animating) this.viewHelper.update(delta);
       this.controls.update(); // damping needs a per-frame update
+      this.renderer.clear();
       this.renderer.render(this.scene, this.camera);
+      this.viewHelper.render(this.renderer);
     };
     animate();
   }
@@ -109,6 +133,8 @@ export class Scene3D {
     // a drag is orbiting, not picking
     if (!this.downAt
       || Math.hypot(e.clientX - this.downAt[0], e.clientY - this.downAt[1]) > 4) return;
+    // a click on a gizmo axis aligns the view; it consumes the click
+    if (this.viewHelper.handleClick(e)) return;
     const hit = this.hitUnderCursor(e);
     if (hit && hit.faceIndex != null && this.onPick) {
       this.onPick(hit.faceIndex, [hit.point.x, hit.point.y, hit.point.z]);
@@ -496,6 +522,7 @@ export class Scene3D {
   dispose() {
     this.disposed = true;
     this.clearMesh();
+    this.viewHelper.dispose();
     window.removeEventListener('resize', this.onResize);
     this.renderer.dispose();
     this.renderer.domElement.remove();
