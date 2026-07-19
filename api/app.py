@@ -67,9 +67,19 @@ def create_app(root=".", preload=None):
     async def upload_part(file: UploadFile):
         data = await file.read()
         try:
-            return parts_api.create_part(root, file.filename, data)
+            part = parts_api.create_part(root, file.filename, data)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        # kick off the cheap first-load bundle (coarse preview + AAG + STEP
+        # colors/names/PMI) so the viewer renders and takes input immediately;
+        # the bundle is idempotent, so a dedup re-upload no-ops. STEP only —
+        # STL has no BREP level. The fine mesh stays on-demand.
+        if os.path.splitext(file.filename or "")[1].lower() in pipeline.STEP_EXTENSIONS:
+            try:
+                jobs.submit(part["id"], "prep", "bundle", {})
+            except PartBusyError:
+                pass  # a job is already running for this part
+        return part
 
     @app.get("/api/parts/{part_id}")
     def get_part(part_id: str):
@@ -87,8 +97,10 @@ def create_app(root=".", preload=None):
             data, _ = fields_api.mesh_bytes(workdir, which)
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail=f"no mesh array {which}")
-        return binary(request, data,
-                      os.path.join(workdir, pipeline.FINE_FACES_FILE))
+        # ETag off the served array's own file (coarse arrays exist before the
+        # fine faces do), falling back to the fine faces for verts/faces/normals
+        tag_file = fields_api.MESH_ARRAY_FILE.get(which, pipeline.FINE_FACES_FILE)
+        return binary(request, data, os.path.join(workdir, tag_file))
 
     @app.get("/api/parts/{part_id}/fields/{file_stem}/{key}")
     def get_field(request: Request, part_id: str, file_stem: str, key: str):

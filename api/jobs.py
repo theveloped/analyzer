@@ -17,6 +17,7 @@ from loguru import logger
 
 import processes
 from api import parts as parts_api
+from processes import resolver
 from processes.base import apply_defaults
 
 
@@ -107,9 +108,12 @@ class JobManager:
             # submit for the part then 409s with no way to recover)
             try:
                 workdir = parts_api.workdir_for(self.root, job.part_id)
-                analysis = processes.get_analysis(job.process, job.analysis)
                 logger.info(f"Job #{job.id}: {job.process}/{job.analysis} on {job.part_id}")
-                result = analysis.run(workdir, job.params, report)
+                # the resolver auto-runs any stale/missing prep-tier
+                # prerequisites (mesh, aag, directions, voxels) inline on this
+                # single worker thread, then runs the requested analysis
+                result = resolver.ensure(
+                    workdir, f"{job.process}/{job.analysis}", job.params, report)
                 job.result = result.to_dict() if result is not None else None
                 job.progress = 1.0
                 job.status = "done"

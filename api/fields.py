@@ -12,17 +12,35 @@ import pipeline
 from processes.base import RESULTS_DIR
 
 
+# fine mesh arrays + the coarse display preview (served the same way; the
+# coarse buffers are display-only and never an index space for results)
+_MESH_ARRAYS = {
+    "verts": (pipeline.FINE_VERTS_FILE, "<f4"),
+    "faces": (pipeline.FINE_FACES_FILE, "<u4"),
+    "coarse_verts": (pipeline.COARSE_VERTS_FILE, "<f4"),
+    "coarse_faces": (pipeline.COARSE_FACES_FILE, "<u4"),
+    "coarse_normals": (pipeline.COARSE_NORMALS_FILE, "<f4"),
+    "coarse_brep_faces": (pipeline.COARSE_BREP_FACES_FILE, "<u4"),
+}
+
+
+# which -> the file backing it, for ETag revalidation on the serving route
+MESH_ARRAY_FILE = {which: path for which, (path, _dt) in _MESH_ARRAYS.items()}
+MESH_ARRAY_FILE["normals"] = pipeline.NORMALS_FILE
+
+
 def mesh_bytes(workdir, which):
-    """Serve verts/faces/normals as raw arrays. Returns (bytes, dtype)."""
-    if which == "verts":
-        verts = np.load(os.path.join(workdir, pipeline.FINE_VERTS_FILE))
-        return np.ascontiguousarray(verts, dtype="<f4").tobytes(), "<f4"
-    if which == "faces":
-        faces = np.load(os.path.join(workdir, pipeline.FINE_FACES_FILE))
-        return np.ascontiguousarray(faces, dtype="<u4").tobytes(), "<u4"
+    """Serve a mesh array as raw little-endian bytes. Returns (bytes, dtype)."""
     if which == "normals":
         return face_normals(workdir).tobytes(), "<f4"
-    raise FileNotFoundError(which)
+    spec = _MESH_ARRAYS.get(which)
+    if spec is None:
+        raise FileNotFoundError(which)
+    path, dtype = spec
+    full = os.path.join(workdir, path)
+    if not os.path.exists(full):
+        raise FileNotFoundError(full)
+    return np.ascontiguousarray(np.load(full), dtype=dtype).tobytes(), dtype
 
 
 def face_normals(workdir):

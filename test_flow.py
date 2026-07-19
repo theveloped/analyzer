@@ -263,7 +263,9 @@ def main():
         manifest = build_manifest(os.path.dirname(workdir), part)
         by_id = {}
         for entry in manifest["fields"]:
-            if ".flow_voxels." in entry["id"] or ".flow_fill." in entry["id"]:
+            # voxels live in the shared prep/voxels stage now; fill stays in
+            # injection_molding/flow_fill
+            if ".voxels." in entry["id"] or ".flow_fill." in entry["id"]:
                 by_id[entry["id"].rsplit(".", 1)[-1]] = entry
         expected = set(first.fields) | set(fill_result.fields)
         check("manifest exposes all flow fields",
@@ -293,17 +295,17 @@ def main():
 
         from api.fields import result_field_bytes
         sizes = {"u1": 1, "u4": 4, "f4": 4}
-        for analysis_id, result, params in (
-                ("flow_voxels", first,
+        for process_id, analysis_id, result, params in (
+                ("prep", "voxels", first,
                  flow_voxel_cache_params(workdir, voxel_params)),
-                ("flow_fill", fill_result,
+                ("injection_molding", "flow_fill", fill_result,
                  {**fill_params, "schema": 1,
                   "mesh": pipeline.mesh_fingerprint(workdir)})):
             result_hash = params_hash(params)
             for name in result.fields:
                 entry = by_id[name]
                 data, dtype = result_field_bytes(
-                    workdir, "injection_molding", analysis_id, result_hash,
+                    workdir, process_id, analysis_id, result_hash,
                     name)
                 ok = (dtype == "<" + entry["dtype"]
                       and len(data) == entry["length"] * sizes[entry["dtype"]])

@@ -13,6 +13,7 @@ import numpy as np
 
 import gating
 import pipeline
+from processes import prep, resolver
 from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             load_cached_result, load_result_arrays,
                             params_hash, store_result)
@@ -22,14 +23,17 @@ MOLD_SCHEMA = 4  # result schema version, salted into the cache key
 SPRUE_SCHEMA = 2  # sprue_proposals schema version, salted into the cache key
 SKELETON_SCHEMA = 5  # wall_skeleton schema (5: unbounded-marker normalization)
 EJECTION_SCHEMA = 2  # ejection_sticking schema version, cache salt
-FLOW_SCHEMA = 1  # flow_voxels / flow_fill schema version, cache salt
+# the SDF voxel artifact now lives in prep/voxels; re-export its schema and
+# cache-key builder so flow_fill's own key and the frozen client contract keep
+# the same names and value
+FLOW_SCHEMA = prep.VOXEL_SCHEMA  # flow_fill schema salt; == prep/voxels schema
 SLENDER_SCHEMA = 1  # slenderness schema version, cache salt
 SPAN_SCHEMA = 1  # thin_span schema version, cache salt
 RAY_SCHEMA = 1  # ray_thickness / ray_gap schema version, cache salt
 
 SKELETON_PARAMS = ("max_radius", "min_radius", "cluster_factor",
                    "absorb_factor")
-FLOW_VOXEL_PARAMS = ("voxel",)
+FLOW_VOXEL_PARAMS = prep.VOXEL_PARAMS
 
 
 def _field_stats(values, max_radius, excluded):
@@ -359,28 +363,16 @@ def run_ejection_sticking(workdir, params, progress):
     return AnalysisResult(stats=stats, fields=list(arrays))
 
 
-def flow_voxel_cache_params(workdir, params):
-    """flow_voxels cache key: the voxel params + schema/mesh salts, so
-    flow_fill's extra params still share the voxel result."""
-    return {**{name: params[name] for name in FLOW_VOXEL_PARAMS},
-            "schema": FLOW_SCHEMA,
-            "mesh": pipeline.mesh_fingerprint(workdir)}
+# the voxel grid is a shared prep artifact now; keep this alias so the rest of
+# this module (flow_fill) and any external caller keep one name for the key
+flow_voxel_cache_params = prep.voxel_cache_params
 
 
 def run_flow_voxels(workdir, params, progress):
-    cache_params = flow_voxel_cache_params(workdir, params)
-    cached = load_cached_result(workdir, "injection_molding",
-                                "flow_voxels", cache_params)
-    if cached is not None:
-        return AnalysisResult(stats=cached["stats"],
-                              fields=list(cached["arrays"]))
-
-    stats, arrays, field_meta = pipeline.flow_voxels(
-        workdir, voxel=params["voxel"], progress=progress)
-
-    store_result(workdir, "injection_molding", "flow_voxels", cache_params,
-                 stats, arrays=arrays, field_meta=field_meta)
-    return AnalysisResult(stats=stats, fields=list(arrays))
+    """Thin forwarder to the shared prep/voxels stage (kept so the injection
+    plugin's existing flow_voxels submit still works, now backed by prep)."""
+    return resolver.ensure(workdir, "prep/voxels",
+                           {"voxel": params["voxel"]}, progress)
 
 
 def run_flow_fill(workdir, params, progress):
@@ -401,11 +393,13 @@ def run_flow_fill(workdir, params, progress):
             return None
         return lambda f, m: progress(lo + (hi - lo) * f, m)
 
-    # the voxel grid is a cache-aware sub-run: shared params -> shared result
-    voxel_result = run_flow_voxels(workdir, params, scaled(0.0, 0.4))
+    # the voxel grid is a cache-aware sub-run of the shared prep/voxels stage:
+    # same voxel size -> same grid, reused across processes
+    voxel_result = resolver.ensure(workdir, "prep/voxels",
+                                   {"voxel": params["voxel"]},
+                                   scaled(0.0, 0.4))
     voxel_cache = flow_voxel_cache_params(workdir, params)
-    voxels = load_result_arrays(workdir, "injection_molding", "flow_voxels",
-                                voxel_cache)
+    voxels = load_result_arrays(workdir, "prep", "voxels", voxel_cache)
 
     stats, arrays, field_meta = pipeline.flow_fill(
         workdir, voxels=voxels, grid=voxel_result.stats["grid"],
@@ -604,7 +598,7 @@ PROCESS = ProcessDef(
             id="flow_voxels",
             label="Flow voxels (SDF)",
             description="Signed-distance voxelization of the part interior — the mesh-independent basis for fill, freeze-off and cooling estimates.",
-            requires=[],
+            requires=[],  # forwards to the shared prep/voxels stage (derived voxel param)
             params=[
                 Param("voxel", "number", default=None, unit="mm", min=0.05,
                       label="Voxel size (blank = auto from resolution)"),
@@ -615,7 +609,7 @@ PROCESS = ProcessDef(
             id="flow_fill",
             label="Flow fill (voxel)",
             description="Gate-seeded Hele-Shaw fill over the voxel grid with frozen-skin hesitation — arrival times, weld/short-shot risk regions.",
-            requires=[],  # flow_voxels computed internally
+            requires=[],  # drives the shared prep/voxels stage internally
             params=[
                 Param("voxel", "number", default=None, unit="mm", min=0.05,
                       label="Voxel size (blank = auto from resolution)"),

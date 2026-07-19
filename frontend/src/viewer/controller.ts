@@ -113,17 +113,21 @@ export async function selectPart(partId: string) {
       manifest,
       manifestVersion: useStore.getState().manifestVersion + 1,
     });
-    if (!manifest.mesh) {
+    // render the fine mesh when present, else the cheap coarse preview so the
+    // part is visible (and pickable) immediately after the first-load bundle
+    const meshSrc = manifest.mesh ?? manifest.coarse_mesh ?? null;
+    if (!meshSrc) {
       useStore.getState().set({
         stats: 'part not meshed yet — run prep/mesh below', legend: [],
       });
       return;
     }
+    const previewing = !manifest.mesh && !!manifest.coarse_mesh;
 
     const [vertArr, faceIdx, faceNormals, highlights] = await Promise.all([
-      fetchBin(manifest.mesh.verts_url, Float32Array),
-      fetchBin(manifest.mesh.faces_url, Uint32Array),
-      fetchBin(manifest.mesh.normals_url, Float32Array),
+      fetchBin(meshSrc.verts_url, Float32Array),
+      fetchBin(meshSrc.faces_url, Uint32Array),
+      fetchBin(meshSrc.normals_url, Float32Array),
       manifest.highlights_url ? fetchHighlights(manifest.highlights_url) : null,
     ]);
     verts = vertArr;
@@ -131,7 +135,10 @@ export async function selectPart(partId: string) {
     normals = faceNormals;
     scene?.setMesh(vertArr, faceIdx, faceNormals);
     scene?.frame(firstDirection(manifest));
-    useStore.getState().set({ meshReady: true, highlights, stats: '' });
+    useStore.getState().set({
+      meshReady: true, highlights,
+      stats: previewing ? 'coarse preview — fine mesh runs on demand' : '',
+    });
   } catch (err) {
     useStore.getState().set({ error: String(err), stats: '' });
   }
@@ -142,8 +149,12 @@ export async function refreshManifest() {
   const { partId, manifest } = useStore.getState();
   if (!partId) return;
   const fresh = await fetchManifest(partId);
+  // reload when the fine mesh appears/changes, and also when the coarse preview
+  // first appears (bundle finished) or is superseded by the fine mesh
   const meshChanged = JSON.stringify(fresh.mesh?.counts)
-    !== JSON.stringify(manifest?.mesh?.counts);
+      !== JSON.stringify(manifest?.mesh?.counts)
+    || JSON.stringify(fresh.coarse_mesh?.counts)
+      !== JSON.stringify(manifest?.coarse_mesh?.counts);
   if (meshChanged) {
     await refreshParts();
     await selectPart(partId); // mesh arrays are stale, reload everything

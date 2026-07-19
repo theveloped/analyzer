@@ -45,7 +45,7 @@ PROCESS = ProcessDef(
                         "the largest face; report section dimensions and "
                         "optionally unroll the outer shell into the flat "
                         "cut pattern.",
-            requires=["prep/aag"],
+            requires=["prep/mesh", "prep/aag"],
             params=[
                 Param("unroll", "bool", default=True,
                       label="Unroll the outer shell (cut pattern)"),

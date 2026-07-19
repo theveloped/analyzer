@@ -368,7 +368,7 @@ PROCESS = ProcessDef(
                         "(normal ray cast from the largest face), classify "
                         "every face as base/opposite/bend/wall, and report "
                         "a sheet / not-sheet verdict with reasons.",
-            requires=["prep/aag"],
+            requires=["prep/mesh", "prep/aag"],
             params=[
                 Param("min_thickness", "number", default=0.1, unit="mm",
                       min=0, label="Minimum sheet thickness"),
@@ -384,7 +384,7 @@ PROCESS = ProcessDef(
                         "outer contour, holes and bend lines as the flat "
                         "pattern, validated by volume conservation "
                         "(flat area x thickness vs solid volume).",
-            requires=["prep/aag"],
+            requires=["prep/mesh", "prep/aag"],
             params=[
                 Param("k_factor", "number", default=0.5, min=0, max=1,
                       label="K-factor (neutral fiber position)"),
@@ -407,7 +407,7 @@ PROCESS = ProcessDef(
                         "punch/die/machine catalogue, plus a bend-sequence "
                         "search with segmented tooling placement ranked by "
                         "setup changes, sections and installed length.",
-            requires=["prep/aag"],
+            requires=["prep/mesh", "prep/aag"],
             params=[
                 Param("k_factor", "number", default=0.5, min=0, max=1,
                       label="K-factor (must match the unfold allowance)"),

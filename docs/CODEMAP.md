@@ -42,8 +42,11 @@ folder and re-uploads dedupe; the human name stays in `part.json`.
 | File | Written by | Contents |
 |---|---|---|
 | `fine_verts.npy` / `fine_faces.npy` | mesh | float32 `(V,3)` / int `(F,3)` — **face/vertex indexing is stable from here on** |
+| `coarse_verts.npy` / `coarse_faces.npy` | mesh / `prep/mesh_coarse` (STEP) | the raw BREP tessellation (pre-subdivision) as a **display-only** preview mesh — never an index space for results; the fine indexing stays sacred |
+| `coarse_brep_faces.npy` / `coarse_normals.npy` | mesh / `prep/mesh_coarse` (STEP) | per-coarse-triangle BREP id (preview coloring) + facet normals (flat preview shading) |
+| `coarse_meta.json` | `prep/mesh_coarse` (STEP) | resolution/deflection + `source_fingerprint` (the resolver's coarse-preview currency gate) |
 | `fine_mesh.obj` | mesh (`--obj` only) | optional OBJ export for external tools; nothing in the pipeline or viewer reads it |
-| `mesh_meta.json` | mesh | resolved `resolution` / `deflection` / `subdivide` / `diagonal`; `resolution/5` is the default zmap pixel of every later stage |
+| `mesh_meta.json` | mesh | resolved `resolution` / `deflection` / `subdivide` / `diagonal` + `source_fingerprint` (resolver mesh-currency gate); `resolution/5` is the default zmap pixel of every later stage |
 | `normals.npy` | mesh | per-face unit normals `(F,3)` used for classification: exact BREP surface normals on every STEP face (quadrics from analytic params, freeform via UV evaluation on the live shape; written eagerly), lazy facet fallback otherwise (gitignored, regenerated) |
 | `brep_faces.npy` | mesh (STEP only) | int `(F,)` — source BREP face id per fine triangle |
 | `brep_edges.npy` / `brep_edge_pairs.npy` | mesh (STEP only) | BREP edge polylines + the two BREP face ids adjacent to each edge (parting-line rendering) |
@@ -92,9 +95,27 @@ three of its vertices flag, then it is ANDed with the direction's accessibility 
 `result_paths`). `processes/__init__.py` collects `PROCESS` objects into the
 registry served at `/api/processes`.
 
+`processes/resolver.py` (framework-free) walks `AnalysisDef.requires` and runs
+missing/stale prerequisites before the target, inline on the single job worker
+(`api/jobs.py:_run` calls `resolver.ensure` instead of `analysis.run` directly).
+Only prerequisites declaring an `is_current(workdir, params)` gate (the `prep`
+stages) are auto-run; results-tier analyses self-cache and are never auto-run, so
+param-sensitive chains (e.g. CNC precompute→compose) are untouched. Invalidation
+cascades by construction: a rebuilt upstream changes its content fingerprint,
+flipping every downstream gate and re-salting results-tier keys. A module-level
+LRU in `brep.load_step_shape_cached` (keyed by `(file_fingerprint, deflection)`)
+collapses the redundant STEP re-parse across mesh/aag/sheet/tube/import.
+
 Registered today:
 
-- `prep` — `mesh`, `aag`, `directions`
+- `prep` — `mesh_coarse`, `mesh`, `aag`, `directions`, `voxels`, `attributes`,
+  `bundle` (`bundle` = the fixed first-load set `[mesh_coarse, aag, attributes]`,
+  enqueued on STEP upload; idempotent). `aag` depends on `mesh_coarse` (it rebuilds
+  from the source BREP, so it is available before the fine mesh); fine-mesh
+  consumers (`cnc/features`, `sheet_metal/*`, `tube_laser/profile`) declare
+  `prep/mesh` explicitly so the resolver builds the fine mesh on demand. `voxels`
+  is the shared SDF (moved here from `injection_molding/flow_voxels`; that runner is
+  now a thin forwarder, and `flow_fill` sub-runs `prep/voxels`)
 - `cnc` — `features`, `setups`, `setup_verdict`, `precompute`, `compose`
 - `injection_molding` — `mold_orientation`, `thickness`, `gaps`, `ray_thickness`, `ray_gap`, `slenderness`, `thin_span`, `wall_skeleton`, `sprue_proposals`, `ejection_sticking`, `flow_voxels`, `flow_fill`
 - `sheet_metal` — `detect`, `flat_pattern` (SHEET_SCHEMA mirrored in `frontend/src/processes/sheetmetal/index.ts`), `bend_plan` (BENDPLAN_SCHEMA mirrored in `sheetmetal/bendplan.ts`). Schema-2 bend_plan additions: npz `flat_verts` f4 (3V, pattern-frame fold coordinates, z = material height with mid-surface at z_offset), `vertex_panel`/`vertex_bend` u1 (+1-encoded owners), `bend_t` f4, optional `collision_faces` u1 (mesh_check hits); stats gain `fold_mesh` (availability + base_transform), `tooling` (referenced punch/die/machine YZ profiles), per-plan-step `placement`/`lift_sign`/`theta_before`/`phi_target` (machine pose for the bend-sequence animation), and `mesh_check`. Viewer scene capabilities backing the animation: `Scene3D.setVertexPositions` / `addOverlayMesh`+`shiftOverlay` / `setAnimator` (reset on every repaint)
@@ -117,7 +138,9 @@ GET  /api/parts                      part list (parts root scan)
 POST /api/parts                      upload STEP/STL → content-addressed workdir parts/<sha1[:12]> (idempotent)
 GET  /api/parts/{id}                 part info
 GET  /api/parts/{id}/manifest        all available fields/results for the part
-GET  /api/parts/{id}/mesh/{which}    raw arrays: verts f4, faces u4, normals f4 (un-indexed contract: face f → vertices 3f..3f+2)
+GET  /api/parts/{id}/mesh/{which}    raw arrays: verts f4, faces u4, normals f4 (un-indexed contract: face f → vertices 3f..3f+2); also coarse_verts/coarse_faces/coarse_normals/coarse_brep_faces for the preview
+POST /api/parts (STEP)               also enqueues the idempotent prep/bundle first-load job
+
 GET  /api/parts/{id}/fields/{stem}/{key}          one zcache array
 GET  /api/parts/{id}/highlights                   highlights.json
 GET  /api/parts/{id}/results/{proc}/{an}/{hash}/{key}        one result npz array

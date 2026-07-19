@@ -136,11 +136,12 @@ PROCESS = ProcessDef(
         AnalysisDef(
             id="features",
             label="Feature recognition",
+            # broadcasts BREP-face results onto the fine mesh (brep_faces.npy)
             description="Rule-based machining features from the BREP "
                         "adjacency graph: through/blind holes, counterbores, "
                         "countersinks (coaxial cylinder/cone stacks) and "
                         "best-effort pockets, with diameters, depths and axes.",
-            requires=["prep/aag"],
+            requires=["prep/mesh", "prep/aag"],
             params=[
                 Param("axis_angle_tol", "number", default=1.0, unit="deg",
                       min=0, label="Coaxiality angle tolerance"),

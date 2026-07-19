@@ -42,6 +42,17 @@ BREP_EDGES_FILE = "brep_edges.npy"
 BREP_EDGE_PAIRS_FILE = "brep_edge_pairs.npy"
 HIGHLIGHT_FILE = "highlights.json"
 
+# coarse display mesh: the raw BREP tessellation (pre-subdivision), a cheap
+# first-load preview the viewer can render before the slow fine mesh exists.
+# DISPLAY-ONLY — never an index space results are expressed in (the fine
+# fine_faces.npy indexing stays sacred); coarse_brep_faces is a parallel
+# per-coarse-triangle BREP id purely for coloring the preview.
+COARSE_VERTS_FILE = "coarse_verts.npy"
+COARSE_FACES_FILE = "coarse_faces.npy"
+COARSE_BREP_FACES_FILE = "coarse_brep_faces.npy"
+COARSE_NORMALS_FILE = "coarse_normals.npy"
+COARSE_META_FILE = "coarse_meta.json"
+
 # AAG stage artifact (aag.py owns the semantics; constants live here so
 # pipeline/manifest can reference them without importing aag)
 AAG_FILE = "aag.npz"
@@ -220,6 +231,77 @@ def _facet_normals(verts, faces):
     return (normals / np.maximum(lengths, 1e-30)).astype("<f4")
 
 
+def _write_coarse(workdir, verts, faces, brep_ids):
+    """Persist the coarse BREP tessellation as the display-only preview mesh.
+
+    Facet normals are enough for a flat preview; the exact per-face normals
+    stay on the fine mesh. ``brep_ids`` is the per-coarse-triangle BREP face id
+    (for coloring), stored separately from the sacred fine ``brep_faces.npy``.
+    """
+    np.save(os.path.join(workdir, COARSE_VERTS_FILE), verts.astype("<f4"))
+    np.save(os.path.join(workdir, COARSE_FACES_FILE),
+            faces.astype("<u4", copy=False))
+    np.save(os.path.join(workdir, COARSE_BREP_FACES_FILE),
+            np.asarray(brep_ids).astype("<u4", copy=False))
+    np.save(os.path.join(workdir, COARSE_NORMALS_FILE),
+            _facet_normals(verts, faces))
+
+
+def _write_coarse_meta(workdir, resolution, deflection, input_path, face_count):
+    """Sidecar for the coarse preview: the source fingerprint (so the resolver
+    can tell the preview is current) plus the resolution it was tessellated at."""
+    with open(os.path.join(workdir, COARSE_META_FILE), "w") as handle:
+        json.dump({"resolution": float(resolution),
+                   "deflection": None if deflection is None else float(deflection),
+                   "source_fingerprint": file_fingerprint(input_path),
+                   "coarse_faces": int(face_count)}, handle)
+
+
+def mesh_part_coarse(input_path, workdir, *, resolution=None, deflection=None,
+                     progress=None):
+    """Cheap first-load preview: tessellate the BREP and persist only the
+    coarse display mesh + BREP metadata — no fine subdivision, no exact
+    normals. STEP input only (STL has no BREP level). The fine ``mesh_part``
+    stays a separate, heavier stage produced on demand.
+    """
+    import brep
+
+    ext = os.path.splitext(input_path)[1].lower()
+    if ext not in STEP_EXTENSIONS:
+        raise ValueError("coarse preview is a BREP (STEP) stage; STL input has "
+                         "no coarse level — run prep/mesh directly")
+    ensure_directory(workdir)
+
+    _report(progress, 0.0, "loading STEP")
+    shape = brep.load_step_shape(input_path)
+    if resolution is None:
+        resolution = auto_subdivide(brep.shape_diagonal(shape))
+    if deflection is None:
+        deflection = resolution / 8.0
+    logger.info(f"coarse preview: resolution {resolution:.2f} mm -> "
+                f"deflection {deflection:.3f} mm")
+
+    _report(progress, 0.3, "tessellating BREP")
+    (verts, faces, brep_ids, surface_types, surface_params,
+     corner_uv) = brep.mesh_shape(shape, deflection=deflection)
+    # seed the shared shape cache so prep/aag and prep/attributes in the same
+    # first-load bundle reuse this parse
+    brep.remember_step_shape(input_path, shape, deflection=deflection)
+
+    verts = verts.astype(np.float32)
+    _report(progress, 0.85, "storing coarse preview")
+    _write_coarse(workdir, verts, faces, brep_ids)
+    with open(os.path.join(workdir, BREP_META_FILE), "w") as handle:
+        json.dump({"face_count": len(surface_types),
+                   "surface_types": surface_types,
+                   "surface_params": surface_params}, handle)
+    _write_coarse_meta(workdir, resolution, deflection, input_path, len(faces))
+    return {"coarse_verts": int(len(verts)),
+            "coarse_faces": int(len(faces)),
+            "brep_faces": len(surface_types),
+            "resolution": float(resolution)}
+
+
 def load_face_normals(workdir):
     """Per-face unit normals for classification (facing/wall/draft tests).
 
@@ -351,11 +433,20 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
         (verts, faces, brep_ids, surface_types, surface_params,
          corner_uv) = brep.mesh_shape(shape, deflection=deflection)
 
+        # seed the shared shape cache so the read-only BREP consumers of the
+        # same source bytes in a first-load bundle (AAG, sheet, tube, import)
+        # reuse this parse instead of re-reading the STEP
+        brep.remember_step_shape(input_path, shape, deflection=deflection)
+
         # parent-facet ids ride along with the BREP ids through subdivision:
         # children stay coplanar with their parent, so the parent's corner
         # UVs recover any child centroid's surface parameters exactly
         coarse_faces = faces
         parents = np.arange(len(faces), dtype=np.int32)
+        # snapshot the coarse tessellation before subdivision reassigns these
+        # (verts/brep_ids) in place — it becomes the display-only preview mesh
+        coarse_verts = verts
+        coarse_brep_ids = brep_ids
         if subdivide:
             _report(progress, 0.4, "subdividing mesh (tag preserving)")
             verts, faces, tags = brep.subdivide_tagged(
@@ -434,6 +525,10 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
         "deflection": None if deflection is None else float(deflection),
         "subdivide": float(subdivide),
         "diagonal": float(np.linalg.norm(verts.max(0) - verts.min(0))),
+        # fingerprint of the source bytes this mesh was built from, so the
+        # dependency resolver can tell a mesh is current for the current source
+        # (a swapped source.stp flips the gate and forces a re-mesh)
+        "source_fingerprint": file_fingerprint(input_path),
     }
     with open(os.path.join(workdir, MESH_META_FILE), "w") as f:
         json.dump(mesh_meta, f)
@@ -446,6 +541,13 @@ def mesh_part(input_path, workdir=None, *, heal=False, resolution=None,
                        "surface_types": surface_types,
                        "surface_params": surface_params}, f)
         counts["brep_faces"] = len(surface_types)
+
+        # the fine mesh carries the coarse tessellation for free — persist it
+        # as the display preview so the viewer has both levels
+        _write_coarse(workdir, coarse_verts, coarse_faces, coarse_brep_ids)
+        _write_coarse_meta(workdir, resolution, deflection, input_path,
+                           len(coarse_faces))
+        counts["coarse_faces"] = int(len(coarse_faces))
 
         # BREP edge geometry: mesh edges between different BREP faces,
         # grouped by their unordered face-id pair — the discretized BREP
@@ -514,7 +616,7 @@ def compute_aag(workdir, *, smooth_angle=None, tollerance=1e-6,
 
     source = source_step_path(workdir)
     _report(progress, 0.0, "loading STEP")
-    shape = brep.load_step_shape(source)
+    shape = brep.load_step_shape_cached(source)  # topology only — reuse parse
 
     if smooth_angle is None:
         smooth_angle = aag_module.SMOOTH_ANGLE_TOLERANCE
