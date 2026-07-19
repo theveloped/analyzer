@@ -144,8 +144,18 @@ function gradientCss(stops: RGB[]): string {
 }
 
 export const sequentialGradientCss = () => gradientCss(BG === 'light' ? BATLOW_K : BATLOW_W);
-export const divergingGradientCss = () => gradientCss(BG === 'light' ? BERLIN : VIK);
 export const severityGradientCss = () => gradientCss(INFERNO);
+
+/** Diverging gradient sampled through the neutral-pinned `diverging()` map, so
+ * s = 0 (neutral) lands at 50% — the bar reads with zero at the centre. */
+export function divergingGradientCss(): string {
+  const n = 21;
+  const stops = Array.from({ length: n }, (_, i) => {
+    const s = -1 + (2 * i) / (n - 1);
+    return `${cssRGB(diverging(s))} ${Math.round((i / (n - 1)) * 100)}%`;
+  });
+  return `linear-gradient(90deg, ${stops.join(', ')})`;
+}
 
 // ── OKLCH → sRGB (for the unbounded segment generator) ──
 function oklchToRgb(L: number, C: number, hDeg: number): RGB {

@@ -2,66 +2,85 @@ import { COL } from '../../colorizers/core';
 import type { RGB } from '../../registry/types';
 import { useStore } from '../../state/store';
 import { flyToFocus } from '../../viewer/controller';
-import { sequential, sequentialGradientCss } from '../../viewer/colormaps';
-import { useV2 } from '../store';
 import { useActiveAnalysis } from './hooks';
 
 const rgbCss = (c: RGB | readonly number[]) =>
   `rgb(${Math.round(c[0] * 255)} ${Math.round(c[1] * 255)} ${Math.round(c[2] * 255)})`;
 
-const near = (a: RGB | readonly number[], b: RGB) =>
-  Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) < 0.02;
+const box =
+  'absolute bottom-3 left-3 w-60 rounded-lg border border-zinc-950/10 bg-white/90 p-2.5 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10';
+const title = 'mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400';
+const sub = 'text-[10px] tabular-nums text-zinc-500 dark:text-zinc-400';
 
-/** Bottom-left legend for the active check: the field's actual perceptually-
- * uniform ramp with limit→worst ends, plus the qualitative ok / no-data rows. */
+/** Bottom-left legend. Heatmaps render a colorbar spanning the real data range
+ * (min→max, or symmetric with 0 centred for a diverging field); everything else
+ * falls back to the discrete swatch list. */
 export function Legend() {
+  const colorbar = useStore((s) => s.colorbar);
   const legend = useStore((s) => s.legend);
   const active = useActiveAnalysis();
-  const params = useStore((s) => s.viewerParams[active.process]) ?? {};
-  // re-render (and re-read the background-matched map) when the theme flips
-  const theme = useV2((s) => s.theme);
-  void theme;
+
+  if (colorbar) {
+    const { min, max, unit, diverging, gradient, threshold } = colorbar;
+    const span = max - min || 1;
+    const pct = (v: number) => Math.max(0, Math.min(100, ((v - min) / span) * 100));
+    const showLimit = threshold != null && threshold > min && threshold < max;
+    return (
+      <div className={box}>
+        <div className={title}>{active.label}{unit ? ` · ${unit}` : ''}</div>
+
+        <div className="relative">
+          <div className="h-2.5 w-full rounded ring-1 ring-black/10" style={{ background: gradient }} />
+          {diverging && (
+            <div className="pointer-events-none absolute -top-0.5 left-1/2 h-3.5 w-px -translate-x-1/2 bg-zinc-900 dark:bg-white" />
+          )}
+          {showLimit && (
+            <div
+              className="pointer-events-none absolute -top-0.5 h-3.5 w-px bg-zinc-900 dark:bg-white"
+              style={{ left: `${pct(threshold!)}%` }}
+              title={`limit ${threshold} ${unit ?? ''}`}
+            />
+          )}
+        </div>
+
+        <div className={`relative mt-1 flex justify-between ${sub}`}>
+          <span>{min.toFixed(2)}</span>
+          {diverging && <span className="absolute left-1/2 -translate-x-1/2">0</span>}
+          <span>{max.toFixed(2)}</span>
+        </div>
+
+        {showLimit && (
+          <div className={`mt-1 ${sub}`}>▎limit {threshold} {unit}</div>
+        )}
+        <div className="mt-1.5 flex items-center gap-2 text-xs/5 text-zinc-500 dark:text-zinc-400">
+          <span className="size-2.5 rounded-[3px] ring-1 ring-black/10" style={{ background: rgbCss(COL.inaccess) }} />
+          no data
+        </div>
+      </div>
+    );
+  }
+
   if (!legend.length) return null;
-
-  const threshold = params[active.thresholdParam] ?? active.thresholdDefault;
-  const severityEnd = sequential(1);
-  const rows = legend.filter((e) => !near(e.color, severityEnd));
-
   return (
-    <div className="absolute bottom-3 left-3 w-60 rounded-lg border border-zinc-950/10 bg-white/90 p-2.5 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10">
-      <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-        {active.label} · severity
-      </div>
-
-      <div
-        className="h-2 w-full rounded ring-1 ring-black/10"
-        style={{ background: sequentialGradientCss() }}
-      />
-      <div className="mt-1 mb-2 flex justify-between text-[10px] tabular-nums text-zinc-500 dark:text-zinc-400">
-        <span>at limit · {threshold} {active.unit}</span>
-        <span>most severe</span>
-      </div>
-
+    <div className={box}>
+      <div className={title}>{active.label}</div>
       <div className="flex flex-col gap-1">
-        {rows.map((entry, i) => {
-          const label = near(entry.color, COL.inaccess) ? entry.label || 'no data' : entry.label;
-          return (
-            <button
-              key={i}
-              type="button"
-              disabled={!entry.focus}
-              onClick={entry.focus ? () => flyToFocus(entry.focus!) : undefined}
-              className="flex items-center gap-2 text-left text-xs/5 text-zinc-950 enabled:hover:text-blue-600 disabled:cursor-default dark:text-white dark:enabled:hover:text-blue-400"
-              title={entry.focus ? 'click to view these faces' : undefined}
-            >
-              <span
-                className="size-2.5 shrink-0 rounded-[3px] ring-1 ring-black/10"
-                style={{ background: rgbCss(entry.color) }}
-              />
-              <span className="truncate">{label}</span>
-            </button>
-          );
-        })}
+        {legend.map((entry, i) => (
+          <button
+            key={i}
+            type="button"
+            disabled={!entry.focus}
+            onClick={entry.focus ? () => flyToFocus(entry.focus!) : undefined}
+            className="flex items-center gap-2 text-left text-xs/5 text-zinc-950 enabled:hover:text-blue-600 disabled:cursor-default dark:text-white dark:enabled:hover:text-blue-400"
+            title={entry.focus ? 'click to view these faces' : undefined}
+          >
+            <span
+              className="size-2.5 shrink-0 rounded-[3px] ring-1 ring-black/10"
+              style={{ background: rgbCss(entry.color) }}
+            />
+            <span className="truncate">{entry.label}</span>
+          </button>
+        ))}
       </div>
     </div>
   );

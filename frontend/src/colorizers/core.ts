@@ -4,9 +4,11 @@
 
 import type { FieldDescriptor } from '../api/types';
 import type {
-  LegendEntry, LegendFocus, RGB, ViewCtx, ViewMode,
+  ColorBar, LegendEntry, LegendFocus, PaintInfo, RGB, ViewCtx, ViewMode,
 } from '../registry/types';
-import { sequential } from '../viewer/colormaps';
+import {
+  diverging, divergingGradientCss, sequential, sequentialGradientCss,
+} from '../viewer/colormaps';
 
 export const COL = {
   ok: [0.87, 0.9, 0.92] as RGB,
@@ -323,30 +325,37 @@ export function maskMode(
 export interface HeatmapOpts {
   /** Per-VERTEX transform applied before the per-face mean; NaN masks out. */
   transform?: (v: number) => number;
-  thresholdParam?: string; // ctx.params key, default 'threshold'
-  scaleParam?: string; // ctx.params key, default 'scale'
-  /** 'above': high values are bad (gaps to material). 'below': low values
-      are bad (thin walls, tight clearance). Default 'above'. */
+  thresholdParam?: string; // ctx.params key — drawn as a limit tick + flag count
+  scaleParam?: string; // ctx.params key: manual MAX override (blank = data max)
+  minParam?: string; // ctx.params key: manual MIN override (blank = data min)
+  /** 'above': high values are bad. 'below': low values are bad (default). Only
+      affects the flag count in the stats line. */
   flagDirection?: 'above' | 'below';
   units?: string;
-  autoFloor?: number; // lower bound for the percentile auto-max
-  okLabel?: string;
-  maskedLabel?: string;
-  /** Per-VERTEX mask (1 = reading explainable by local sharp geometry).
-      Faces touching an excluded vertex never count as flagged (matching
-      the CLI's all-verts-thin rule, where one excluded vertex vetoes the
-      face). */
+  /** Signed field with a meaningful zero → diverging map, symmetric about 0
+      (0 sits at the centre of the scale and the legend). */
+  diverging?: boolean;
+  /** Per-VERTEX mask (1 = reading explainable by local sharp geometry). These
+      faces are kept out of the data range (so artifacts don't stretch the
+      scale) and, when maskParam is on, painted neutral. */
   exclusion?: (ctx: ViewCtx) => Promise<Uint8Array | null>;
-  /** ctx.params key of a boolean: when true, excluded below-threshold
-      faces are painted in the ok color instead of their heatmap color. */
+  /** ctx.params key of a boolean: when true, edge-explained faces are hidden. */
   maskParam?: string;
+  maskedLabel?: string;
+  // retired but kept for call-site compatibility (no longer used):
+  autoFloor?: number;
+  okLabel?: string;
 }
 
 /**
- * Generic per-vertex scalar heatmap over one field, with a client-side
- * threshold. (The CNC gap/stickout modes predate this factory and keep
- * their angle-dependent thresholds and rule-based counting — folding them
- * onto this is a possible follow-up.)
+ * Generic per-vertex scalar heatmap. The colour scale spans the ACTUAL data
+ * range by default (min→max for sequential, symmetric ±M with 0 centred for
+ * diverging) so nothing is clipped, and it publishes a `colorbar` the legend
+ * renders with real min/max (and a 0 marker + limit tick). A manual min/max
+ * override is available via scaleParam/minParam.
+ *
+ * (The CNC gap/stickout modes predate this factory and keep their own
+ * angle-dependent thresholds — folding them on is a possible follow-up.)
  */
 export function heatmapMode(
   id: string, label: string,
@@ -360,69 +369,91 @@ export function heatmapMode(
   return {
     id,
     label,
-    async paint(ctx) {
+    async paint(ctx): Promise<PaintInfo> {
       const desc = pickField(ctx);
       if (!desc) {
-        throw new Error(`no cached field for "${label}" — run the analysis in the Compute panel`);
+        throw new Error(`no cached field for "${label}" — run the analysis first`);
       }
       const raw = await ctx.getField(desc) as Float32Array;
       const field = opts.transform ? Float32Array.from(raw, opts.transform) : raw;
       const vals = faceValues(ctx, field, null);
       const excluded = opts.exclusion ? await opts.exclusion(ctx) : null;
-      const thr = parse(ctx.params[opts.thresholdParam ?? 'threshold']) || 0;
-      const auto = Math.max(percentile(vals, 0.98), opts.autoFloor ?? thr * 3, 1e-6);
-      const max = parse(ctx.params[opts.scaleParam ?? 'scale']) || auto;
-      const below = opts.flagDirection === 'below';
-      const span = Math.max(max - thr, 1e-9);
       const units = opts.units ?? 'mm';
+      const thr = parse(ctx.params[opts.thresholdParam ?? 'threshold']);
       const maskOn = opts.maskParam ? ctx.params[opts.maskParam] !== false : false;
+
+      // one excluded vertex vetoes the face (the CLI's all-verts rule)
+      const faceExcluded = (f: number) => !!excluded
+        && (!!excluded[ctx.faces[3 * f]]
+          || !!excluded[ctx.faces[3 * f + 1]]
+          || !!excluded[ctx.faces[3 * f + 2]]);
+
+      // data range from finite, non-excluded faces so edge artifacts don't
+      // stretch the scale and wash out the real variation
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let f = 0; f < ctx.faceCount; f++) {
+        const v = vals[f];
+        if (!isFinite(v) || faceExcluded(f)) continue;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
+      if (lo > hi) { lo = 0; hi = 1; } // nothing to show
+      const mMin = parse(ctx.params[opts.minParam ?? '']);
+      const mMax = parse(ctx.params[opts.scaleParam ?? 'scale']);
+      if (isFinite(mMin)) lo = mMin;
+      if (isFinite(mMax)) hi = mMax;
+
+      let domainMin: number;
+      let domainMax: number;
+      let colorAt: (v: number) => RGB;
+      let gradient: string;
+      if (opts.diverging) {
+        const M = Math.max(Math.abs(lo), Math.abs(hi), 1e-9);
+        domainMin = -M;
+        domainMax = M;
+        colorAt = (v) => diverging(v / M);
+        gradient = divergingGradientCss();
+      } else {
+        domainMin = lo;
+        domainMax = hi;
+        const span = Math.max(hi - lo, 1e-9);
+        colorAt = (v) => sequential((v - lo) / span);
+        gradient = sequentialGradientCss();
+      }
+
+      const below = opts.flagDirection !== 'above';
       let flagged = 0;
-      let explained = 0;
       let painted = 0;
       ctx.paintFaces((f) => {
         const v = vals[f];
-        if (isNaN(v)) return COL.inaccess;
+        if (!isFinite(v)) return COL.inaccess;
         painted++;
-        if (below ? v <= thr : v > thr) {
-          // one excluded vertex vetoes the face — same as the CLI's
-          // all-verts-thin flag rule, and it dilates the mask by the one
-          // boundary facet the vertex mask alone would miss
-          const skip = excluded
-            && (excluded[ctx.faces[3 * f]]
-              || excluded[ctx.faces[3 * f + 1]]
-              || excluded[ctx.faces[3 * f + 2]]);
-          if (skip) {
-            explained++;
-            if (maskOn) return COL.below;
-          } else {
-            flagged++;
-          }
-        }
-        const badness = below ? (max - v) / span : (v - thr) / span;
-        return badness <= 0 ? COL.below : rampColor(Math.min(1, badness));
+        const isExcl = faceExcluded(f);
+        if (isFinite(thr) && !isExcl && (below ? v <= thr : v >= thr)) flagged++;
+        if (isExcl && maskOn) return COL.ok; // hide known edge artifacts
+        return colorAt(v);
       });
+
+      const colorbar: ColorBar = {
+        min: domainMin,
+        max: domainMax,
+        unit: units,
+        diverging: !!opts.diverging,
+        gradient,
+        threshold: isFinite(thr) ? thr : undefined,
+      };
+      // minimal discrete entries for the original viewer + as a fallback
       const legend: LegendEntry[] = [
-        {
-          color: COL.below,
-          label: opts.okLabel
-            ?? (below ? `≥ ${max.toFixed(2)} ${units} — ok` : `≤ ${thr.toFixed(2)} ${units} — ok`),
-        },
-        {
-          color: rampColor(1),
-          label: below ? `≤ ${thr.toFixed(2)} ${units} — flagged` : `≥ ${max.toFixed(2)} ${units}`,
-        },
-        ...(opts.exclusion && maskOn ? [{
-          color: COL.below,
-          label: 'explained by sharp edges — shown as ok',
-        }] : []),
+        { color: colorAt(domainMin), label: `${domainMin.toFixed(2)} ${units}` },
+        { color: colorAt(domainMax), label: `${domainMax.toFixed(2)} ${units}` },
         { color: COL.inaccess, label: opts.maskedLabel ?? 'no data' },
       ];
-      return {
-        legend,
-        stats: `${flagged} of ${painted} faces ${below ? 'below' : 'above'} ${thr} ${units}`
-          + (explained ? ` (${explained} more explained by sharp edges — not flagged)` : '')
-          + ` · auto max ${auto.toFixed(2)} ${units}`,
-      };
+      const rangeTxt = `range ${domainMin.toFixed(2)} – ${domainMax.toFixed(2)} ${units}`;
+      const stats = isFinite(thr)
+        ? `${flagged} of ${painted} faces ${below ? 'below' : 'above'} ${thr} ${units} · ${rangeTxt}`
+        : rangeTxt;
+      return { legend, stats, colorbar };
     },
   };
 }
