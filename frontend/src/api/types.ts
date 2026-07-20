@@ -65,6 +65,23 @@ export interface CoarseMesh {
   brep_faces_url?: string;
 }
 
+/** One candidate approach direction's provenance, index-aligned to
+ * Manifest.directions (both rows of an antipodal pair share source/detail). */
+export interface DirectionSource {
+  index: number;
+  source: 'uniform' | 'principal_axis' | 'bbox_axis' | 'hole_axis'
+    | 'face_normal' | 'average_normal' | 'manual';
+  label: string;
+  detail: Record<string, any>;
+}
+
+/** A geometric candidate axis the client can add to the direction set live
+ * (hole/cylinder axes need the analytic BREP surfaces, so the server ships them). */
+export interface HoleCandidate {
+  axis: [number, number, number];
+  detail: Record<string, any>;
+}
+
 export interface Manifest {
   part: Part;
   mesh: MeshLevel | null;
@@ -73,6 +90,10 @@ export interface Manifest {
   /** the coarse preview is showing while the fine mesh is still pending */
   fine_pending?: boolean;
   directions: number[][];
+  /** where each direction came from (uniform, axis, hole, manual, …) */
+  direction_sources?: DirectionSource[];
+  /** analytic hole/cylinder axes the client can add live */
+  hole_candidates?: HoleCandidate[];
   /** directions were computed on an older mesh — re-run prep/directions */
   directions_stale?: boolean;
   fields: FieldDescriptor[];
@@ -90,7 +111,7 @@ export interface Manifest {
 
 export interface ParamSpec {
   name: string;
-  type: 'bool' | 'int' | 'number' | 'string' | 'select' | 'int_list' | 'number_list' | 'tip_list' | 'tool_list';
+  type: 'bool' | 'int' | 'number' | 'string' | 'select' | 'int_list' | 'number_list' | 'tip_list' | 'tool_list' | 'vector_list' | 'group_list';
   default: any;
   label?: string;
   unit?: string;
