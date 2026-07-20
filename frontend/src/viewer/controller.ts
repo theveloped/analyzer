@@ -7,6 +7,7 @@ import {
   fetchParts,
 } from '../api/client';
 import type { Manifest } from '../api/types';
+import { brepFacesOf, currentDirections } from '../processes/directions/build';
 import { clearFieldCache, fetchBin, fetchField } from '../fields/fields';
 import { getPlugin } from '../registry';
 import type { LegendFocus, ViewCtx } from '../registry/types';
@@ -36,6 +37,19 @@ async function loadOverrides(manifest: Manifest) {
 export function attach(container: HTMLElement) {
   scene = new Scene3D(container);
   scene.onPick = (face, point) => void inspect(face, point);
+  // arrow clicks (directions view): stash the selected arrow + screen position
+  // so the tooltip can show its provenance / delete control, and highlight the
+  // BREP faces the direction was built from (hole / surface-normal sources).
+  // Only consume the click (return true) when an arrow is hit.
+  scene.onPickArrow = (index, screen) => {
+    const store = useStore.getState();
+    if (store.processId !== 'directions') return false;
+    const dir = index >= 0 ? currentDirections[index] : null;
+    store.setViewerParam('directions', 'selectedArrow',
+      dir ? { index, x: screen[0], y: screen[1] } : null);
+    store.setViewerParam('directions', 'highlightBrep', dir ? brepFacesOf(dir) : []);
+    return index >= 0;
+  };
 
   // repaint whenever a paint-relevant slice of the store changes
   const unsubscribe = useStore.subscribe(() => schedulePaint());

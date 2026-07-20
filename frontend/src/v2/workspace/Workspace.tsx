@@ -1,5 +1,8 @@
 import { useStore } from '../../state/store';
 import { AnalysisToolbar } from './AnalysisToolbar';
+import { DirectionsRail } from './DirectionsRail';
+import { DirectionTooltip } from './DirectionTooltip';
+import { useDirectionsActive } from './hooks';
 import { Legend } from './Legend';
 import { PipelineRail } from './PipelineRail';
 import { SettingsRail } from './SettingsRail';
@@ -16,6 +19,7 @@ export function Workspace() {
   const partId = useStore((s) => s.partId);
   const meshReady = useStore((s) => s.meshReady);
   const stats = useStore((s) => s.stats);
+  const directionsActive = useDirectionsActive();
 
   return (
     <div className="flex h-full flex-col">
@@ -26,6 +30,7 @@ export function Workspace() {
         <div className="relative min-w-0 flex-1 bg-zinc-100 dark:bg-zinc-950">
           <Viewer />
           <AnalysisToolbar />
+          {directionsActive && <DirectionTooltip />}
           <Legend />
           {(!partId || !meshReady) && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -36,7 +41,7 @@ export function Workspace() {
           )}
         </div>
 
-        <SettingsRail />
+        {directionsActive ? <DirectionsRail /> : <SettingsRail />}
       </div>
     </div>
   );
