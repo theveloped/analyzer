@@ -599,6 +599,40 @@ export const faceAttrsMode: ViewMode = {
   },
 };
 
+/** PMI / GD&T view: paints the BREP faces referenced by the annotation the
+ * user selected in the PmiRail — the toleranced/dimensioned faces in one
+ * color, its referenced datum faces in another. The selection is pushed
+ * through `viewerParams` (`pmiFaces` / `pmiDatumFaces`), same channel the
+ * directions plugin uses for `highlightBrep`. */
+export const PMI_ANNO_COL: RGB = [0.95, 0.61, 0.16];   // amber — toleranced faces
+export const PMI_DATUM_COL: RGB = [0.20, 0.68, 0.66];  // teal — referenced datums
+
+export const pmiMode: ViewMode = {
+  id: 'pmi',
+  label: 'PMI / GD&T',
+  async paint(ctx) {
+    const { ids } = await loadBrepFaceIds(ctx);
+    const anno = new Set<number>((ctx.params.pmiFaces ?? []) as number[]);
+    const datum = new Set<number>((ctx.params.pmiDatumFaces ?? []) as number[]);
+    const base = fade(COL.ok);
+    ctx.paintFaces((f) => {
+      const b = ids[f];
+      if (datum.has(b)) return PMI_DATUM_COL;
+      if (anno.has(b)) return PMI_ANNO_COL;
+      return base;
+    });
+    const legend: LegendEntry[] = [];
+    if (anno.size) legend.push({ color: PMI_ANNO_COL, label: 'toleranced faces' });
+    if (datum.size) legend.push({ color: PMI_DATUM_COL, label: 'referenced datums' });
+    const counts = ctx.params.pmiCounts as
+      { tolerances: number; dimensions: number; datums: number } | undefined;
+    const stats = counts
+      ? `${counts.tolerances} tolerances · ${counts.dimensions} dimensions · ${counts.datums} datums`
+      : 'Select a PMI entry in the panel to highlight its faces.';
+    return { legend, stats };
+  },
+};
+
 /** "Last CLI highlights.json" — process-agnostic replay of the legacy result. */
 export const highlightsMode: ViewMode = {
   id: 'highlights',

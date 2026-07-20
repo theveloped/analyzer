@@ -47,6 +47,59 @@ export interface FaceAttrs {
   }>;
 }
 
+/** Semantic PMI / GD&T (pmi.json, schema 2). Face ids are 0-based BREP ids
+ * (same space as brep_faces). Ids that could not be bridged to the workdir
+ * geometry are dropped upstream, so datum_refs may name datums absent here. */
+export interface PmiDatumRef {
+  name: string | null;
+  position: number;      // 1/2/3 precedence; 0 = unset
+  modifiers: string[];
+}
+export interface PmiDimension {
+  id: number;
+  kind: 'dimension';
+  type: string | null;
+  value: number;
+  upper_tolerance: number | null;
+  lower_tolerance: number | null;
+  qualifier: string | null;   // Min / Max / Avg
+  modifiers: string[];
+  angular: boolean;
+  face_ids: number[];
+  secondary_face_ids?: number[];
+  edge_ids: number[];
+}
+export interface PmiTolerance {
+  id: number;
+  kind: 'tolerance';
+  name: string | null;        // semantic name, e.g. "Position.1"
+  type: string | null;        // Position, Flatness, ProfileOfSurface, …
+  value: number | null;
+  type_of_value: string | null;   // Diameter / … (zone value type)
+  modifiers: string[];
+  material_modifier: string | null;  // M (MMC) / L (LMC)
+  zone_modifier: string | null;      // Projected / Runout / NonUniform
+  zone_value: number | null;
+  max_value: number | null;
+  datum_refs: PmiDatumRef[];
+  datum_names: string[];      // derived, ordered by precedence
+  face_ids: number[];
+  edge_ids: number[];
+}
+export interface PmiDatum {
+  id: number;
+  kind: 'datum';
+  name: string | null;
+  face_ids: number[];
+  edge_ids: number[];
+}
+export interface PmiData {
+  schema: number;
+  dimensions: PmiDimension[];
+  tolerances: PmiTolerance[];
+  datums: PmiDatum[];
+}
+
 /** the fine mesh: raw typed-array URLs the viewer fetches directly */
 export interface MeshLevel {
   counts: { verts: number; faces: number };

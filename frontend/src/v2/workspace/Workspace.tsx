@@ -2,9 +2,10 @@ import { useStore } from '../../state/store';
 import { AnalysisToolbar } from './AnalysisToolbar';
 import { DirectionsRail } from './DirectionsRail';
 import { DirectionTooltip } from './DirectionTooltip';
-import { useDirectionsActive, useViewActive } from './hooks';
+import { useActiveView, useDirectionsActive, useViewActive } from './hooks';
 import { Legend } from './Legend';
 import { PipelineRail } from './PipelineRail';
+import { PmiRail } from './PmiRail';
 import { SettingsRail } from './SettingsRail';
 import { TopBar } from './TopBar';
 import { Viewer } from './Viewer';
@@ -22,6 +23,7 @@ export function Workspace() {
   const stats = useStore((s) => s.stats);
   const directionsActive = useDirectionsActive();
   const viewActive = useViewActive();
+  const isPmi = useActiveView()?.id === 'pmi';
 
   return (
     <div className="flex h-full flex-col">
@@ -43,7 +45,7 @@ export function Workspace() {
           )}
         </div>
 
-        {viewActive ? <ViewRail /> : directionsActive ? <DirectionsRail /> : <SettingsRail />}
+        {isPmi ? <PmiRail /> : viewActive ? <ViewRail /> : directionsActive ? <DirectionsRail /> : <SettingsRail />}
       </div>
     </div>
   );

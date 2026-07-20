@@ -36,6 +36,7 @@ from loguru import logger
 
 FACE_ATTRS_FILE = "face_attrs.json"
 PMI_FILE = "pmi.json"
+PMI_SCHEMA = 3  # bump when pmi.json entry fields change (frontend PmiData mirrors)
 ASSEMBLY_FILE = "assembly.json"
 
 
@@ -48,6 +49,7 @@ class ImportedDoc:
     shape_tool: object
     color_tool: object
     pmi_degraded: bool = False
+    source_path: str = None
 
 
 def read_document(path, *, pmi=True):
@@ -94,7 +96,8 @@ def read_document(path, *, pmi=True):
         degraded.pmi_degraded = True
         return degraded
 
-    return ImportedDoc(doc=doc, shape_tool=shape_tool, color_tool=color_tool)
+    return ImportedDoc(doc=doc, shape_tool=shape_tool, color_tool=color_tool,
+                       source_path=str(path))
 
 
 def label_entry(label):
@@ -332,6 +335,20 @@ def _enum_names(module, prefix):
     return names
 
 
+def _seq_names(sequence, name_map):
+    """Decode an OCP XCAFDimTolObjects_*ModifiersSequence (1-based, Length/Value)
+    to a list of enum names, dropping the empty "None" sentinel."""
+    out = []
+    try:
+        for i in range(1, sequence.Length() + 1):
+            name = name_map.get(int(sequence.Value(i)))
+            if name and name != "None":
+                out.append(name)
+    except Exception:
+        pass
+    return out
+
+
 def _resolve_references(idoc, by_entry, ref_labels):
     """Resolve PMI reference labels to (prototype, face_ids, edge_ids).
 
@@ -393,6 +410,45 @@ def _tag_faces(proto, face_ids, pmi_id):
         )["pmi_refs"].append(pmi_id)
 
 
+def _read_step_gdt_magnitudes(path):
+    """Recover geometric-tolerance zone magnitudes straight from the STEP text,
+    keyed by the tolerance's name (e.g. ``'Position.1' -> 0.75``).
+
+    OpenCASCADE's XCAF reader returns ``0`` for the tolerance value on files
+    that encode the magnitude as a complex ``MEASURE_WITH_UNIT(LENGTH_MEASURE(x))``
+    (confirmed on the NIST AP242 set). The value is unambiguous in the raw STEP:
+    ``*_TOLERANCE('<name>','<desc>',#<mag>,…)`` references a length measure. This
+    resolves that reference by entity id. Best-effort — returns ``{}`` on any
+    trouble; the name matches ``GeomToleranceObject.GetSemanticName()``.
+    """
+    import re
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        data = text.split("DATA;", 1)[1] if "DATA;" in text else text
+        records = {int(m.group(1)): m.group(2) for m in re.finditer(
+            r"#(\d+)\s*=\s*(.*?);\s*(?=#\d+\s*=|ENDSEC)", data, re.S)}
+
+        def measure(entity_id):
+            body = records.get(entity_id, "")
+            m = re.search(r"LENGTH_MEASURE\(\s*([-\d.eE+]+)\s*\)", body)
+            return float(m.group(1)) if m else None
+
+        values = {}
+        for body in records.values():
+            # any *_TOLERANCE record with a non-empty name and a magnitude ref
+            m = re.search(
+                r"\b[A-Z_]*TOLERANCE\(\s*'([^']+)'\s*,\s*'[^']*'\s*,\s*#(\d+)", body)
+            if m:
+                v = measure(int(m.group(2)))
+                if v is not None:
+                    values[m.group(1)] = v
+        return values
+    except Exception:
+        logger.warning("could not parse GD&T magnitudes from STEP text")
+        return {}
+
+
 def extract_pmi(idoc, prototypes):
     """Extract semantic PMI and attach it to the prototypes whose faces it
     annotates (map-id keyed; write_part_artifacts remaps to workdir ids).
@@ -416,10 +472,27 @@ def _extract_pmi(idoc, prototypes):
         XCAFDimTolObjects, "XCAFDimTolObjects_GeomToleranceType_")
     tolerance_value_types = _enum_names(
         XCAFDimTolObjects, "XCAFDimTolObjects_GeomToleranceTypeValue_")
+    # semantic modifiers / qualifiers (schema 2) — see the control-frame panel
+    geom_modifs = _enum_names(
+        XCAFDimTolObjects, "XCAFDimTolObjects_GeomToleranceModif_")
+    matreq_modifs = _enum_names(
+        XCAFDimTolObjects, "XCAFDimTolObjects_GeomToleranceMatReqModif_")
+    zone_modifs = _enum_names(
+        XCAFDimTolObjects, "XCAFDimTolObjects_GeomToleranceZoneModif_")
+    datum_modifs = _enum_names(
+        XCAFDimTolObjects, "XCAFDimTolObjects_DatumSingleModif_")
+    dim_qualifiers = _enum_names(
+        XCAFDimTolObjects, "XCAFDimTolObjects_DimensionQualifier_")
+    dim_modifs = _enum_names(
+        XCAFDimTolObjects, "XCAFDimTolObjects_DimensionModif_")
 
     by_entry = {proto.entry: proto for proto in prototypes}
     dimtol_tool = XCAFDoc_DocumentTool.DimTolTool_s(idoc.doc.Main())
     pmi_id = 0
+    # OCCT leaves GetValue()==0 for tolerances whose magnitude is a complex
+    # MEASURE_WITH_UNIT; recover those from the STEP text, keyed by name.
+    step_magnitudes = (_read_step_gdt_magnitudes(idoc.source_path)
+                       if getattr(idoc, "source_path", None) else {})
 
     # -- dimensions --------------------------------------------------------
     dim_labels = TDF_LabelSequence()
@@ -440,7 +513,9 @@ def _extract_pmi(idoc, prototypes):
         dimension = {"id": pmi_id, "kind": "dimension",
                      "type": dimension_type,
                      "value": float(dimension_object.GetValue()),
-                     "upper_tolerance": None, "lower_tolerance": None}
+                     "upper_tolerance": None, "lower_tolerance": None,
+                     "qualifier": None, "modifiers": [],
+                     "angular": "Angular" in (dimension_type or "")}
         try:
             if dimension_object.IsDimWithPlusMinusTolerance():
                 dimension["upper_tolerance"] = float(
@@ -452,6 +527,14 @@ def _extract_pmi(idoc, prototypes):
                     dimension_object.GetUpperBound()) - dimension["value"]
                 dimension["lower_tolerance"] = float(
                     dimension_object.GetLowerBound()) - dimension["value"]
+        except Exception:
+            pass
+        try:
+            if dimension_object.HasQualifier():
+                qual = dim_qualifiers.get(int(dimension_object.GetQualifier()))
+                dimension["qualifier"] = qual if qual != "None" else None
+            dimension["modifiers"] = _seq_names(
+                dimension_object.GetModifiers(), dim_modifs)
         except Exception:
             pass
 
@@ -484,7 +567,11 @@ def _extract_pmi(idoc, prototypes):
         label = tolerance_labels.Value(i)
         pmi_id += 1
         tolerance = {"id": pmi_id, "kind": "tolerance", "type": None,
-                     "value": None, "type_of_value": None, "datum_names": []}
+                     "name": None, "value": None, "type_of_value": None,
+                     "modifiers": [], "material_modifier": None,
+                     "zone_modifier": None, "zone_value": None,
+                     "max_value": None, "datum_refs": [], "datum_names": []}
+        tolerance_object = None
         try:
             tolerance_object = XCAFDoc_GeomTolerance.Set_s(label).GetObject()
             tolerance["type"] = tolerance_types.get(
@@ -492,9 +579,34 @@ def _extract_pmi(idoc, prototypes):
             tolerance["value"] = float(tolerance_object.GetValue())
             tolerance["type_of_value"] = tolerance_value_types.get(
                 int(tolerance_object.GetTypeOfValue()))
+            name = tolerance_object.GetSemanticName()
+            tolerance["name"] = (name.ToCString() if name is not None
+                                 and hasattr(name, "ToCString") else None)
         except Exception:
             logger.warning(f"could not read tolerance object {i}")
 
+        # OCCT reports 0 for magnitudes it can't parse — backfill from the STEP
+        if not tolerance["value"] and tolerance["name"] in step_magnitudes:
+            tolerance["value"] = step_magnitudes[tolerance["name"]]
+
+        if tolerance_object is not None:
+            try:
+                tolerance["modifiers"] = _seq_names(
+                    tolerance_object.GetModifiers(), geom_modifs)
+                mat = matreq_modifs.get(
+                    int(tolerance_object.GetMaterialRequirementModifier()))
+                tolerance["material_modifier"] = mat if mat != "None" else None
+                zone = zone_modifs.get(int(tolerance_object.GetZoneModifier()))
+                tolerance["zone_modifier"] = zone if zone != "None" else None
+                if tolerance["zone_modifier"]:
+                    tolerance["zone_value"] = float(
+                        tolerance_object.GetValueOfZoneModifier())
+                max_value = float(tolerance_object.GetMaxValueModifier())
+                tolerance["max_value"] = max_value if max_value else None
+            except Exception:
+                logger.warning(f"could not read modifiers of tolerance {i}")
+
+        # ordered datum reference frame (primary/secondary/tertiary + modifiers)
         datum_labels = TDF_LabelSequence()
         dimtol_tool.GetDatumWithObjectOfTolerLabels_s(label, datum_labels)
         for j in range(1, datum_labels.Length() + 1):
@@ -502,12 +614,21 @@ def _extract_pmi(idoc, prototypes):
                 datum_object = XCAFDoc_Datum.Set_s(
                     datum_labels.Value(j)).GetObject()
                 name = datum_object.GetName()
-                if name is not None:
-                    tolerance["datum_names"].append(
-                        str(name.ToCString()) if hasattr(name, "ToCString")
-                        else str(name))
+                name = (str(name.ToCString()) if name is not None
+                        and hasattr(name, "ToCString")
+                        else str(name) if name is not None else None)
+                tolerance["datum_refs"].append({
+                    "name": name,
+                    "position": int(datum_object.GetPosition()),
+                    "modifiers": _seq_names(
+                        datum_object.GetModifiers(), datum_modifs)})
             except Exception:
                 logger.warning(f"could not read datum of tolerance {i}")
+        # precedence order; unset positions (0) sort last, input order preserved
+        tolerance["datum_refs"].sort(
+            key=lambda r: r["position"] if r["position"] > 0 else 99)
+        tolerance["datum_names"] = [r["name"] for r in tolerance["datum_refs"]
+                                    if r["name"]]
 
         first, second = TDF_LabelSequence(), TDF_LabelSequence()
         dimtol_tool.GetRefShapeLabel_s(label, first, second)
@@ -702,8 +823,9 @@ def write_part_artifacts(workdir, proto, source_shape=None):
                     out.append(int(target))
             return out
 
-        pmi = {"dimensions": [], "tolerances": [], "datums": []}
-        for kind in pmi:
+        pmi = {"schema": PMI_SCHEMA,
+               "dimensions": [], "tolerances": [], "datums": []}
+        for kind in ("dimensions", "tolerances", "datums"):
             for entity in proto.pmi.get(kind, []):
                 entity = dict(entity)
                 entity["face_ids"] = remap_faces(entity.get("face_ids", []))

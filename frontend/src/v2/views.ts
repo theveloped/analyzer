@@ -1,4 +1,4 @@
-import { Palette, Shapes, type LucideIcon } from 'lucide-react';
+import { Frame, Palette, Shapes, type LucideIcon } from 'lucide-react';
 
 /**
  * General "views" — raw visualizations for investigating the imported part,
@@ -32,6 +32,13 @@ export const VIEWS: View[] = [
     label: 'STEP colors / names',
     blurb: 'STEP-assigned face colors, names and PMI back-refs.',
     icon: Palette,
+  },
+  {
+    id: 'pmi',
+    process: 'injection_molding',
+    label: 'PMI / GD&T',
+    blurb: 'Semantic dimensions, tolerances and datums from the STEP.',
+    icon: Frame,
   },
 ];
 

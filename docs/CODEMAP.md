@@ -66,7 +66,7 @@ folder and re-uploads dedupe; the human name stays in `part.json`.
 | `source.stp` / `source.step` | upload / `mesh_part` (STEP input) | the retained source STEP; BREP-level stages (`prep/aag`, sheet unfold, import attributes) reload it — face/edge ids re-derive deterministically from the same bytes |
 | `aag.npz` / `aag.json` | `prep/aag` (`pipeline.compute_aag`) | AAG stage artifact: per-face convexity/curvature/area/normal + C1/C2 group labels, per-edge face pairs/continuity/signed dihedral/polylines over **canonical edge ids**; json header carries schema, `source_sha`, mesh fingerprint and stats — consumers salt `aag_fingerprint` into cache keys |
 | `face_attrs.json` | `step_import` | STEP face colors/names + PMI back-refs, keyed by 0-based BREP face id |
-| `pmi.json` | `step_import` | semantic PMI: dimensions / geometric tolerances / datums with 0-based face ids and canonical edge ids |
+| `pmi.json` | `step_import` | semantic PMI (`schema` 3): dimensions (value, ±tol, qualifier, modifiers) / geometric tolerances (name, value, type, modifiers, material+zone modifiers, ordered `datum_refs` with precedence) / datums, all with 0-based face ids + canonical edge ids. Tolerance magnitudes OCCT leaves at 0 are backfilled from the STEP text by name (`_read_step_gdt_magnitudes`). Bump `step_import.PMI_SCHEMA` when entry fields change |
 | `assembly.json` | `step_import` (assembly source workdir) | instance tree (translation + quaternion per instance) linking child part ids, quantities per unique part |
 | `results/<p>/<a>/<hash>.dxf` | DXF export route / CLI `sheet --dxf` | cached DXF render of a stored flat-pattern result |
 
