@@ -6,7 +6,7 @@
 import { putOverrides } from '../../api/client';
 import type { FieldDescriptor, Manifest, ResultEntry } from '../../api/types';
 import {
-  brepFacesMode, COL, faceValues, fade, FocusTracker, heatmapMode,
+  brepFacesMode, COL, faceAttrsMode, faceValues, fade, FocusTracker, heatmapMode,
   highlightsMode, isolineSegments, nextSetBit, nthSetBit, percentile,
   popcount, rampColor, regionColor, smoothVertexField,
 } from '../../colorizers/core';
@@ -1701,7 +1701,7 @@ export const injectionPlugin: ProcessPlugin = {
           thicknessMode, gapsMode, rayThicknessMode, rayGapMode,
           slendernessMode, thinSpanMode,
           thicknessAngleMode, gapAngleMode,
-          skeletonMode, voxelFieldMode, brepFacesMode, highlightsMode],
+          skeletonMode, voxelFieldMode, brepFacesMode, faceAttrsMode, highlightsMode],
   defaults: () => ({
     result: -1, option: 0,
     showLines: true, showArrows: true,

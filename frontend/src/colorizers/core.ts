@@ -3,6 +3,7 @@
 // factories (mask / highlights) any plugin can reuse.
 
 import type { FieldDescriptor } from '../api/types';
+import { fetchBin } from '../fields/fields';
 import type {
   ColorBar, LegendEntry, LegendFocus, PaintInfo, RGB, ViewCtx, ViewMode,
 } from '../registry/types';
@@ -500,19 +501,35 @@ export function regionColor(region: number): RGB {
   return hsl(0.98 + 0.06 * t, 0.62, 0.4 + 0.28 * t);
 }
 
+/** Per-triangle source BREP face ids for whichever mesh is currently displayed.
+ * Prefers the fine `subfaces`/`brep_faces` field; falls back to the coarse
+ * preview's `coarse_brep_faces` array when only the coarse mesh is loaded (the
+ * fine mesh + its `brep_faces` field are computed on demand). Face ids are
+ * stable across subdivision, so the coarse ids color the preview identically —
+ * and `paintFaces` iterates the displayed mesh, so the array aligns 1:1. */
+async function loadBrepFaceIds(
+  ctx: ViewCtx,
+): Promise<{ ids: Uint32Array; desc: FieldDescriptor | null }> {
+  const desc = ctx.manifest.fields.find((f) => f.id === 'subfaces')
+    ?? ctx.manifest.fields.find((f) => f.id === 'brep_faces')
+    ?? null;
+  if (desc) return { ids: await ctx.getField(desc) as Uint32Array, desc };
+  const coarseUrl = ctx.manifest.coarse_mesh?.brep_faces_url;
+  if (coarseUrl) return { ids: await fetchBin(coarseUrl, Uint32Array), desc: null };
+  throw new Error('no BREP face ids — re-mesh the part from its STEP file');
+}
+
 /** Source BREP faces (from the STEP-aware mesher), one color per face id.
  * User face splits show as their sub-face pieces when present. */
 export const brepFacesMode: ViewMode = {
   id: 'brep_faces',
   label: 'BREP faces',
   async paint(ctx) {
-    const desc = ctx.manifest.fields.find((f) => f.id === 'subfaces')
-      ?? ctx.manifest.fields.find((f) => f.id === 'brep_faces');
-    if (!desc) {
-      throw new Error('no BREP face ids — re-mesh the part from its STEP file');
-    }
-    const ids = await ctx.getField(desc) as Uint32Array;
+    const { ids, desc } = await loadBrepFaceIds(ctx);
     ctx.paintFaces((f) => segmentIdColor(ids[f]));
+    if (!desc) {
+      return { legend: [], stats: `BREP faces (coarse preview) over ${ctx.faceCount} triangles` };
+    }
     const split = desc.params.n_brep != null
       ? ` (${desc.params.n_brep} BREP + user cuts)` : '';
     return {
@@ -534,9 +551,7 @@ export const faceAttrsMode: ViewMode = {
       throw new Error('no STEP face attributes — import the part from a STEP file that carries colors/names (explode command or upload)');
     }
     const attrs = await (await fetch(url)).json();
-    const desc = ctx.manifest.fields.find((f) => f.id === 'brep_faces');
-    if (!desc) throw new Error('no BREP face ids — re-mesh the part from its STEP file');
-    const ids = await ctx.getField(desc) as Uint32Array;
+    const { ids } = await loadBrepFaceIds(ctx);
 
     const byId = new Map<number, { color: RGB | null; name: string | null; pmi_refs: number[] }>();
     for (const [key, value] of Object.entries(attrs.faces ?? {})) {

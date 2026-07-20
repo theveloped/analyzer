@@ -4,7 +4,7 @@ import { Button } from '../../catalyst/button';
 import { useStore } from '../../state/store';
 import type { Analysis } from '../analyses';
 import { StatusDot } from '../components/status';
-import { resultFor, selectAnalysis, useActiveAnalysis, useDirectionsActive, useVisibleAnalyses } from './hooks';
+import { resultFor, selectAnalysis, useActiveAnalysis, useDirectionsActive, useViewActive, useVisibleAnalyses } from './hooks';
 
 function stepSummary(a: Analysis): string {
   const { manifest, viewerParams } = useStore.getState();
@@ -23,6 +23,7 @@ function stepSummary(a: Analysis): string {
 export function PipelineRail() {
   const active = useActiveAnalysis();
   const inDirections = useDirectionsActive();
+  const inView = useViewActive();
   const analyses = useVisibleAnalyses();
   const manifestVersion = useStore((s) => s.manifestVersion);
   const viewerParams = useStore((s) => s.viewerParams);
@@ -35,7 +36,7 @@ export function PipelineRail() {
       <div className="text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">Checks</div>
       <div className="flex flex-col">
         {analyses.map((a, i) => {
-          const isActive = !inDirections && a.id === active.id;
+          const isActive = !inDirections && !inView && a.id === active.id;
           const computed = !!resultFor(manifest, a);
           const Icon = a.icon;
           return (
