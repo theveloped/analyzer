@@ -324,12 +324,29 @@ def build_manifest(root, part):
     if os.path.exists(directions_path):
         directions = np.load(directions_path)
         manifest["directions"] = [[float(c) for c in d] for d in directions]
+        # provenance sidecar (parallel to directions; leaves directions[] as-is)
+        sources_path = os.path.join(workdir, pipeline.DIRECTIONS_SOURCES_FILE)
+        if os.path.exists(sources_path):
+            with open(sources_path) as f:
+                manifest["direction_sources"] = json.load(f)
         meta_path = os.path.join(workdir, pipeline.DIRECTIONS_META_FILE)
         if os.path.exists(meta_path):
             with open(meta_path) as f:
                 stored_mesh = json.load(f).get("mesh_fingerprint")
             manifest["directions_stale"] = bool(
                 stored_mesh and stored_mesh != pipeline.mesh_fingerprint(workdir))
+
+    # geometric candidate axes the client composes live into the direction set
+    # (the browser has verts/normals for uniform/PCA/face sources; hole axes
+    # need the analytic BREP surfaces, so ship them here)
+    brep_meta_path = os.path.join(workdir, pipeline.BREP_META_FILE)
+    if os.path.exists(brep_meta_path):
+        import analysis
+        with open(brep_meta_path) as f:
+            surface_params = json.load(f).get("surface_params")
+        manifest["hole_candidates"] = [
+            {"axis": [float(c) for c in axis], "detail": _json_safe(detail)}
+            for axis, detail in analysis.hole_axes_from_geometry(surface_params)]
 
     manifest["fields"] = (
         _zcache_fields(workdir, base_url, vert_count)

@@ -34,6 +34,19 @@ body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
 .panel button:hover { background: #31404f; }
 .panel button:disabled { opacity: 0.5; cursor: default; }
 .panel button.upload { flex: none; }
+.panel button.active { background: #3b5268; border-color: #5a7793; }
+.panel button.primary { width: 100%; margin-top: 8px; background: #2f6d4a; border-color: #3f8a60; }
+.panel button.primary:hover { background: #388055; }
+.warn {
+  margin: 6px 0; padding: 5px 8px; font-size: 12px;
+  background: #4a3a10; color: #f0d89a; border: 1px solid #7a6320; border-radius: 5px;
+}
+.dir-list { list-style: none; margin: 4px 0; padding: 0; }
+.dir-list li {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; font-size: 12px; padding: 3px 0;
+}
+.dir-list li button { padding: 1px 7px; line-height: 1; }
 
 .tabs { display: flex; gap: 4px; margin-top: 10px; }
 .tabs button { flex: 1; padding: 5px 2px; font-size: 11px; }

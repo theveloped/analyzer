@@ -23,6 +23,7 @@ from analysis import (
     get_mesh_data,
     subdivide_mesh,
     sample_unity_vector_pairs,
+    assemble_directions,
     compute_accessibility,
 )
 from utils import (ensure_directory, file_fingerprint, files_fingerprint,
@@ -35,6 +36,7 @@ NORMALS_FILE = "normals.npy"
 MESH_META_FILE = "mesh_meta.json"
 DIRECTIONS_FILE = "directions.npy"
 DIRECTIONS_META_FILE = "directions_meta.json"
+DIRECTIONS_SOURCES_FILE = "directions_sources.json"
 ACCESSIBILITY_FILE = "accessibility.npy"
 BREP_FACES_FILE = "brep_faces.npy"
 BREP_META_FILE = "brep_meta.json"
@@ -650,9 +652,16 @@ def compute_aag(workdir, *, smooth_angle=None, tollerance=1e-6,
     return meta["stats"]
 
 
-def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
-                       pixel=None, progress=None):
-    """Sample approach directions and compute the accessibility matrix.
+def compute_directions(workdir, *, count=64, axes=False, bbox_axes=False,
+                       hole_axes=False, manual=(), face_groups=(),
+                       tollerance=0.1, pixel=None, progress=None):
+    """Assemble candidate approach directions and compute accessibility.
+
+    Directions come from several sources (uniform sphere sampling, world
+    ``axes``, PCA ``bbox_axes``, ``hole_axes`` from analytic quadrics,
+    averaged-normal ``face_groups``, and ``manual`` vectors); each is tagged
+    with its provenance in ``directions_sources.json`` (index-aligned to
+    ``directions.npy``). The set stays laid out as antipodal pairs.
 
     ``tollerance`` is the angular relaxation (degrees) of the visibility
     test: faces within it of perpendicular still count as front-facing, so
@@ -666,17 +675,12 @@ def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
             pixel = resolution / 5.0
             logger.info(f"pixel {pixel:.3f} mm from resolution {resolution:.2f} mm")
 
-    logger.debug(f"Computing {count} directions")
-    directions = sample_unity_vector_pairs(count)
-
-    if axes:
-        # principal axes as antipodal pairs, matching the pair layout
-        principal = np.array([
-            [1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0], [0.0, -1.0, 0.0],
-            [0.0, 0.0, 1.0], [0.0, 0.0, -1.0],
-        ])
-        directions = np.vstack([principal, directions])
+    logger.debug(f"Assembling directions (count={count}, axes={axes}, "
+                 f"bbox={bbox_axes}, holes={hole_axes}, "
+                 f"manual={len(manual)}, groups={len(face_groups)})")
+    directions, sources = assemble_directions(
+        workdir, count=count, axes=axes, bbox_axes=bbox_axes,
+        hole_axes=hole_axes, manual=manual, face_groups=face_groups)
 
     logger.debug("Cheking accessibility per direction")
     verts, faces = load_mesh_arrays(workdir)
@@ -699,6 +703,10 @@ def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
     logger.debug(f"Storing accessibility at: {accessibility_path}")
     np.save(accessibility_path, accessibility)
 
+    # provenance sidecar, index-aligned to directions.npy rows
+    with open(os.path.join(workdir, DIRECTIONS_SOURCES_FILE), "w") as f:
+        json.dump([{**s, "index": i} for i, s in enumerate(sources)], f)
+
     # which mesh the accessibility rows index — the manifest flags the
     # directions stale when the workdir is re-meshed afterwards
     with open(os.path.join(workdir, DIRECTIONS_META_FILE), "w") as f:
@@ -706,9 +714,14 @@ def compute_directions(workdir, *, count=64, axes=False, tollerance=0.1,
                    "pixel": None if pixel is None else float(pixel),
                    "chord_error": float(chord_error)}, f)
 
+    by_source = {}
+    for s in sources:
+        by_source[s["source"]] = by_source.get(s["source"], 0) + 1
+
     return {
         "directions": int(directions.shape[0]),
         "faces": int(face_count),
+        "sources": by_source,
     }
 
 

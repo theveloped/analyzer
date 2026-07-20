@@ -34,6 +34,11 @@ export class Scene3D {
   private clock = new THREE.Clock();
 
   onPick: ((faceIndex: number, point: [number, number, number]) => void) | null = null;
+  // arrow overlays are clickable: index into the direction set, or -1 for a
+  // click that hit no arrow. The handler returns true when it consumed the
+  // click (so the mesh pick underneath is skipped).
+  private arrowHelpers: THREE.ArrowHelper[] = [];
+  onPickArrow: ((index: number, screen: [number, number]) => boolean) | null = null;
 
   constructor(private container: HTMLElement) {
     this.scene.background = new THREE.Color(0x21262c);
@@ -135,6 +140,11 @@ export class Scene3D {
       || Math.hypot(e.clientX - this.downAt[0], e.clientY - this.downAt[1]) > 4) return;
     // a click on a gizmo axis aligns the view; it consumes the click
     if (this.viewHelper.handleClick(e)) return;
+    // arrows take precedence over the mesh (they float in front of the part),
+    // but only the directions view consumes the click (see onPickArrow)
+    const arrow = this.arrowUnderCursor(e);
+    const consumed = this.onPickArrow ? this.onPickArrow(arrow, [e.clientX, e.clientY]) : false;
+    if (consumed) return;
     const hit = this.hitUnderCursor(e);
     if (hit && hit.faceIndex != null && this.onPick) {
       this.onPick(hit.faceIndex, [hit.point.x, hit.point.y, hit.point.z]);
@@ -371,24 +381,48 @@ export class Scene3D {
     this.overlay.add(lines);
   }
 
-  /** Overlay one arrow per direction, pointing at the part from outside. */
+  /** Overlay one arrow per direction, pointing at the part from outside.
+   * Arrows are click-pickable (see onPickArrow) — each carries its index. */
   setArrows(arrows: { direction: number[]; color: RGB }[]) {
     if (!this.mesh) return;
+    this.arrowHelpers = [];
     const box = new THREE.Box3().setFromObject(this.mesh);
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3()).length();
-    for (const { direction, color } of arrows) {
+    arrows.forEach(({ direction, color }, index) => {
       const d = new THREE.Vector3(
         direction[0], direction[1], direction[2]).normalize();
       const length = 0.22 * size;
       const origin = center.clone().addScaledVector(d, 0.55 * size + length);
-      this.overlay.add(new THREE.ArrowHelper(
+      const helper = new THREE.ArrowHelper(
         d.clone().negate(), origin, length,
-        new THREE.Color(...color).getHex(), 0.3 * length, 0.12 * length));
+        new THREE.Color(...color).getHex(), 0.3 * length, 0.12 * length);
+      helper.userData.arrowIndex = index;
+      this.overlay.add(helper);
+      this.arrowHelpers.push(helper);
+    });
+  }
+
+  /** Index of the arrow under the cursor, or -1. Cones are the hit target. */
+  private arrowUnderCursor(e: MouseEvent): number {
+    if (!this.arrowHelpers.length) return -1;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((e.clientX - rect.left) / rect.width) * 2 - 1,
+      -((e.clientY - rect.top) / rect.height) * 2 + 1,
+    );
+    this.raycaster.setFromCamera(ndc, this.camera);
+    const hits = this.raycaster.intersectObjects(this.arrowHelpers, true);
+    for (const hit of hits) {
+      let o: THREE.Object3D | null = hit.object;
+      while (o && o.userData.arrowIndex === undefined) o = o.parent;
+      if (o) return o.userData.arrowIndex as number;
     }
+    return -1;
   }
 
   clearOverlays() {
+    this.arrowHelpers = [];
     for (const child of [...this.overlay.children]) {
       this.overlay.remove(child);
       if (child instanceof THREE.LineSegments || child instanceof THREE.Mesh) {

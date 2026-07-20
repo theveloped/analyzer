@@ -82,6 +82,10 @@ if __name__ == "__main__":
     parser_directions.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
     parser_directions.add_argument("--count", help="number of directions determin", type=int, default=64)
     parser_directions.add_argument("--axes", help="prepend the six principal +/-X/Y/Z directions", action="store_true")
+    parser_directions.add_argument("--bbox-axes", dest="bbox_axes", help="add oriented bounding-box (PCA) axes of the part", action="store_true")
+    parser_directions.add_argument("--hole-axes", dest="hole_axes", help="add hole/cylinder/cone/torus axes from the analytic surfaces", action="store_true")
+    parser_directions.add_argument("--manual", help="manual axes as x:y:z strings", nargs="+", default=[])
+    parser_directions.add_argument("--face-group", dest="face_group", help="face indices to average into one direction (repeatable)", type=int, nargs="+", action="append", default=[])
     parser_directions.add_argument("--tollerance", help="angular relaxation of the visibility test in degrees (near-vertical walls within it count as facing)", type=float, default=0.1)
     parser_directions.add_argument("--pixel", help="visibility height map pixel size (default: resolution/5)", type=float, default=None)
     
@@ -356,7 +360,10 @@ if __name__ == "__main__":
             serve_workdir(args.directory)
 
     elif args.command == "directions":
+        manual = [[float(c) for c in s.split(":")] for s in args.manual]
         compute_directions(args.directory, count=args.count, axes=args.axes,
+                           bbox_axes=args.bbox_axes, hole_axes=args.hole_axes,
+                           manual=manual, face_groups=args.face_group,
                            tollerance=args.tollerance, pixel=args.pixel)
 
     elif args.command == "explode":

@@ -29,3 +29,14 @@ export function resultFor(manifest: Manifest | null, a: Analysis) {
 export function selectAnalysis(a: Analysis) {
   useStore.getState().set({ processId: a.process, modeId: a.id });
 }
+
+/** The candidate-directions view is its own (cross-process) mode, not a check
+ * in the ANALYSES catalog — it is active when the shared modeId is 'directions'. */
+export function useDirectionsActive(): boolean {
+  return useStore((s) => s.modeId) === 'directions';
+}
+
+/** Open the directions view (the shared controller paints the directionsPlugin). */
+export function activateDirections() {
+  useStore.getState().set({ processId: 'directions', modeId: 'directions' });
+}
