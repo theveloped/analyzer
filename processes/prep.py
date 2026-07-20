@@ -148,6 +148,8 @@ def run_aag(workdir, params, progress):
 def run_directions(workdir, params, progress):
     result = pipeline.compute_directions(
         workdir, count=params["count"], axes=params["axes"],
+        bbox_axes=params["bbox_axes"], hole_axes=params["hole_axes"],
+        manual=params["manual"], face_groups=params["face_groups"],
         tollerance=params["tollerance"], pixel=params["pixel"],
         progress=progress)
     return AnalysisResult(stats=result)
@@ -327,6 +329,14 @@ PROCESS = ProcessDef(
                 Param("count", "int", default=64, min=1, label="Direction count"),
                 Param("axes", "bool", default=True,
                       label="Prepend principal ±X/±Y/±Z"),
+                Param("bbox_axes", "bool", default=False,
+                      label="Add oriented bounding-box (PCA) axes"),
+                Param("hole_axes", "bool", default=False,
+                      label="Add hole / cylinder axes"),
+                Param("manual", "vector_list", default=[],
+                      label="Manual axes (x:y:z, …)"),
+                Param("face_groups", "group_list", default=[],
+                      label="Averaged-normal face groups"),
                 Param("tollerance", "number", default=0.1, unit="deg", min=0,
                       label="Wall relaxation tolerance"),
                 Param("pixel", "number", default=None, unit="mm", min=0,

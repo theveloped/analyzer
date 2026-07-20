@@ -24,7 +24,7 @@ RESULTS_DIR = "results"
 class Param:
     """One declared analysis parameter, renderable as a form control."""
     name: str
-    type: str  # bool | int | number | string | select | int_list | number_list | tip_list | tool_list
+    type: str  # bool | int | number | string | select | int_list | number_list | tip_list | tool_list | vector_list | group_list
     default: object = None
     label: str = None
     unit: str = None
