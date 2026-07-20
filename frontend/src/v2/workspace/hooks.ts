@@ -2,6 +2,8 @@ import type { Manifest } from '../../api/types';
 import { useStore } from '../../state/store';
 import type { Analysis } from '../analyses';
 import { ANALYSIS_BY_ID, ANALYSES } from '../analyses';
+import type { View } from '../views';
+import { VIEW_BY_ID } from '../views';
 import { useV2 } from '../store';
 
 /** The active analysis is the shared store's modeId (falls back to thickness). */
@@ -39,4 +41,22 @@ export function useDirectionsActive(): boolean {
 /** Open the directions view (the shared controller paints the directionsPlugin). */
 export function activateDirections() {
   useStore.getState().set({ processId: 'directions', modeId: 'directions' });
+}
+
+/** The active general view, if the shared modeId is one (else null). Views are
+ * static geometry visualizations (BREP faces, STEP colors) — not checks. */
+export function useActiveView(): View | null {
+  const modeId = useStore((s) => s.modeId);
+  return VIEW_BY_ID[modeId] ?? null;
+}
+
+/** Whether a general view is the active mode (used to suppress check highlights,
+ * since `useActiveAnalysis` falls back to thickness for any non-check mode). */
+export function useViewActive(): boolean {
+  return useStore((s) => s.modeId in VIEW_BY_ID);
+}
+
+/** Switch to a general view (the shared controller paints the matching mode). */
+export function selectView(v: View) {
+  useStore.getState().set({ processId: v.process, modeId: v.id });
 }

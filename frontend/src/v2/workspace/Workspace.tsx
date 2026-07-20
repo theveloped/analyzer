@@ -2,12 +2,13 @@ import { useStore } from '../../state/store';
 import { AnalysisToolbar } from './AnalysisToolbar';
 import { DirectionsRail } from './DirectionsRail';
 import { DirectionTooltip } from './DirectionTooltip';
-import { useDirectionsActive } from './hooks';
+import { useDirectionsActive, useViewActive } from './hooks';
 import { Legend } from './Legend';
 import { PipelineRail } from './PipelineRail';
 import { SettingsRail } from './SettingsRail';
 import { TopBar } from './TopBar';
 import { Viewer } from './Viewer';
+import { ViewRail } from './ViewRail';
 
 /**
  * The single-part workspace that fills the floating content card: a top bar,
@@ -20,6 +21,7 @@ export function Workspace() {
   const meshReady = useStore((s) => s.meshReady);
   const stats = useStore((s) => s.stats);
   const directionsActive = useDirectionsActive();
+  const viewActive = useViewActive();
 
   return (
     <div className="flex h-full flex-col">
@@ -41,7 +43,7 @@ export function Workspace() {
           )}
         </div>
 
-        {directionsActive ? <DirectionsRail /> : <SettingsRail />}
+        {viewActive ? <ViewRail /> : directionsActive ? <DirectionsRail /> : <SettingsRail />}
       </div>
     </div>
   );
