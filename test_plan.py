@@ -171,6 +171,67 @@ def test_impact(workdir):
           all(entry["outcome"] == "unchanged" for entry in report.values()))
 
 
+# 1x1 transparent PNG
+TINY_PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+            "AAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+
+
+def test_reports(workdir):
+    import os
+    store_for(workdir, {NUM_PARAM: 3.0})
+    plan = plans.empty_plan()
+    plans.save_plan(workdir, plan, expected_revision=0)
+    plans.append_disposition(workdir, {
+        "finding_id": "chk-a:in_band", "state": "accepted", "by": "tobias"})
+
+    expect_raises("empty report rejected", ValueError,
+                  lambda: plans.publish_report(workdir, {"checks": []}))
+
+    merged = apply_defaults(_analysis, {NUM_PARAM: 3.0})
+    key = resolver.cache_key(workdir, ANALYSIS_ID, merged)
+    from processes.base import params_hash
+    result_hash = params_hash(key)
+    payload = {"title": "DFM review", "part": "testpart", "checks": [{
+        "id": "chk-a", "label": "Wall thickness", "verdict": "review",
+        "findings": [{"id": "chk-a:in_band", "detail": "12 faces"}],
+        "evidence": {"process": "injection_molding", "analysis": "thickness",
+                     "result_hash": result_hash, "policy": {"band": [1, 3]}},
+        "shot": TINY_PNG,
+    }]}
+    report = plans.publish_report(workdir, payload)
+    bundle = os.path.join(workdir, plans.REPORTS_DIR, report["rid"])
+    check("bundle stores report + shot + evidence copy",
+          os.path.exists(os.path.join(bundle, "report.json"))
+          and os.path.exists(os.path.join(bundle, "shot_chk-a.png"))
+          and os.path.exists(os.path.join(
+              bundle, "evidence",
+              f"injection_molding.thickness.{result_hash}.json")))
+    check("report snapshots dispositions",
+          report["dispositions"]["chk-a:in_band"]["state"] == "accepted")
+    check("report freezes the plan revision", report["plan_revision"] == 1)
+
+    loaded = plans.load_report(workdir, report["rid"])
+    check("load_report roundtrips",
+          loaded is not None and loaded["checks"][0]["shot"] == "shot_chk-a.png"
+          and loaded["checks"][0]["evidence"]["result_hash"] == result_hash)
+
+    first_json = open(os.path.join(bundle, "report.json")).read()
+    second = plans.publish_report(workdir, payload)
+    check("republish mints a new rid, first bundle untouched",
+          second["rid"] != report["rid"]
+          and open(os.path.join(bundle, "report.json")).read() == first_json)
+    check("list_reports sees both",
+          [r["rid"] for r in plans.list_reports(workdir)]
+          == sorted([report["rid"], second["rid"]]))
+    check("shot path validated",
+          plans.report_shot_path(workdir, report["rid"], "shot_chk-a.png")
+          is not None
+          and plans.report_shot_path(workdir, "../evil", "shot_chk-a.png")
+          is None
+          and plans.report_shot_path(workdir, report["rid"], "report.json")
+          is None)
+
+
 def main():
     with tempfile.TemporaryDirectory() as workdir:
         test_crud_and_history(workdir)
@@ -181,6 +242,8 @@ def main():
         test_check_status(workdir)
     with tempfile.TemporaryDirectory() as workdir:
         test_impact(workdir)
+    with tempfile.TemporaryDirectory() as workdir:
+        test_reports(workdir)
 
     print(f"\n{PASSED} passed, {FAILED} failed")
     if FAILED == 0:

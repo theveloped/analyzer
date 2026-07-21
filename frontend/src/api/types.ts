@@ -194,6 +194,38 @@ export interface PlanSection {
   dispositions: Record<string, DispositionEvent>;
 }
 
+/** Published report bundle (plans.py reports/<rid>/report.json). */
+export interface ReportCheck {
+  id: string;
+  label: string;
+  verdict: string;
+  findings: { id: string; code?: string; label?: string; detail?: string;
+    severity?: string }[];
+  evidence: Record<string, any>;
+  /** Bundle-relative shot filename, when captured. */
+  shot?: string | null;
+}
+
+export interface Report {
+  schema: number;
+  rid: string;
+  title: string;
+  part: string;
+  plan_revision: number;
+  published_at: string;
+  dispositions: Record<string, DispositionEvent>;
+  checks: ReportCheck[];
+}
+
+export interface ReportSummary {
+  rid: string;
+  title: string;
+  part: string;
+  plan_revision: number;
+  published_at: string;
+  check_count: number;
+}
+
 export interface Manifest {
   part: Part;
   mesh: MeshLevel | null;

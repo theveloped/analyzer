@@ -1,5 +1,6 @@
 import type {
   DispositionEvent, Job, Manifest, Part, Plan, PlanSection, ProcessInfo,
+  Report, ReportSummary,
 } from './types';
 
 async function getJSON<T>(url: string): Promise<T> {
@@ -177,6 +178,32 @@ export async function postDisposition(
   if (!res.ok) {
     const detail = (await res.json().catch(() => null))?.detail;
     throw new Error(detail ?? `saving disposition failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+const reportsUrl = (partId: string) =>
+  `/api/parts/${encodeURIComponent(partId)}/reports`;
+
+export const fetchReports = (partId: string) =>
+  getJSON<ReportSummary[]>(reportsUrl(partId));
+
+export const fetchReport = (partId: string, rid: string) =>
+  getJSON<Report>(`${reportsUrl(partId)}/${encodeURIComponent(rid)}`);
+
+/** Publish an immutable report bundle; returns the stored report. */
+export async function publishReport(
+  partId: string,
+  body: { title: string; part: string; checks: Record<string, any>[] },
+): Promise<Report> {
+  const res = await fetch(reportsUrl(partId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `publishing failed: ${res.status}`);
   }
   return res.json();
 }

@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import { CircleDashed, Compass, Plus, Route } from 'lucide-react';
+import { CircleDashed, Compass, FileUp, Plus, Route } from 'lucide-react';
 import { useState } from 'react';
 import type { PlanCheck, PlanCheckStatus, PlanOperation } from '../../api/types';
 import { Button } from '../../catalyst/button';
@@ -11,6 +11,7 @@ import {
   checkState, planCheckState, statusKindOf, type CheckState,
 } from '../checks/status';
 import { StatusDot } from '../components/status';
+import { publishPlanReport } from '../report/publish';
 import { useV2 } from '../store';
 import { ImpactModal, type PendingEdit } from './ImpactModal';
 import {
@@ -156,6 +157,20 @@ export function PipelineRail() {
   const manifestVersion = useStore((s) => s.manifestVersion);
   void manifestVersion;
   const [pending, setPending] = useState<PendingEdit | null>(null);
+  const [publishing, setPublishing] = useState<string | null>(null);
+
+  const publish = () => {
+    setPublishing('publishing…');
+    void publishPlanReport('DFM report', setPublishing)
+      .then((report) => {
+        if (report && partId) {
+          window.location.hash =
+            `#report=${encodeURIComponent(partId)}/${encodeURIComponent(report.rid)}`;
+        }
+      })
+      .catch((err) => useStore.getState().set({ error: String(err) }))
+      .finally(() => setPublishing(null));
+  };
 
   const planChecks = (section?.plan.checks ?? []).filter((c) => {
     const a = catalogFor(c);
@@ -250,6 +265,13 @@ export function PipelineRail() {
           <Button outline onClick={() => void seedExploration()} className="w-full"
             disabled={!manifest}>
             <Route data-slot="icon" /> Add CNC exploration
+          </Button>
+        )}
+        {hasPlan && (
+          <Button onClick={publish} className="w-full"
+            disabled={!manifest || !!publishing}>
+            <FileUp data-slot="icon" />
+            {publishing ?? 'Publish report'}
           </Button>
         )}
       </div>

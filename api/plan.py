@@ -9,9 +9,11 @@ touched here, everything is JSON + fingerprint reads.
 import threading
 
 from fastapi import HTTPException
+from fastapi.responses import FileResponse
 
 import plans
-from api.schemas import DispositionRequest, PlanImpactRequest, PlanPutRequest
+from api.schemas import (DispositionRequest, PlanImpactRequest,
+                         PlanPutRequest, ReportPublishRequest)
 
 _plan_lock = threading.Lock()
 
@@ -47,6 +49,38 @@ def register(app, part_or_404, workdir_for):
             return plans.impact_preview(workdir_for(part["id"]), body.patch)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error))
+
+    @app.get("/api/parts/{part_id}/reports")
+    def get_reports(part_id: str):
+        part = part_or_404(part_id)
+        return plans.list_reports(workdir_for(part["id"]))
+
+    @app.post("/api/parts/{part_id}/reports", status_code=201)
+    def post_report(part_id: str, body: ReportPublishRequest):
+        part = part_or_404(part_id)
+        try:
+            return plans.publish_report(
+                workdir_for(part["id"]),
+                {"title": body.title, "part": body.part or part["name"],
+                 "checks": body.checks})
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
+    @app.get("/api/parts/{part_id}/reports/{rid}")
+    def get_report(part_id: str, rid: str):
+        part = part_or_404(part_id)
+        report = plans.load_report(workdir_for(part["id"]), rid)
+        if report is None:
+            raise HTTPException(status_code=404, detail="unknown report")
+        return report
+
+    @app.get("/api/parts/{part_id}/reports/{rid}/shots/{name}")
+    def get_report_shot(part_id: str, rid: str, name: str):
+        part = part_or_404(part_id)
+        path = plans.report_shot_path(workdir_for(part["id"]), rid, name)
+        if path is None:
+            raise HTTPException(status_code=404, detail="unknown shot")
+        return FileResponse(path, media_type="image/png")
 
     @app.get("/api/parts/{part_id}/dispositions")
     def get_dispositions(part_id: str):

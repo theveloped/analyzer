@@ -187,6 +187,34 @@ add/remove/reorder yet).
    accessibility row; one pair cross-checked against `pipeline.compose_tool`); extend the
    Playwright walk to the full exploration flow on `testpart_42`.
 
+## Phase 3 plan (locked 2026-07-21)
+
+Scope decisions: the report viewer is a hash route in v2 (`#report=<part>/<rid>`) — no auth
+yet, "customer view" means a read-only page; the bundle copies the referenced result JSONs
+(evidence by copy) and stores per-check PNG screenshots as bundle files; npz arrays stay
+pinned by hash (copying deferred with GC); a report freezes exactly one plan revision.
+
+1. **Pre-work — band evaluation catches up with the spike.** Band-policy checks evaluate
+   client-side: fetch the field + mesh faces (both already in the fetchBin cache), compute
+   per-face means exactly like `faceValues` (mean of the 3 corners), count faces inside
+   [lo, hi]. Async + memoized by the eval key like the reach checks. Findings read
+   "N faces (P %) inside ≤ 1.17 mm"; verdict `review` when the band is non-empty.
+2. **Backend** (`plans.py` + `api/plan.py`): `publish_report(workdir, payload)` writes an
+   immutable `reports/<rid>/` bundle — `report.json` (title, part + plan revision,
+   published-at, per-check verdict/findings/evidence), `shot_<check>.png` files, and
+   `evidence/` copies of every referenced result JSON. Routes:
+   `GET/POST /api/parts/{id}/reports`, `GET .../reports/{rid}`, `GET .../reports/{rid}/shots/{name}`.
+3. **Evidence capture**: `Scene3D.capture()` renders one frame and returns the canvas PNG +
+   camera pose (position/target). The publish flow walks the plan's visible checks,
+   activates each one's lens (scope bound in), captures, and POSTs the bundle.
+4. **Read-only view**: v2 sidebar gains a Reports list per part; opening one renders the
+   bundle full-card — per-check screenshot, verdict badge, findings with their
+   dispositions ("accepted — why"), part/plan revision provenance. The visibility axis is
+   consumed here: only `visible` checks publish; disposition states render as-is.
+5. **Verify**: `test_plan.py` publish tests (bundle immutability, evidence copies,
+   republish → new rid); Playwright walk: band → check → disposition → publish → open the
+   report route.
+
 ## Sequencing
 
 | Phase | Scope |

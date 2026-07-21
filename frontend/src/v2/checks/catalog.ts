@@ -8,7 +8,8 @@ import type { ReachCtx } from '../../processes/cnc/reach';
 import { ANALYSES, type Analysis } from '../analyses';
 import { FIELD_LENSES } from '../fieldLenses';
 import {
-  evaluateCheck, evaluateReachOp, evaluateReachRoute, type Evaluation,
+  evaluateBandCheck, evaluateCheck, evaluateReachOp, evaluateReachRoute,
+  type Evaluation,
 } from './evaluators';
 import { resultForHash } from './status';
 
@@ -159,49 +160,19 @@ function opFor(check: PlanCheck, plan: Plan): PlanOperation | null {
   return plan.operations.find((o) => o.id === check.operation) ?? null;
 }
 
-/** Evaluation of a plan check against its pinned policy. Threshold checks
- * resolve synchronously; reach checks return null while the mask unions are
- * in flight and re-render via the eval tick when done. */
-export function useCheckEvaluation(
-  check: PlanCheck, plan: Plan, status: PlanCheckStatus | undefined,
-  manifest: Manifest | null,
+/** Cached-or-launch: returns the memoized evaluation, or kicks the async
+ * run off (once) and returns null; the eval tick re-renders subscribers
+ * when it lands. */
+function runMemoized(
+  key: string, run: () => Promise<Evaluation>,
 ): Evaluation | null {
-  useEvalTick((s) => s.n); // re-read the memo when an evaluation lands
-  const view = describeCheck(check, plan);
-  if (!view || !manifest) return { verdict: 'unknown', findings: [] };
-
-  if (view.kind === 'threshold' && view.analysis) {
-    const result = resultForHash(manifest, view.analysis,
-      status?.expected_hash ?? null);
-    return evaluateCheck(view.analysis, check, result);
-  }
-  if (view.kind === 'reach_study') return { verdict: 'na', findings: [] };
-  if (!status?.exists || !status.expected_hash) {
-    return { verdict: 'unknown', findings: [] };
-  }
-
-  const scopeConfig = view.kind === 'reach_op'
-    ? opFor(check, plan)?.config ?? {}
-    : routeOps(plan);
-  const key = [check.id, status.expected_hash,
-    JSON.stringify(check.policy ?? {}), JSON.stringify(scopeConfig)].join('|');
   const hit = evalCache.get(key);
   if (hit) return hit;
   if (!evalPending.has(key)) {
     evalPending.add(key);
-    const ctx = reachCtx(manifest, status.expected_hash);
-    const run = async (): Promise<Evaluation> => {
-      if (!ctx) return { verdict: 'unknown', findings: [] };
-      if (view.kind === 'reach_op') {
-        const op = opFor(check, plan);
-        if (!op) return { verdict: 'unknown', findings: [] };
-        return evaluateReachOp(ctx, check, op);
-      }
-      return evaluateReachRoute(ctx, check, plan.operations);
-    };
     run()
       .catch((err) => {
-        console.warn(`check ${check.id} evaluation failed:`, err);
+        console.warn(`evaluation ${key} failed:`, err);
         return { verdict: 'unknown', findings: [] } as Evaluation;
       })
       .then((evaluation) => {
@@ -211,4 +182,93 @@ export function useCheckEvaluation(
       });
   }
   return null; // evaluating…
+}
+
+/** Non-hook evaluation (the publish flow): same dispatch as the hook, run
+ * to completion. */
+export async function evaluateNow(
+  check: PlanCheck, plan: Plan, status: PlanCheckStatus | undefined,
+  manifest: Manifest,
+): Promise<Evaluation> {
+  const view = describeCheck(check, plan);
+  if (!view) return { verdict: 'unknown', findings: [] };
+  if (view.kind === 'threshold' && view.analysis) {
+    const a = view.analysis;
+    const def = FIELD_LENSES[`${a.process}:${a.id}`];
+    const band = (check.policy?.band ?? null) as
+      [number | null, number | null] | null;
+    const hasBand = !!def && Array.isArray(band)
+      && (band[0] != null || band[1] != null);
+    const result = resultForHash(manifest, a, status?.expected_hash ?? null);
+    if (!hasBand || !result) return evaluateCheck(a, check, result);
+    return evaluateBandCheck(manifest, def!, a, check, result);
+  }
+  if (view.kind === 'reach_study') return { verdict: 'na', findings: [] };
+  if (!status?.exists || !status.expected_hash) {
+    return { verdict: 'unknown', findings: [] };
+  }
+  const ctx = reachCtx(manifest, status.expected_hash);
+  if (!ctx) return { verdict: 'unknown', findings: [] };
+  if (view.kind === 'reach_op') {
+    const op = opFor(check, plan);
+    if (!op) return { verdict: 'unknown', findings: [] };
+    return evaluateReachOp(ctx, check, op);
+  }
+  return evaluateReachRoute(ctx, check, plan.operations);
+}
+
+/** Evaluation of a plan check against its pinned policy. Plain threshold
+ * checks resolve synchronously from stats; band and reach checks return
+ * null while their field/mask math is in flight and re-render via the eval
+ * tick when done. */
+export function useCheckEvaluation(
+  check: PlanCheck, plan: Plan, status: PlanCheckStatus | undefined,
+  manifest: Manifest | null,
+): Evaluation | null {
+  useEvalTick((s) => s.n); // re-read the memo when an evaluation lands
+  const view = describeCheck(check, plan);
+  if (!view || !manifest) return { verdict: 'unknown', findings: [] };
+
+  if (view.kind === 'threshold' && view.analysis) {
+    const a = view.analysis;
+    const def = FIELD_LENSES[`${a.process}:${a.id}`];
+    const band = (check.policy?.band ?? null) as
+      [number | null, number | null] | null;
+    const hasBand = !!def && Array.isArray(band)
+      && (band[0] != null || band[1] != null);
+    if (!hasBand) {
+      const result = resultForHash(manifest, a, status?.expected_hash ?? null);
+      return evaluateCheck(a, check, result);
+    }
+    if (!status?.exists || !status.expected_hash) {
+      return { verdict: 'unknown', findings: [] };
+    }
+    const result = resultForHash(manifest, a, status.expected_hash);
+    if (!result) return { verdict: 'unknown', findings: [] };
+    const key = ['band', check.id, status.expected_hash,
+      JSON.stringify(check.policy ?? {})].join('|');
+    return runMemoized(key,
+      () => evaluateBandCheck(manifest, def!, a, check, result));
+  }
+  if (view.kind === 'reach_study') return { verdict: 'na', findings: [] };
+  if (!status?.exists || !status.expected_hash) {
+    return { verdict: 'unknown', findings: [] };
+  }
+
+  const scopeConfig = view.kind === 'reach_op'
+    ? opFor(check, plan)?.config ?? {}
+    : routeOps(plan);
+  const key = ['reach', check.id, status.expected_hash,
+    JSON.stringify(check.policy ?? {}), JSON.stringify(scopeConfig)].join('|');
+  const hash = status.expected_hash;
+  return runMemoized(key, async () => {
+    const ctx = reachCtx(manifest, hash);
+    if (!ctx) return { verdict: 'unknown', findings: [] };
+    if (view.kind === 'reach_op') {
+      const op = opFor(check, plan);
+      if (!op) return { verdict: 'unknown', findings: [] };
+      return evaluateReachOp(ctx, check, op);
+    }
+    return evaluateReachRoute(ctx, check, plan.operations);
+  });
 }

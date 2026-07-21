@@ -36,6 +36,14 @@ class PlanImpactRequest(BaseModel):
     patch: dict = Field(default_factory=dict)
 
 
+class ReportPublishRequest(BaseModel):
+    """Publish an immutable report bundle: per-check verdict/findings/
+    evidence plus optional PNG data-URL shots."""
+    title: str = ""
+    part: str = ""
+    checks: list[dict]
+
+
 class DispositionRequest(BaseModel):
     """One human judgment on a finding (appended, never overwritten)."""
     finding_id: str

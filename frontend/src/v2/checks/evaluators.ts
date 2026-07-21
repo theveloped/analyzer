@@ -1,8 +1,10 @@
 import type {
-  DispositionEvent, PlanCheck, PlanOperation, ResultEntry,
+  DispositionEvent, Manifest, PlanCheck, PlanOperation, ResultEntry,
 } from '../../api/types';
+import { fetchBin, fetchField } from '../../fields/fields';
 import { findStudy, opReach, type ReachCtx } from '../../processes/cnc/reach';
 import type { Analysis } from '../analyses';
+import { fieldDescriptor, type FieldLensDef } from '../fieldLenses';
 import type { VerdictState } from './status';
 
 /**
@@ -51,6 +53,59 @@ export function evaluateCheck(
       code: 'min_below_limit',
       label: `${a.label} below limit`,
       detail: `minimum ${min.toFixed(2)} ${a.unit} < policy ${threshold} ${a.unit}`,
+      severity: 'review',
+    }],
+  };
+}
+
+/** Human-readable band text from a pinned policy. */
+export function bandText(check: PlanCheck, unit: string): string {
+  const [lo, hi] = (check.policy?.band ?? [null, null]) as
+    [number | null, number | null];
+  if (lo != null && hi != null) return `${lo.toFixed(2)} – ${hi.toFixed(2)} ${unit}`;
+  if (lo != null) return `≥ ${lo.toFixed(2)} ${unit}`;
+  if (hi != null) return `≤ ${hi.toFixed(2)} ${unit}`;
+  return '';
+}
+
+/** Band check: count the faces whose value falls inside the pinned band —
+ * the exact rule the highlight paints (per-face mean of the three corner
+ * values, the faceValues convention). Async: fetches the cached field and
+ * mesh faces (both usually already in the fetchBin cache). */
+export async function evaluateBandCheck(
+  manifest: Manifest, def: FieldLensDef, a: Analysis, check: PlanCheck,
+  result: ResultEntry,
+): Promise<Evaluation> {
+  const desc = fieldDescriptor(manifest, result, def);
+  const facesUrl = manifest.mesh?.faces_url;
+  if (!desc || !facesUrl) return { verdict: 'unknown', findings: [] };
+  const [field, faces] = await Promise.all([
+    fetchField(desc) as Promise<Float32Array>,
+    fetchBin(facesUrl, Uint32Array),
+  ]);
+  const [lo, hi] = (check.policy?.band ?? [null, null]) as
+    [number | null, number | null];
+  const bLo = lo ?? -Infinity;
+  const bHi = hi ?? Infinity;
+  const faceCount = faces.length / 3;
+  let inBand = 0;
+  let finite = 0;
+  for (let f = 0; f < faceCount; f++) {
+    const v = (field[faces[3 * f]] + field[faces[3 * f + 1]]
+      + field[faces[3 * f + 2]]) / 3;
+    if (!isFinite(v)) continue;
+    finite++;
+    if (v >= bLo && v <= bHi) inBand++;
+  }
+  if (!inBand) return { verdict: 'pass', findings: [] };
+  const share = finite ? ((100 * inBand) / finite).toFixed(1) : '0';
+  return {
+    verdict: 'review',
+    findings: [{
+      id: `${check.id}:in_band`,
+      code: 'in_band',
+      label: `${a.label}: faces inside the band`,
+      detail: `${inBand} faces (${share} %) inside ${bandText(check, def.unit)}`,
       severity: 'review',
     }],
   };

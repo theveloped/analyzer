@@ -37,9 +37,12 @@ Framework-free on purpose: the API routes wrap these functions; tests and
 the CLI import them directly.
 """
 
+import base64
 import copy
 import json
 import os
+import re
+import shutil
 from datetime import datetime, timezone
 
 from processes import get_analysis
@@ -50,6 +53,9 @@ PLAN_SCHEMA = 1
 PLAN_FILE = "plan.json"
 PLAN_HISTORY_FILE = "plan_history.jsonl"
 DISPOSITIONS_FILE = "dispositions.jsonl"
+REPORTS_DIR = "reports"
+REPORT_SCHEMA = 1
+_PNG_PREFIX = "data:image/png;base64,"
 
 DISPOSITION_STATES = ("open", "accepted", "customer_approval", "resolved")
 
@@ -258,6 +264,114 @@ def impact_preview(workdir, patch):
                                "expected_hash": then["expected_hash"],
                                "error": then["error"]}
     return report
+
+
+def publish_report(workdir, payload):
+    """Publish an immutable report bundle under ``reports/<rid>/``.
+
+    ``payload``: title plus per-check entries — id, label, verdict, findings,
+    evidence ({process, analysis, result_hash, params, policy, lens, camera})
+    and an optional ``shot`` PNG data URL. The bundle stores report.json, the
+    shots as files, COPIES of every referenced result JSON (evidence by copy
+    — a later reprocess or cleanup must not orphan what was published) and a
+    snapshot of the dispositions at publish time. Bundles are never
+    modified; republishing mints a new rid.
+    """
+    checks = payload.get("checks") or []
+    if not checks:
+        raise ValueError("a report needs at least one check")
+    plan = load_plan(workdir)
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    rid = f"r{stamp}"
+    base = os.path.join(workdir, REPORTS_DIR)
+    suffix = 2
+    while os.path.exists(os.path.join(base, rid)):
+        rid = f"r{stamp}-{suffix}"
+        suffix += 1
+    bundle = os.path.join(base, rid)
+    os.makedirs(os.path.join(bundle, "evidence"))
+
+    stored_checks = []
+    for check in checks:
+        entry = {key: check.get(key)
+                 for key in ("id", "label", "verdict", "findings", "evidence")}
+        shot = check.get("shot")
+        if shot and shot.startswith(_PNG_PREFIX):
+            name = f"shot_{_safe_name(str(check.get('id', 'check')))}.png"
+            with open(os.path.join(bundle, name), "wb") as f:
+                f.write(base64.b64decode(shot[len(_PNG_PREFIX):]))
+            entry["shot"] = name
+        evidence = check.get("evidence") or {}
+        process_id = _safe_name(str(evidence.get("process", "")))
+        analysis_id = _safe_name(str(evidence.get("analysis", "")))
+        result_hash = _safe_name(str(evidence.get("result_hash", "")))
+        if process_id and analysis_id and result_hash:
+            source = os.path.join(workdir, "results", process_id, analysis_id,
+                                  f"{result_hash}.json")
+            if os.path.exists(source):
+                shutil.copyfile(source, os.path.join(
+                    bundle, "evidence",
+                    f"{process_id}.{analysis_id}.{result_hash}.json"))
+        stored_checks.append(entry)
+
+    report = {
+        "schema": REPORT_SCHEMA,
+        "rid": rid,
+        "title": str(payload.get("title") or "DFM report"),
+        "part": str(payload.get("part") or os.path.basename(
+            os.path.abspath(workdir))),
+        "plan_revision": plan["revision"],
+        "published_at": _now(),
+        "dispositions": latest_dispositions(workdir),
+        "checks": stored_checks,
+    }
+    with open(os.path.join(bundle, "report.json"), "w") as f:
+        json.dump(report, f, indent=1)
+    return report
+
+
+def list_reports(workdir):
+    """Published bundles, oldest → newest (rid embeds the publish stamp)."""
+    base = os.path.join(workdir, REPORTS_DIR)
+    if not os.path.isdir(base):
+        return []
+    entries = []
+    for rid in sorted(os.listdir(base)):
+        path = os.path.join(base, rid, "report.json")
+        if not os.path.exists(path):
+            continue
+        with open(path) as f:
+            report = json.load(f)
+        entries.append({key: report.get(key) for key in
+                        ("rid", "title", "part", "plan_revision",
+                         "published_at")}
+                       | {"check_count": len(report.get("checks", []))})
+    return entries
+
+
+def load_report(workdir, rid):
+    """One published bundle's report.json (None when absent)."""
+    if _safe_name(rid) != rid:
+        return None
+    path = os.path.join(workdir, REPORTS_DIR, rid, "report.json")
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        return json.load(f)
+
+
+def report_shot_path(workdir, rid, name):
+    """Validated filesystem path of a bundle shot (None when invalid)."""
+    if _safe_name(rid) != rid or not re.fullmatch(r"shot_[A-Za-z0-9_-]+\.png",
+                                                  name):
+        return None
+    path = os.path.join(workdir, REPORTS_DIR, rid, name)
+    return path if os.path.exists(path) else None
+
+
+def _safe_name(value):
+    return re.sub(r"[^A-Za-z0-9_-]", "_", value)
 
 
 def _stored_results(workdir, process_id, analysis_id):
