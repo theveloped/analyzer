@@ -85,6 +85,32 @@ def create_app(root=".", preload=None):
     def get_part(part_id: str):
         return part_or_404(part_id)
 
+    @app.post("/api/parts/{part_id}/reprocess")
+    def reprocess_part(part_id: str):
+        """Rebuild a part from its original source, discarding cached
+        artifacts the resolver can't know are stale (algorithm code changes).
+        Kicks the STEP first-load bundle so the preview comes back on its own.
+        """
+        part = part_or_404(part_id)
+        # refuse while a job is queued/running: the worker holds the workdir
+        # open and the wipe would race the compute (and wedge the queue)
+        if any(job.status in ("queued", "running")
+               for job in jobs.list(part_id)):
+            raise HTTPException(status_code=409,
+                                detail="part has a running job")
+        try:
+            ext = parts_api.reprocess_part(root, part["id"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        job = None
+        if ext in pipeline.STEP_EXTENSIONS:
+            try:
+                job = jobs.submit(part["id"], "prep", "bundle", {})
+            except PartBusyError:
+                pass
+        return {"part": parts_api.part_info(root, part["id"]),
+                "job": job.to_dict() if job else None}
+
     @app.get("/api/parts/{part_id}/manifest")
     def get_manifest(part_id: str):
         return manifest_api.build_manifest(root, part_or_404(part_id))

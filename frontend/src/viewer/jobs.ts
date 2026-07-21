@@ -2,12 +2,28 @@
 // controls (e.g. the flow-fill "Compute fill" button). The watched set is
 // module-level so remounts and multiple callers never double-poll a job.
 
-import { fetchJob, submitJob } from '../api/client';
+import { fetchJob, reprocessPart as reprocessPartApi, submitJob } from '../api/client';
 import type { Job } from '../api/types';
 import { useStore } from '../state/store';
-import { refreshManifest, refreshParts, schedulePaint } from './controller';
+import {
+  refreshManifest, refreshParts, schedulePaint, selectPart,
+} from './controller';
 
 const watched = new Set<number>();
+
+/** Force a from-scratch rebuild of a part from its original source, bypassing
+ * the content-addressed cache (for algorithm changes the resolver can't see).
+ * Wipes the cached artifacts server-side, reloads the (now bare) part, and —
+ * for STEP — watches the first-load bundle so the preview reappears, then
+ * reloads the mesh in case the rebuild re-cut it. */
+export async function reprocessPart(partId: string): Promise<void> {
+  const { job } = await reprocessPartApi(partId);
+  await selectPart(partId); // reflect the wiped state immediately
+  if (job) {
+    useStore.getState().set({ jobs: [job, ...useStore.getState().jobs] });
+    void watchJob(job, () => selectPart(partId));
+  }
+}
 
 /** Submit an analysis job, register it in the store and start watching.
  * `onDone` runs after a successful job's manifest refresh (e.g. carrying

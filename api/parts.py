@@ -12,6 +12,7 @@ import datetime
 import hashlib
 import json
 import os
+import shutil
 
 import numpy as np
 
@@ -128,6 +129,35 @@ def create_part(root, filename, data):
     if ext.lower() not in pipeline.MESH_EXTENSIONS:
         raise ValueError(f"unsupported extension {ext}; expected one of {pipeline.MESH_EXTENSIONS}")
     return _register(root, stem or "part", ext, data)
+
+
+def reprocess_part(root, part_id):
+    """Wipe every cached artifact in a part's workdir, keeping only the
+    original source file and its part.json.
+
+    The cache resolver invalidates on input content and params, not on
+    algorithm *code* changes; reprocessing forces a from-scratch rebuild so
+    edits to the meshing/analysis code take effect on an already-imported
+    part. Manual sidecars (face splits, assignment overrides) are cleared
+    too — they index into a mesh the rebuild may re-cut. Returns the source
+    file's lowercased extension so callers can decide whether to kick the
+    STEP first-load bundle.
+    """
+    workdir = workdir_for(root, part_id)
+    meta = _read_meta(workdir)
+    source = meta.get("source")
+    if not source or not os.path.exists(os.path.join(workdir, source)):
+        raise ValueError("part has no stored source to reprocess")
+    keep = {source, PART_META_FILE}
+    for name in os.listdir(workdir):
+        if name in keep:
+            continue
+        path = os.path.join(workdir, name)
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+    return os.path.splitext(source)[1].lower()
 
 
 def register_part_file(root, path):

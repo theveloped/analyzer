@@ -28,6 +28,15 @@ export async function uploadPart(file: File): Promise<Part> {
   return res.json();
 }
 
+export async function reprocessPart(
+  partId: string,
+): Promise<{ part: Part; job: Job | null }> {
+  const res = await fetch(
+    `/api/parts/${encodeURIComponent(partId)}/reprocess`, { method: 'POST' });
+  if (!res.ok) throw new Error(`reprocess failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
 export async function submitJob(
   partId: string, process: string, analysis: string, params: Record<string, any>,
 ): Promise<Job> {
