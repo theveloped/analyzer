@@ -215,6 +215,44 @@ pinned by hash (copying deferred with GC); a report freezes exactly one plan rev
    republish → new rid); Playwright walk: band → check → disposition → publish → open the
    report route.
 
+## Phase 4 plan (locked 2026-07-21)
+
+Scope decisions: sheet DFM rules (backlog item 7) stay deferred — the laser/brake checks
+verdict on the analyses' stored stats; machine templates enter plans through ROUTE
+templates only (a per-operation machine picker/swap is a later phase).
+
+1. **Catalogue + route templates** (backend). Repo-level `catalogue/machines/*.yaml`
+   (laser, 3-axis CNC with the default toolset, press brake referencing the
+   `pressbrake/catalogue/` demo files) and `catalogue/routes/laser_cnc_brake.yaml` — an
+   ordered route: operations (kind, label, machine template, config) + checks (analysis,
+   params, policy scope, lens). `plans.instantiate_route(workdir, name)` snapshots each
+   machine YAML into `plan_assets/machines/<sha12>.yaml` (content-addressed copy — plans
+   stay self-contained as the library evolves), appends the ops + checks, bumps the
+   revision; rejected when the route's op ids already exist. The press-brake check's
+   `machine_path` param binds to the SNAPSHOT path, so the analysis literally runs against
+   the frozen profile. Routes: `POST /api/parts/{id}/plan/route {name}`,
+   `GET /api/catalogue/routes`.
+2. **Declarative workpiece states (v1)**. Operations carry `produces` annotations over the
+   final-part space (the CNC step declares it produces the hole features); a check policy
+   `mask: "features"` makes the reach evaluator and the reach_op lens intersect with the
+   `feature_id > 0` field from cnc/features — "are the machined features reachable",
+   evaluated on the final-part mesh, no intermediate geometry.
+3. **Stats-verdict check descriptors** (catalog.ts): a generic kind for checks judged from
+   stored stats — sheet detect (verdict == sheet), flat pattern (developable / volume ok,
+   findings from `stats.reasons`), bend plan (a feasible plan exists), cnc features
+   (holes found). Lenses: sheet_roles / flat_pattern / bend_sequence / features.
+4. **UI**: an "Add route…" menu (from the catalogue listing); operation cards for
+   laser / press_brake kinds show the machine template (no direction dropdown).
+5. **Fixture + walk**: an L-bracket with holes (OCP-built like the test_bendplan fixtures)
+   uploaded through the API; instantiate the route → run each step's checks → statuses per
+   step → publish the mixed-route report.
+6. **Verify**: `test_plan.py` route-instantiation tests (snapshot content-addressing,
+   id-clash rejection, machine_path binding); the Playwright route walk; existing suites
+   stay green.
+
+Deferred: backlog 7 sheet DFM analysis, per-op machine swap + impact preview on machine
+change, material/stock decisions, quotation extraction.
+
 ## Sequencing
 
 | Phase | Scope |
