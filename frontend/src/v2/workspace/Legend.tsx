@@ -7,8 +7,10 @@ import { useActiveAnalysis, useActiveLens, useCheckActive, useDirectionsActive }
 const rgbCss = (c: RGB | readonly number[]) =>
   `rgb(${Math.round(c[0] * 255)} ${Math.round(c[1] * 255)} ${Math.round(c[2] * 255)})`;
 
+// bottom-left by default; on narrow viewer columns it moves top-left so the
+// bottom edge belongs to the viewport toolbar alone (no overlap allowed)
 const box =
-  'absolute bottom-3 left-3 w-60 rounded-lg border border-zinc-950/10 bg-white/90 p-2.5 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10';
+  'absolute bottom-3 left-3 w-60 rounded-lg border border-zinc-950/10 bg-white/90 p-2.5 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur @max-2xl:top-14 @max-2xl:bottom-auto dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10';
 const title = 'mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400';
 const sub = 'text-[10px] tabular-nums text-zinc-500 dark:text-zinc-400';
 

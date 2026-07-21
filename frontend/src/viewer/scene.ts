@@ -674,17 +674,25 @@ export class Scene3D {
     }
   }
 
-  /** One frame rendered and read back as PNG, plus the camera pose —
+  /** One frame rendered and read back as PNG, plus the full camera pose —
    * report evidence. Rendering immediately before toDataURL makes the
-   * readback valid without preserveDrawingBuffer. */
+   * readback valid without preserveDrawingBuffer. The pose is a superset of
+   * the original {position, target} shape so existing consumers keep
+   * working. */
   capture(): { image: string;
-    camera: { position: number[]; target: number[] } } {
+    camera: { position: number[]; target: number[]; up: number[];
+      projection: Projection; fov?: number; zoom?: number } } {
     this.renderer.render(this.scene, this.camera);
+    const camera = this.camera;
     return {
       image: this.renderer.domElement.toDataURL('image/png'),
       camera: {
-        position: this.camera.position.toArray(),
+        position: camera.position.toArray(),
         target: this.controls.target.toArray(),
+        up: camera.up.toArray(),
+        projection: this.rig.projection,
+        ...(camera instanceof THREE.PerspectiveCamera
+          ? { fov: camera.fov } : { zoom: camera.zoom }),
       },
     };
   }

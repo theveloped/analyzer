@@ -59,7 +59,7 @@ export function Workspace() {
       <div className="flex min-h-0 flex-1">
         <PipelineRail />
 
-        <div className="relative min-w-0 flex-1 bg-zinc-100 dark:bg-zinc-950">
+        <div className="@container relative min-w-0 flex-1 bg-zinc-100 dark:bg-zinc-950">
           <Viewer />
           <AnalysisToolbar />
           {directionsActive && <DirectionTooltip />}

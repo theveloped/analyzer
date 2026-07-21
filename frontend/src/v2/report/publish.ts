@@ -2,7 +2,9 @@ import { publishReport } from '../../api/client';
 import type { Report } from '../../api/types';
 import { useStore } from '../../state/store';
 import { captureViewer, refreshManifest } from '../../viewer/controller';
+import { computeMeasurement } from '../../viewer/measure';
 import { describeCheck, evaluateNow } from '../checks/catalog';
+import { useV2 } from '../store';
 import { selectPlanCheck } from '../workspace/hooks';
 
 /**
@@ -13,6 +15,12 @@ import { selectPlanCheck } from '../workspace/hooks';
  * policy, lens key. The server copies the referenced result JSONs into the
  * bundle so later reprocessing can't orphan what was published.
  */
+/** The live measurement session, snapshotted BY COPY when complete. */
+function measurementEvidence() {
+  const { a, b } = useV2.getState().measure;
+  return a && b ? { a, b, readout: computeMeasurement(a, b) } : null;
+}
+
 export async function publishPlanReport(
   title: string, onProgress?: (message: string) => void,
 ): Promise<Report | null> {
@@ -48,6 +56,10 @@ export async function publishPlanReport(
         policy: check.policy ?? {},
         lens: check.lens ?? null,
         camera: cap?.camera ?? null,
+        // how the shot was rendered: style/edges/opacity/section/projection
+        // (serializable by design) plus any live measurement annotations
+        viewport: useV2.getState().viewport,
+        measurement: measurementEvidence(),
         plan_revision: section.plan.revision,
       },
       shot: cap?.image ?? null,

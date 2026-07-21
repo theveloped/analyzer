@@ -17,7 +17,6 @@ import { useV2 } from '../store';
 const btnCls = 'flex size-8 items-center justify-center rounded-lg transition';
 const activeCls = 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900';
 const idleCls = 'text-zinc-500 hover:bg-zinc-950/5 hover:text-zinc-950 dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-white';
-const disabledCls = 'cursor-not-allowed text-zinc-300 dark:text-zinc-600';
 const panelCls = 'z-20 mb-2 w-56 rounded-xl border border-zinc-950/10 bg-white/95 p-2 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/95 dark:ring-white/10';
 const rowCls = 'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm/5 transition';
 const rowActiveCls = 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900';
@@ -279,7 +278,11 @@ export function ViewportToolbar() {
     setViewport({ context: viewport.context === mode ? 'all' : mode });
 
   return (
-    <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-zinc-950/10 bg-white/90 p-1 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10">
+    // positioned in the free zone between the legend (bottom-left, 16rem) and
+    // the axis gizmo (bottom-right, 128px + margin); wraps upward when tight.
+    // On narrow columns the legend moves top-left, freeing the left edge.
+    <div className="pointer-events-none absolute bottom-3 left-[16rem] right-[8.5rem] flex justify-center @max-2xl:left-3">
+    <div className="pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-1 rounded-xl border border-zinc-950/10 bg-white/90 p-1 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10">
       {STYLES.map(({ id, label, hint, Icon }) => (
         <button
           key={id}
@@ -322,55 +325,48 @@ export function ViewportToolbar() {
       >
         <Maximize className="size-4" />
       </button>
-      <Divider />
-
-      {/* selection context — select a group by clicking a legend row */}
-      <button
-        type="button"
-        disabled={!selection}
-        onClick={fitSelection}
-        title={selection ? `Fit selection (${selection.label})`
-          : 'Fit selection — click a legend entry to select its faces'}
-        className={clsx(btnCls, selection ? idleCls : disabledCls)}
-      >
-        <Focus className="size-4" />
-      </button>
-      <button
-        type="button"
-        disabled={!selection}
-        onClick={() => setContext('ghost')}
-        title={selection ? `Ghost everything but the selection (${selection.label})`
-          : 'Ghost context — click a legend entry to select its faces'}
-        aria-pressed={viewport.context === 'ghost'}
-        className={clsx(btnCls,
-          !selection ? disabledCls : viewport.context === 'ghost' ? activeCls : idleCls)}
-      >
-        <Ghost className="size-4" />
-      </button>
-      <button
-        type="button"
-        disabled={!selection}
-        onClick={() => setContext('isolate')}
-        title={selection ? `Isolate the selection (${selection.label})`
-          : 'Isolate selection — click a legend entry to select its faces'}
-        aria-pressed={viewport.context === 'isolate'}
-        className={clsx(btnCls,
-          !selection ? disabledCls : viewport.context === 'isolate' ? activeCls : idleCls)}
-      >
-        <Eye className="size-4" />
-      </button>
+      {/* selection context — appears once a legend row selected a group */}
       {selection && (
-        <button
-          type="button"
-          onClick={() => {
-            selectLegendGroup('', null);
-            setViewport({ context: 'all' });
-          }}
-          title={`Clear selection (${selection.label})`}
-          className="rounded-lg px-1.5 text-[10px] font-medium text-zinc-400 transition hover:bg-zinc-950/5 hover:text-zinc-950 dark:hover:bg-white/10 dark:hover:text-white"
-        >
-          ✕
-        </button>
+        <>
+          <Divider />
+          <button
+            type="button"
+            onClick={fitSelection}
+            title={`Fit selection (${selection.label})`}
+            className={clsx(btnCls, idleCls)}
+          >
+            <Focus className="size-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setContext('ghost')}
+            title={`Ghost everything but the selection (${selection.label})`}
+            aria-pressed={viewport.context === 'ghost'}
+            className={clsx(btnCls, viewport.context === 'ghost' ? activeCls : idleCls)}
+          >
+            <Ghost className="size-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setContext('isolate')}
+            title={`Isolate the selection (${selection.label})`}
+            aria-pressed={viewport.context === 'isolate'}
+            className={clsx(btnCls, viewport.context === 'isolate' ? activeCls : idleCls)}
+          >
+            <Eye className="size-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              selectLegendGroup('', null);
+              setViewport({ context: 'all' });
+            }}
+            title={`Clear selection (${selection.label})`}
+            className="rounded-lg px-1.5 text-[10px] font-medium text-zinc-400 transition hover:bg-zinc-950/5 hover:text-zinc-950 dark:hover:bg-white/10 dark:hover:text-white"
+          >
+            ✕
+          </button>
+        </>
       )}
       <Divider />
 
@@ -384,6 +380,7 @@ export function ViewportToolbar() {
       >
         <Ruler className="size-4" />
       </button>
+    </div>
     </div>
   );
 }
