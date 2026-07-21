@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { ANALYSES, defaultCompute } from './analyses';
+import type { BandBound } from './fieldLenses';
 
 /**
  * v2-only UI state. The 3D viewer, part manifest, jobs, legend and stats all
@@ -17,11 +18,15 @@ export interface V2State {
   /** The plan check the right rail is scoped to (several checks can share
    * one analysis, so the active modeId alone cannot identify it). */
   activeCheckId: string | null;
+  /** Highlight-band bounds PER LENS — each lens keeps its own band; editing
+   * one must never bleed into another. */
+  bands: Record<string, { lo: BandBound; hi: BandBound }>;
 
   setAdvanced: (advanced: boolean) => void;
   toggleTheme: () => void;
   setCompute: (analysisId: string, key: string, value: unknown) => void;
   setActiveCheck: (id: string | null) => void;
+  setBand: (lensKey: string, band: { lo: BandBound; hi: BandBound }) => void;
 }
 
 const initialCompute = Object.fromEntries(
@@ -33,9 +38,12 @@ export const useV2 = create<V2State>()((set) => ({
   theme: 'light',
   compute: initialCompute,
   activeCheckId: null,
+  bands: {},
 
   setAdvanced: (advanced) => set({ advanced }),
   setActiveCheck: (activeCheckId) => set({ activeCheckId }),
+  setBand: (lensKey, band) =>
+    set((s) => ({ bands: { ...s.bands, [lensKey]: band } })),
   toggleTheme: () => set((s) => ({ theme: s.theme === 'light' ? 'dark' : 'light' })),
   setCompute: (analysisId, key, value) =>
     set((s) => ({

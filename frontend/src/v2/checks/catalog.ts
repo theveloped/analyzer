@@ -6,6 +6,7 @@ import type {
 import { fetchField } from '../../fields/fields';
 import type { ReachCtx } from '../../processes/cnc/reach';
 import { ANALYSES, type Analysis } from '../analyses';
+import { FIELD_LENSES } from '../fieldLenses';
 import {
   evaluateCheck, evaluateReachOp, evaluateReachRoute, type Evaluation,
 } from './evaluators';
@@ -51,6 +52,16 @@ export function catalogAnalysisFor(check: PlanCheck): Analysis | null {
 export function describeCheck(check: PlanCheck, plan: Plan): CheckView | null {
   const a = catalogAnalysisFor(check);
   if (a) {
+    // field-lens-backed checks open as the plain heatmap — the band comes
+    // from the check's policy via the rail, everything else stays neutral
+    const field = FIELD_LENSES[`${a.process}:${a.id}`];
+    const params: Record<string, unknown> = field
+      ? {
+        [field.thresholdParam]: '', [field.minParam]: '',
+        [field.scaleParam]: '',
+        ...(field.maskParam ? { [field.maskParam]: false } : {}),
+      }
+      : {};
     return {
       kind: 'threshold',
       label: a.label,
@@ -58,7 +69,7 @@ export function describeCheck(check: PlanCheck, plan: Plan): CheckView | null {
       icon: a.icon,
       tier: a.tier,
       analysis: a,
-      activate: () => ({ processId: a.process, modeId: a.id, params: {} }),
+      activate: () => ({ processId: a.process, modeId: a.id, params }),
     };
   }
   if (check.analysis !== 'cnc/reach_study') return null;

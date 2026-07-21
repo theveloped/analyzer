@@ -72,13 +72,32 @@ function BoundRow({ label, bound, onChange, fieldUnit, resolved }: {
   );
 }
 
+const EMPTY_BOUND: BandBound = { value: '', unit: 'abs' };
+const EMPTY_BAND = { lo: EMPTY_BOUND, hi: EMPTY_BOUND };
+
 function BandSection({ def, stats }: { def: FieldLensDef; stats: FieldStats }) {
   const setParam = useStore((s) => s.setViewerParam);
   const partId = useStore((s) => s.partId);
   const section = usePlanSection();
-  const [lo, setLo] = useState<BandBound>({ value: '', unit: 'abs' });
-  const [hi, setHi] = useState<BandBound>({ value: '', unit: 'abs' });
+  const activeCheckId = useV2((s) => s.activeCheckId);
+  const bands = useV2((s) => s.bands);
+  const setBand = useV2((s) => s.setBand);
+  const setActiveCheck = useV2((s) => s.setActiveCheck);
   const [saving, setSaving] = useState(false);
+
+  // scope: navigating via a CHECK edits that check's band (button: Update);
+  // navigating via the LENS edits a per-lens scratch band (button: Add) —
+  // separate keys in the store, so bands never bleed across lenses/checks
+  const selected = section?.plan.checks.find(
+    (c) => c.id === activeCheckId
+      && c.analysis === `${def.process}/${def.analysis}`) ?? null;
+  const bandKey = selected?.id ?? def.lensKey;
+  const savedDef = (selected?.policy?.band_def ?? null) as
+    { lo: BandBound; hi: BandBound } | null;
+  const band = bands[bandKey] ?? savedDef ?? EMPTY_BAND;
+  const { lo, hi } = band;
+  const setLo = (next: BandBound) => setBand(bandKey, { ...band, lo: next });
+  const setHi = (next: BandBound) => setBand(bandKey, { ...band, hi: next });
 
   const rLo = resolveBound(lo, stats);
   const rHi = resolveBound(hi, stats);
@@ -98,9 +117,6 @@ function BandSection({ def, stats }: { def: FieldLensDef; stats: FieldStats }) {
       : rLo != null ? `≥ ${rLo.toFixed(2)} ${def.unit}`
       : `≤ ${rHi!.toFixed(2)} ${def.unit}`;
 
-  const checkId = `chk-${def.modeId}`;
-  const saved = section?.plan.checks.find((c) => c.id === checkId);
-
   const save = () => {
     setSaving(true);
     void saveLensCheck(def, {
@@ -108,16 +124,27 @@ function BandSection({ def, stats }: { def: FieldLensDef; stats: FieldStats }) {
       band_def: { lo, hi },
       threshold: def.flagDirection === 'below' ? (rLo ?? rHi) : (rHi ?? rLo),
       unit: def.unit,
-    }, currentCompute(def)).finally(() => setSaving(false));
+    }, currentCompute(def), selected?.id ?? null)
+      .then((id) => {
+        if (id && !selected) {
+          // the fresh check takes over the scratch band and becomes selected
+          setBand(id, band);
+          setBand(def.lensKey, EMPTY_BAND);
+          setActiveCheck(id);
+        }
+      })
+      .finally(() => setSaving(false));
   };
 
   return (
     <div>
       <div className="mb-1.5 flex items-center justify-between">
-        <span className={sectionCls}>Highlight band</span>
+        <span className={sectionCls}>
+          Highlight band{selected ? ` — “${selected.id}”` : ''}
+        </span>
         {active && (
           <button type="button"
-            onClick={() => { setLo({ value: '', unit: 'abs' }); setHi({ value: '', unit: 'abs' }); }}
+            onClick={() => setBand(bandKey, EMPTY_BAND)}
             className="text-[11px]/4 text-zinc-400 transition hover:text-zinc-600 dark:hover:text-zinc-200">
             clear
           </button>
@@ -142,11 +169,12 @@ function BandSection({ def, stats }: { def: FieldLensDef; stats: FieldStats }) {
       <Button outline onClick={save} className="mt-2 w-full"
         disabled={saving || !partId || !active}>
         <BookmarkPlus data-slot="icon" />
-        {saved ? 'Update the saved check' : 'Save band as check'}
+        {selected ? 'Update check' : 'Add check'}
       </Button>
-      {saved && (
+      {selected && (
         <p className={clsx('mt-1', hintCls)}>
-          Saved as “{checkId}” at plan rev {section?.plan.revision}.
+          Editing “{selected.id}” — adding a different band goes through the
+          lens (toolbar) instead.
         </p>
       )}
     </div>

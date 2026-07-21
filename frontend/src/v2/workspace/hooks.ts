@@ -224,25 +224,35 @@ export async function pinPolicy(check: PlanCheck, policy: Record<string, unknown
   await storePlan(plan, plan.revision);
 }
 
-/** Save a field lens's current clipping band as a plan check: the compute
- * params become the check's params (its cache identity) and the band — with
- * its unit and reference — becomes the pinned policy. Upserts by lens. */
+/** Save a field lens's band as a plan check: the compute params become the
+ * check's params (its cache identity) and the band its pinned policy.
+ * With `checkId` the existing check updates in place; without it a NEW
+ * check is added (unique id) — several checks may interpret one lens, each
+ * with its own band. Returns the saved check's id. */
 export async function saveLensCheck(
   def: FieldLensDef, policy: Record<string, unknown>,
-  compute: Record<string, unknown>,
-) {
+  compute: Record<string, unknown>, checkId: string | null,
+): Promise<string | null> {
   const section = useStore.getState().manifest?.plan;
-  if (!section) return;
-  const id = `chk-${def.modeId}`;
-  const existing = section.plan.checks.find((c) => c.id === id);
-  const checks = existing
-    ? section.plan.checks.map((c) => (c.id === id
-      ? { ...c, params: compute, policy: { ...c.policy, ...policy } } : c))
-    : [...section.plan.checks, {
+  if (!section) return null;
+  let id = checkId;
+  let checks;
+  if (id && section.plan.checks.some((c) => c.id === id)) {
+    checks = section.plan.checks.map((c) => (c.id === id
+      ? { ...c, params: compute, policy: { ...c.policy, ...policy } } : c));
+  } else {
+    const base = `chk-${def.modeId}`;
+    id = base;
+    for (let n = 2; section.plan.checks.some((c) => c.id === id); n++) {
+      id = `${base}-${n}`;
+    }
+    checks = [...section.plan.checks, {
       id, analysis: `${def.process}/${def.analysis}`, params: compute,
       policy, lens: def.lensKey, visible: true,
     }];
+  }
   await storePlan({ ...section.plan, checks }, section.plan.revision);
+  return id;
 }
 
 /** Apply an already-previewed plan edit (the impact modal's Apply). */
