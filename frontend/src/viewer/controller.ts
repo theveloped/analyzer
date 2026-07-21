@@ -3,8 +3,8 @@
 // the mesh (the port of viewer.html's update()/boot()).
 
 import {
-  fetchCatalog, fetchConfig, fetchHighlights, fetchManifest, fetchOverrides,
-  fetchParts,
+  fetchCatalog, fetchConfig, fetchHighlights, fetchManifest,
+  fetchOverrides, fetchParts, uploadPart,
 } from '../api/client';
 import type { Manifest } from '../api/types';
 import { brepFacesOf, currentDirections } from '../processes/directions/build';
@@ -79,6 +79,13 @@ async function boot() {
 
 export async function refreshParts() {
   useStore.getState().set({ parts: await fetchParts() });
+}
+
+/** Upload a STEP/STL file, refresh the part list and select the new part. */
+export async function uploadAndSelect(file: File) {
+  const part = await uploadPart(file);
+  await refreshParts();
+  await selectPart(part.id);
 }
 
 /** Fly the camera to a legend entry's face group. */
