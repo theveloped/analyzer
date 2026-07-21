@@ -8,7 +8,7 @@ import {
   SidebarItem, SidebarLabel, SidebarSection, SidebarSpacer,
 } from '../../catalyst/sidebar';
 import { Switch } from '../../catalyst/switch';
-import { fetchReports } from '../../api/client';
+import { cancelJob, fetchReports } from '../../api/client';
 import type { Part, ReportSummary } from '../../api/types';
 import { useStore } from '../../state/store';
 import { selectPart, uploadAndSelect } from '../../viewer/controller';
@@ -109,6 +109,24 @@ export function AppSidebar() {
     }
   }
 
+  /** The spinning icon doubles as a cancel button: clicking it cancels the
+   * part's active job (queued instantly; running cooperatively at its next
+   * progress report), freeing the single worker for the next job. */
+  async function onCancel(part: Part) {
+    const active = jobs.find((j) => j.part_id === part.id
+      && (j.status === 'queued' || j.status === 'running'));
+    if (!active) return;
+    try {
+      const updated = await cancelJob(active.id);
+      useStore.getState().set({
+        jobs: useStore.getState().jobs.map(
+          (j) => (j.id === updated.id ? updated : j)),
+      });
+    } catch (err) {
+      useStore.getState().set({ error: String(err) });
+    }
+  }
+
   return (
     <Sidebar>
       <SidebarHeader>
@@ -179,10 +197,15 @@ export function AppSidebar() {
               </SidebarItem>
               <button
                 type="button"
-                title="Reprocess — rebuild from the original file"
-                disabled={busyParts.has(p.id)}
-                onClick={(e) => { e.stopPropagation(); void onReprocess(p); }}
-                className="ml-0.5 shrink-0 rounded-md p-1.5 text-zinc-400 opacity-0 group-hover/part:opacity-100 hover:bg-zinc-950/5 hover:text-zinc-950 focus:opacity-100 disabled:opacity-100 dark:text-zinc-500 dark:hover:bg-white/10 dark:hover:text-white"
+                title={busyParts.has(p.id)
+                  ? 'Cancel the running job'
+                  : 'Reprocess — rebuild from the original file'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (busyParts.has(p.id)) void onCancel(p);
+                  else void onReprocess(p);
+                }}
+                className={`ml-0.5 shrink-0 rounded-md p-1.5 text-zinc-400 group-hover/part:opacity-100 hover:bg-zinc-950/5 hover:text-zinc-950 focus:opacity-100 dark:text-zinc-500 dark:hover:bg-white/10 dark:hover:text-white ${busyParts.has(p.id) ? 'opacity-100' : 'opacity-0'}`}
               >
                 <RefreshCw className={busyParts.has(p.id) ? 'size-4 animate-spin' : 'size-4'} />
               </button>

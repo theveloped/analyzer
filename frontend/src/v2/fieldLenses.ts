@@ -32,6 +32,9 @@ export interface FieldLensDef {
   unit: string;
   /** Compute-time knobs (the Advanced section); defaults are the run params. */
   computeFields: ComputeField[];
+  /** Stored-result params this lens REQUIRES (e.g. contact_angles: true —
+   * a plain thickness run has no contact_angle field to paint). */
+  matchParams?: Record<string, unknown>;
 }
 
 const A = ANALYSIS_BY_ID;
@@ -77,6 +80,30 @@ export const FIELD_LENSES: Record<string, FieldLensDef> = {
     flagDirection: 'below', unit: 'mm',
     computeFields: A.rayGap?.advancedFields ?? [],
   },
+  'injection_molding:thicknessAngle': {
+    lensKey: 'injection_molding:thicknessAngle',
+    process: 'injection_molding', analysis: 'thickness', modeId: 'thicknessAngle',
+    fieldName: 'contact_angle',
+    thresholdParam: 'minAngle', minParam: 'angleMin',
+    scaleParam: 'angleScale',
+    bandLoParam: 'angleBandLo', bandHiParam: 'angleBandHi',
+    flagDirection: 'below', unit: '°',
+    computeFields: (A.thickness?.advancedFields ?? []).map((f) =>
+      (f.key === 'contact_angles' ? { ...f, default: true } : f)),
+    matchParams: { contact_angles: true },
+  },
+  'injection_molding:gapAngle': {
+    lensKey: 'injection_molding:gapAngle',
+    process: 'injection_molding', analysis: 'gaps', modeId: 'gapAngle',
+    fieldName: 'contact_angle',
+    thresholdParam: 'minAngle', minParam: 'angleMin',
+    scaleParam: 'angleScale',
+    bandLoParam: 'angleBandLo', bandHiParam: 'angleBandHi',
+    flagDirection: 'below', unit: '°',
+    computeFields: (A.gaps?.advancedFields ?? []).map((f) =>
+      (f.key === 'contact_angles' ? { ...f, default: true } : f)),
+    matchParams: { contact_angles: true },
+  },
   'injection_molding:thinSpan': {
     lensKey: 'injection_molding:thinSpan',
     process: 'injection_molding', analysis: 'thin_span', modeId: 'thinSpan',
@@ -103,7 +130,9 @@ export function latestResult(
 ): ResultEntry | null {
   if (!manifest) return null;
   const list = manifest.results.filter(
-    (r) => r.process === def.process && r.analysis === def.analysis);
+    (r) => r.process === def.process && r.analysis === def.analysis
+      && Object.entries(def.matchParams ?? {}).every(
+        ([key, value]) => r.params[key] === value));
   const fresh = list.filter((r) => !r.stale);
   return fresh[fresh.length - 1] ?? list[list.length - 1] ?? null;
 }

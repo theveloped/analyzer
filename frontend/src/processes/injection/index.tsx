@@ -1062,7 +1062,10 @@ const thicknessAngleMode = heatmapMode(
   {
     flagDirection: 'below',
     thresholdParam: 'minAngle',
+    minParam: 'angleMin',
     scaleParam: 'angleScale',
+    bandLoParam: 'angleBandLo',
+    bandHiParam: 'angleBandHi',
     units: '°',
     okLabel: 'wall-like (→ 180°)',
     maskedLabel: 'no opposing contact / saturated',
@@ -1074,7 +1077,10 @@ const gapAngleMode = heatmapMode(
   {
     flagDirection: 'below',
     thresholdParam: 'minAngle',
+    minParam: 'angleMin',
     scaleParam: 'angleScale',
+    bandLoParam: 'angleBandLo',
+    bandHiParam: 'angleBandHi',
     units: '°',
     okLabel: 'wall-like (→ 180°)',
     maskedLabel: 'no opposing contact / saturated',

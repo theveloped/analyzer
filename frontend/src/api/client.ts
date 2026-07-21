@@ -57,6 +57,17 @@ export async function submitJob(
 
 export const fetchJob = (id: number) => getJSON<Job>(`/api/jobs/${id}`);
 
+/** Cancel a queued/running job (running ones cancel cooperatively at their
+ * next progress report). */
+export async function cancelJob(id: number): Promise<Job> {
+  const res = await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `cancel failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function fetchOverrides(
   url: string,
 ): Promise<Record<string, Record<string, number>>> {
@@ -184,6 +195,27 @@ export async function postDisposition(
 
 export const fetchRoutes = () =>
   getJSON<RouteSummary[]>('/api/catalogue/routes');
+
+export const fetchMachines = () =>
+  getJSON<{ name: string; label: string; kind: string | null }[]>(
+    '/api/catalogue/machines');
+
+/** Snapshot a machine template into the part's plan_assets (manual op adds). */
+export async function postPlanMachine(
+  partId: string, name: string,
+): Promise<{ template: string; sha: string; path: string;
+  machine: Record<string, any> }> {
+  const res = await fetch(`${planUrl(partId)}/machine`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `machine snapshot failed: ${res.status}`);
+  }
+  return res.json();
+}
 
 /** Instantiate a catalogue route template into the part's plan. */
 export async function postPlanRoute(

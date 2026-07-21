@@ -1,14 +1,14 @@
 import clsx from 'clsx';
 import {
-  CircleDashed, Compass, FileUp, Hammer, Plus, Route, Zap,
+  CircleDashed, Compass, FileUp, Hammer, Plus, Route, X, Zap,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { postPlanRoute } from '../../api/client';
-import { fetchRoutes } from '../../api/client';
+import { fetchMachines, fetchRoutes, postPlanRoute } from '../../api/client';
 import type {
   PlanCheck, PlanCheckStatus, PlanOperation, RouteSummary,
 } from '../../api/types';
 import { Button } from '../../catalyst/button';
+import { Input } from '../../catalyst/input';
 import { Select } from '../../catalyst/select';
 import { refreshManifest } from '../../viewer/controller';
 import { useStore } from '../../state/store';
@@ -22,6 +22,7 @@ import { publishPlanReport } from '../report/publish';
 import { useV2 } from '../store';
 import { ImpactModal, type PendingEdit } from './ImpactModal';
 import {
+  buildAddOperationEdit, buildRemoveCheckEdit, buildRemoveOperationEdit,
   catalogFor, seedExploration, seedPlan, selectAnalysis, selectPlanCheck,
   useActiveAnalysis, useCheckActive, usePlanSection, useVisibleAnalyses,
 } from './hooks';
@@ -123,13 +124,24 @@ function OperationCard({ op, stage }: {
     (section?.plan.operations ?? []).map((o) =>
       o.id === op.id ? { ...o, config: { ...o.config, ...config } } : o);
 
+  const currentTilt = Number(op.config?.tilt ?? 90);
+  const [tilt, setTilt] = useState(String(currentTilt));
+
   return (
-    <div className="mb-1 rounded-lg bg-zinc-950/2.5 p-2 dark:bg-white/5">
+    <div className="group/op mb-1 rounded-lg bg-zinc-950/2.5 p-2 dark:bg-white/5">
       <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
         <KindIcon className="size-3" /> {op.label ?? op.id}
-        <span className="ml-auto normal-case tracking-normal">
-          {op.kind === 'cnc_setup' ? `±${op.config?.tilt ?? 90}°` : ''}
-        </span>
+        <button
+          type="button"
+          title="Remove this operation (and its checks)"
+          onClick={() => {
+            const edit = buildRemoveOperationEdit(op);
+            if (edit) stage(edit);
+          }}
+          className="ml-auto rounded p-0.5 opacity-0 transition group-hover/op:opacity-100 hover:bg-zinc-950/10 hover:text-zinc-700 dark:hover:bg-white/10 dark:hover:text-zinc-200"
+        >
+          <X className="size-3" />
+        </button>
       </div>
       {op.machine && (
         <div className="mt-0.5 text-[11px]/4 text-zinc-500 dark:text-zinc-400">
@@ -137,8 +149,9 @@ function OperationCard({ op, stage }: {
         </div>
       )}
       {op.kind === 'cnc_setup' && directions.length > 0 && (
-        <div className="mt-1.5">
+        <div className="mt-1.5 flex items-center gap-1.5">
           <Select
+            className="min-w-0 flex-1"
             value={Number.isFinite(current) ? String(current) : ''}
             onChange={(e) => {
               const next = parseInt(e.target.value, 10);
@@ -156,8 +169,111 @@ function OperationCard({ op, stage }: {
               </option>
             ))}
           </Select>
+          <div className="w-16 shrink-0" title="3+2 tilt cone half-angle (0 = plain 3-axis)">
+            <Input
+              type="number"
+              value={tilt}
+              onChange={(e) => setTilt(e.target.value)}
+              onBlur={() => {
+                const next = parseFloat(tilt);
+                if (!isFinite(next) || next === currentTilt) {
+                  setTilt(String(currentTilt));
+                  return;
+                }
+                stage({
+                  title: `${op.label ?? op.id}: tilt ±${currentTilt}° → ±${next}°`,
+                  patch: { operations: patchOps({ tilt: next }) },
+                });
+              }}
+              aria-label="tilt"
+            />
+          </div>
         </div>
       )}
+    </div>
+  );
+}
+
+const OP_KINDS = [
+  { id: 'cnc_setup', label: 'CNC setup' },
+  { id: 'laser', label: 'Laser' },
+  { id: 'press_brake', label: 'Press brake' },
+];
+
+/** Inline add-operation form: label, kind, optional machine template and
+ * (for CNC) primary direction. The edit stages through the impact modal
+ * and brings the kind's standard checks along. */
+function AddOperationForm({ stage, onClose }: {
+  stage: (edit: PendingEdit) => void; onClose: () => void;
+}) {
+  const manifest = useStore((s) => s.manifest);
+  const [machines, setMachines] = useState<
+    { name: string; label: string; kind: string | null }[]>([]);
+  const [label, setLabel] = useState('');
+  const [kind, setKind] = useState('cnc_setup');
+  const [machine, setMachine] = useState('');
+  const [direction, setDirection] = useState('0');
+  const [building, setBuilding] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    fetchMachines().then((m) => { if (live) setMachines(m); }).catch(() => {});
+    return () => { live = false; };
+  }, []);
+
+  const kindMachines = machines.filter((m) => !m.kind || m.kind === kind);
+
+  const add = () => {
+    setBuilding(true);
+    void buildAddOperationEdit({
+      label: label || OP_KINDS.find((k) => k.id === kind)!.label,
+      kind,
+      machine: machine || null,
+      directionIndex: parseInt(direction, 10),
+    })
+      .then((edit) => { if (edit) { stage(edit); onClose(); } })
+      .catch((err) => useStore.getState().set({ error: String(err) }))
+      .finally(() => setBuilding(false));
+  };
+
+  return (
+    <div className="rounded-lg border border-zinc-950/10 p-2.5 dark:border-white/10">
+      <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">
+        New operation
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Input placeholder="label (e.g. OP30)" value={label}
+          onChange={(e) => setLabel(e.target.value)} aria-label="operation label" />
+        <Select value={kind} onChange={(e) => { setKind(e.target.value); setMachine(''); }}
+          aria-label="operation kind">
+          {OP_KINDS.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
+        </Select>
+        <Select value={machine} onChange={(e) => setMachine(e.target.value)}
+          aria-label="machine template">
+          <option value="">no machine template</option>
+          {kindMachines.map((m) => (
+            <option key={m.name} value={m.name}>{m.label}</option>
+          ))}
+        </Select>
+        {kind === 'cnc_setup' && (manifest?.directions.length ?? 0) > 0 && (
+          <Select value={direction} onChange={(e) => setDirection(e.target.value)}
+            aria-label="primary direction">
+            {(manifest?.directions ?? []).map((d, i) => (
+              <option key={i} value={String(i)}>
+                {`dir ${i}`}
+                {manifest?.direction_sources?.[i]?.label
+                  ? ` — ${manifest.direction_sources[i].label}` : ''}
+              </option>
+            ))}
+          </Select>
+        )}
+        <div className="flex gap-1.5">
+          <Button outline onClick={onClose} className="flex-1">Cancel</Button>
+          <Button onClick={add} disabled={building} className="flex-1">
+            {building ? 'Preparing…' : 'Add'}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -179,6 +295,7 @@ export function PipelineRail() {
   const [publishing, setPublishing] = useState<string | null>(null);
   const [routes, setRoutes] = useState<RouteSummary[]>([]);
   const [instantiating, setInstantiating] = useState(false);
+  const [adding, setAdding] = useState(false);
   useEffect(() => {
     let live = true;
     fetchRoutes().then((r) => { if (live) setRoutes(r); }).catch(() => {});
@@ -246,12 +363,26 @@ export function PipelineRail() {
                 </div>
               )}
               {group.checks.map((check, i) => (
-                <div key={check.id}>
+                <div key={check.id} className="group/check relative">
                   <PlanCheckCard
                     check={check}
                     status={section?.checks[check.id]}
                     isActive={activeCheckId === check.id}
                   />
+                  <button
+                    type="button"
+                    title="Remove this check"
+                    onClick={() => {
+                      const view = section
+                        ? describeCheck(check, section.plan) : null;
+                      const edit = buildRemoveCheckEdit(
+                        check, view?.label ?? check.id);
+                      if (edit) setPending(edit);
+                    }}
+                    className="absolute right-1.5 top-1.5 rounded p-0.5 text-zinc-400 opacity-0 transition group-hover/check:opacity-100 hover:bg-zinc-950/10 hover:text-zinc-700 dark:hover:bg-white/10 dark:hover:text-zinc-200"
+                  >
+                    <X className="size-3" />
+                  </button>
                   {i < group.checks.length - 1 && <Connector />}
                 </div>
               ))}
@@ -310,6 +441,14 @@ export function PipelineRail() {
             {instantiating ? 'Instantiating…' : `Add route: ${route.title}`}
           </Button>
         ))}
+        {adding ? (
+          <AddOperationForm stage={setPending} onClose={() => setAdding(false)} />
+        ) : (
+          <Button outline onClick={() => setAdding(true)} className="w-full"
+            disabled={!manifest}>
+            <Plus data-slot="icon" /> Add operation
+          </Button>
+        )}
         {hasPlan && (
           <Button onClick={publish} className="w-full"
             disabled={!manifest || !!publishing}>

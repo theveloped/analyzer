@@ -1,6 +1,7 @@
 import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 import clsx from 'clsx';
-import { ChevronDown, Settings2 } from 'lucide-react';
+import { ChevronDown, Play, Settings2 } from 'lucide-react';
+import { AnalysisPanel } from '../../components/AnalysisPanel';
 import { getPlugin } from '../../registry';
 import { useStore } from '../../state/store';
 import { useActiveLens } from './hooks';
@@ -52,6 +53,27 @@ export function LensRail() {
           )}
         </Disclosure>
       )}
+
+      {/* every analysis stays runnable while lenses grow their own flows:
+          the v1 compute panel (catalog picker + auto-generated param form)
+          hosted verbatim — enough to materialize any lens's prerequisites */}
+      <Disclosure defaultOpen={!Controls}>
+        {({ open }) => (
+          <div>
+            <DisclosureButton className="flex w-full items-center justify-between rounded-lg px-1 py-1 text-xs/5 font-medium text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white">
+              <span className="flex items-center gap-1.5">
+                <Play className="size-3.5" /> Compute
+              </span>
+              <ChevronDown className={clsx('size-3.5 transition-transform', open && 'rotate-180')} />
+            </DisclosureButton>
+            <DisclosurePanel className="mt-2">
+              <div className="v1-controls">
+                <AnalysisPanel />
+              </div>
+            </DisclosurePanel>
+          </div>
+        )}
+      </Disclosure>
 
       <div className="h-px bg-zinc-950/10 dark:bg-white/10" />
 

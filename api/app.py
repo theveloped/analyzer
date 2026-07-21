@@ -403,6 +403,15 @@ def create_app(root=".", preload=None):
             raise HTTPException(status_code=404, detail="unknown job")
         return job.to_dict()
 
+    @app.post("/api/jobs/{job_id}/cancel")
+    def cancel_job(job_id: int):
+        """Cancel a queued/running job. Running jobs cancel cooperatively
+        (at their next progress report) — see JobManager.cancel."""
+        job = jobs.cancel(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="unknown job")
+        return job.to_dict()
+
     if os.path.isdir(FRONTEND_DIST):
         app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True),
                   name="frontend")

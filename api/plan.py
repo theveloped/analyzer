@@ -55,6 +55,20 @@ def register(app, part_or_404, workdir_for):
     def get_routes():
         return plans.list_routes()
 
+    @app.get("/api/catalogue/machines")
+    def get_machines():
+        return plans.list_machines()
+
+    @app.post("/api/parts/{part_id}/plan/machine")
+    def post_plan_machine(part_id: str, body: RouteInstantiateRequest):
+        """Snapshot a machine template into the part's plan_assets (manual
+        operation adds) — same content-addressed copy a route makes."""
+        part = part_or_404(part_id)
+        try:
+            return plans.snapshot_machine(workdir_for(part["id"]), body.name)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error))
+
     @app.post("/api/parts/{part_id}/plan/route")
     def post_plan_route(part_id: str, body: RouteInstantiateRequest):
         part = part_or_404(part_id)

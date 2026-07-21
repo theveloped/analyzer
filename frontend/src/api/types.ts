@@ -296,7 +296,7 @@ export interface Job {
   process: string;
   analysis: string;
   params: Record<string, any>;
-  status: 'queued' | 'running' | 'done' | 'error';
+  status: 'queued' | 'running' | 'done' | 'error' | 'cancelled';
   progress: number;
   message: string;
   error: string | null;

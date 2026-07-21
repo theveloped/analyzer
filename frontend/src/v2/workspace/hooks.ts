@@ -1,6 +1,8 @@
 import { useEffect } from 'react';
-import { putPlan } from '../../api/client';
-import type { Plan, PlanCheck, PlanCheckStatus, PlanSection } from '../../api/types';
+import { postPlanMachine, putPlan } from '../../api/client';
+import type {
+  Plan, PlanCheck, PlanCheckStatus, PlanOperation, PlanSection,
+} from '../../api/types';
 import { useStore } from '../../state/store';
 import { refreshManifest } from '../../viewer/controller';
 import { runAnalysisJob } from '../../viewer/jobs';
@@ -116,7 +118,9 @@ export function useAutoRunFieldLens() {
     if (existing && !existing.stale) return;
     const busy = jobs.some((j) => j.part_id === partId
       && (j.status === 'queued' || j.status === 'running'));
-    const key = `${partId}:${def.analysis}`;
+    // per LENS, not per analysis: the contact-angle lens re-runs thickness
+    // with different compute params than the plain thickness lens did
+    const key = `${partId}:${def.lensKey}`;
     if (busy || autoRunAttempted.has(key)) return;
     autoRunAttempted.add(key);
     runAnalysisJob(partId, def.process, def.analysis, fieldLensCompute(def))
@@ -255,11 +259,144 @@ export async function saveLensCheck(
   return id;
 }
 
-/** Apply an already-previewed plan edit (the impact modal's Apply). */
+/** Apply an already-previewed plan edit (the impact modal's Apply). The
+ * active check re-binds afterwards: its lens params carry plan values
+ * (direction, tilt, tools), which the edit may have changed. */
 export async function applyPlanEdit(edit: Partial<Plan>) {
   const section = useStore.getState().manifest?.plan;
   if (!section) return;
   await storePlan({ ...section.plan, ...edit }, section.plan.revision);
+  const activeId = useV2.getState().activeCheckId;
+  const fresh = useStore.getState().manifest?.plan;
+  const active = fresh?.plan.checks.find((c) => c.id === activeId);
+  if (active) selectPlanCheck(active);
+}
+
+/** The standard checks an operation of a kind brings along — the same set
+ * the route templates seed, so hand-built routes behave identically. */
+function defaultChecksFor(
+  kind: string, opId: string,
+  machineData: Record<string, any>, snapshotPath: string | null,
+): PlanCheck[] {
+  if (kind === 'laser') {
+    return [
+      { id: `chk-${opId}-detect`, analysis: 'sheet_metal/detect', params: {},
+        policy: { kind: 'stats', rule: 'sheet_detect' },
+        operation: opId, lens: 'sheet_metal:sheet_roles', visible: true },
+      { id: `chk-${opId}-pattern`, analysis: 'sheet_metal/flat_pattern',
+        params: {}, policy: { kind: 'stats', rule: 'flat_pattern' },
+        operation: opId, lens: 'sheet_metal:flat_pattern', visible: true },
+    ];
+  }
+  if (kind === 'cnc_setup') {
+    return [
+      { id: `chk-${opId}-features`, analysis: 'cnc/features', params: {},
+        policy: { kind: 'stats', rule: 'features' },
+        operation: opId, lens: 'cnc:features', visible: true },
+      { id: `chk-${opId}-reach`, analysis: 'cnc/reach_study',
+        params: { direction_indices: [],
+          tools: machineData.tools ?? DEFAULT_TOOLS },
+        policy: { scope: 'operation', mask: 'features' },
+        operation: opId, lens: 'cnc:reach_op', visible: true },
+    ];
+  }
+  if (kind === 'press_brake') {
+    return [
+      { id: `chk-${opId}-bend`, analysis: 'sheet_metal/bend_plan',
+        params: snapshotPath ? { machine_path: snapshotPath } : {},
+        policy: { kind: 'stats', rule: 'bend_plan' },
+        operation: opId, lens: 'sheet_metal:bend_sequence', visible: true },
+    ];
+  }
+  return [];
+}
+
+export interface AddOperationInput {
+  label: string;
+  kind: string;
+  machine?: string | null;
+  directionIndex?: number | null;
+}
+
+/** Build the plan edit adding one operation (with its kind's standard
+ * checks) — the caller stages it through the impact modal. Snapshots the
+ * chosen machine template server-side first. */
+export async function buildAddOperationEdit(
+  input: AddOperationInput,
+): Promise<{ title: string; patch: Partial<Plan> } | null> {
+  const state = useStore.getState();
+  const section = state.manifest?.plan;
+  const partId = state.partId;
+  if (!section || !partId) return null;
+
+  const existing = new Set(section.plan.operations.map((op) => op.id));
+  const base = input.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || input.kind;
+  let id = base;
+  for (let n = 2; existing.has(id); n++) id = `${base}-${n}`;
+
+  let machineRef: PlanOperation['machine'];
+  let machineData: Record<string, any> = {};
+  let snapshotPath: string | null = null;
+  if (input.machine) {
+    const snap = await postPlanMachine(partId, input.machine);
+    machineRef = { template: snap.template, sha: snap.sha };
+    machineData = snap.machine;
+    snapshotPath = snap.path;
+  }
+
+  const operation: PlanOperation = {
+    id,
+    kind: input.kind,
+    label: input.label.trim() || id,
+    config: {
+      ...machineData.config,
+      ...(input.kind === 'cnc_setup' ? {
+        direction_index: input.directionIndex ?? 0,
+        tilt: machineData.config?.tilt ?? 0,
+      } : {}),
+    },
+    ...(machineRef ? { machine: machineRef } : {}),
+    ...(input.kind === 'cnc_setup'
+      ? { produces: { features: 'holes' } } : {}),
+  };
+  return {
+    title: `Add operation ${operation.label}`,
+    patch: {
+      operations: [...section.plan.operations, operation],
+      checks: [...section.plan.checks,
+        ...defaultChecksFor(input.kind, id, machineData, snapshotPath)],
+    },
+  };
+}
+
+/** The plan edit removing one operation and every check it owns. */
+export function buildRemoveOperationEdit(
+  op: PlanOperation,
+): { title: string; patch: Partial<Plan> } | null {
+  const section = useStore.getState().manifest?.plan;
+  if (!section) return null;
+  return {
+    title: `Remove operation ${op.label ?? op.id}`,
+    patch: {
+      operations: section.plan.operations.filter((o) => o.id !== op.id),
+      checks: section.plan.checks.filter((c) => c.operation !== op.id),
+    },
+  };
+}
+
+/** The plan edit removing one check. */
+export function buildRemoveCheckEdit(
+  check: PlanCheck, label: string,
+): { title: string; patch: Partial<Plan> } | null {
+  const section = useStore.getState().manifest?.plan;
+  if (!section) return null;
+  return {
+    title: `Remove check ${label}`,
+    patch: {
+      checks: section.plan.checks.filter((c) => c.id !== check.id),
+    },
+  };
 }
 
 /** Seed the CNC exploration route: OP10/OP20 (±Z when sampled) plus a reach
@@ -286,10 +423,13 @@ export async function seedExploration() {
     ...section.plan,
     operations: [
       ...section.plan.operations,
+      // tilt 0 = plain 3-axis: each op covers exactly its own direction, so
+      // flipping a direction visibly changes the slice (tilt 90 would make
+      // every direction's cone identical over a small study)
       { id: 'op10', kind: 'cnc_setup', label: 'OP10',
-        config: { direction_index: d10, tilt: 90 } },
+        config: { direction_index: d10, tilt: 0 } },
       { id: 'op20', kind: 'cnc_setup', label: 'OP20',
-        config: { direction_index: d20, tilt: 90 } },
+        config: { direction_index: d20, tilt: 0 } },
     ],
     checks: [
       ...section.plan.checks,

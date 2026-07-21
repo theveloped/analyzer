@@ -292,6 +292,40 @@ def list_routes():
     return routes
 
 
+def list_machines():
+    """Available machine templates: name, label and kind."""
+    import yaml
+
+    base = os.path.join(CATALOGUE_DIR, "machines")
+    if not os.path.isdir(base):
+        return []
+    machines = []
+    for filename in sorted(os.listdir(base)):
+        if not filename.endswith(".yaml"):
+            continue
+        with open(os.path.join(base, filename)) as f:
+            data = yaml.safe_load(f)
+        machines.append({
+            "name": filename[:-len(".yaml")],
+            "label": str(data.get("label", filename)),
+            "kind": data.get("kind"),
+        })
+    return machines
+
+
+def snapshot_machine(workdir, name):
+    """Snapshot one machine template into plan_assets (manual op adds use
+    this to get the same content-addressed copy a route instantiation
+    makes). Returns the template data + snapshot reference."""
+    data, rel = _snapshot_machine(workdir, name)
+    return {
+        "template": name,
+        "sha": os.path.splitext(os.path.basename(rel))[0],
+        "path": rel,
+        "machine": data,
+    }
+
+
 def instantiate_route(workdir, name):
     """Instantiate a route template into the part's plan (a new revision).
 
