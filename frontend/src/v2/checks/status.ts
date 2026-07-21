@@ -36,7 +36,10 @@ export function resultFor(
   return list[list.length - 1] ?? null;
 }
 
-function latestJob(jobs: Job[], partId: string | null, a: Analysis): Job | null {
+/** Anything naming a backend analysis (catalog Analysis satisfies this). */
+export interface AnalysisRef { process: string; analysis: string }
+
+function latestJob(jobs: Job[], partId: string | null, a: AnalysisRef): Job | null {
   for (let i = jobs.length - 1; i >= 0; i--) {
     const j = jobs[i];
     if (j.part_id === partId && j.process === a.process && j.analysis === a.analysis) {
@@ -92,7 +95,7 @@ export function planCheckState(
   status: PlanCheckStatus | undefined,
   jobs: Job[],
   partId: string | null,
-  a: Analysis,
+  a: AnalysisRef,
   verdict: VerdictState,
 ): CheckState {
   const job = latestJob(jobs, partId, a);

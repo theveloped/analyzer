@@ -4,6 +4,7 @@ import { useStore } from '../../state/store';
 import { refreshManifest } from '../../viewer/controller';
 import type { Analysis } from '../analyses';
 import { ANALYSIS_BY_ID, ANALYSES, defaultCompute } from '../analyses';
+import { DEFAULT_TOOLS, describeCheck } from '../checks/catalog';
 import { checkState, type CheckState } from '../checks/status';
 import type { Lens } from '../lenses';
 import { lensFor } from '../lenses';
@@ -26,9 +27,14 @@ export function useVisibleAnalyses(): Analysis[] {
   return ANALYSES.filter((a) => advanced || a.tier === 'primary');
 }
 
-/** Switch the active analysis (drives the shared viewer's mode + process). */
+/** Switch the active analysis (drives the shared viewer's mode + process).
+ * Scopes the rail to the matching plan check when the plan has one. */
 export function selectAnalysis(a: Analysis) {
   useStore.getState().set({ processId: a.process, modeId: a.id });
+  const section = useStore.getState().manifest?.plan;
+  const check = section?.plan.checks.find(
+    (c) => c.analysis === `${a.process}/${a.analysis}`);
+  useV2.getState().setActiveCheck(check?.id ?? null);
 }
 
 /** Execution + verdict state of a check, from the live store (manifest,
@@ -52,6 +58,7 @@ export function useDirectionsActive(): boolean {
 /** Open the directions view (the shared controller paints the directionsPlugin). */
 export function activateDirections() {
   useStore.getState().set({ processId: 'directions', modeId: 'directions' });
+  useV2.getState().setActiveCheck(null);
 }
 
 /** The active inspection lens, if the shared process/mode is registered as
@@ -62,9 +69,11 @@ export function useActiveLens(): Lens | null {
   return lensFor(processId, modeId);
 }
 
-/** Activate an inspection lens (drives the shared viewer's mode + process). */
+/** Activate an inspection lens (drives the shared viewer's mode + process).
+ * A lens picked directly is free exploration — it drops the check scope. */
 export function selectLens(l: Lens) {
   useStore.getState().set({ processId: l.processId, modeId: l.modeId });
+  useV2.getState().setActiveCheck(null);
 }
 
 // ---------------------------------------------------------------------------
@@ -93,10 +102,33 @@ export function useActivePlanCheck():
   return check ? { check, status: section.checks[check.id] } : null;
 }
 
-/** Activate a plan check: switch the viewer to its catalog lens. */
+/** Activate a plan check: scope the rail to it and drive the viewer to its
+ * preferred lens with the check's scope bound into the viewer params. */
 export function selectPlanCheck(check: PlanCheck) {
-  const a = catalogFor(check);
-  if (a) selectAnalysis(a);
+  const store = useStore.getState();
+  const section = store.manifest?.plan;
+  if (!section) return;
+  const view = describeCheck(check, section.plan);
+  if (!view) return;
+  const status = section.checks[check.id];
+  const target = view.activate(status?.expected_hash ?? null);
+  useV2.getState().setActiveCheck(check.id);
+  for (const [name, value] of Object.entries(target.params)) {
+    store.setViewerParam(target.processId, name, value);
+  }
+  useStore.getState().set({
+    processId: target.processId, modeId: target.modeId,
+  });
+}
+
+/** The plan check the rail is scoped to (validated against the live plan). */
+export function useSelectedPlanCheck():
+{ check: PlanCheck; status: PlanCheckStatus | undefined } | null {
+  const section = usePlanSection();
+  const activeCheckId = useV2((s) => s.activeCheckId);
+  if (!section || !activeCheckId) return null;
+  const check = section.plan.checks.find((c) => c.id === activeCheckId);
+  return check ? { check, status: section.checks[check.id] } : null;
 }
 
 async function storePlan(plan: Plan, revision: number) {
@@ -138,6 +170,62 @@ export async function pinPolicy(check: PlanCheck, policy: Record<string, unknown
     ...section.plan,
     checks: section.plan.checks.map((c) =>
       c.id === check.id ? { ...c, policy: { ...c.policy, ...policy } } : c),
+  };
+  await storePlan(plan, plan.revision);
+}
+
+/** Apply an already-previewed plan edit (the impact modal's Apply). */
+export async function applyPlanEdit(edit: Partial<Plan>) {
+  const section = useStore.getState().manifest?.plan;
+  if (!section) return;
+  await storePlan({ ...section.plan, ...edit }, section.plan.revision);
+}
+
+/** Seed the CNC exploration route: OP10/OP20 (±Z when sampled) plus a reach
+ * study over every candidate direction and the default tool library, with
+ * per-operation and route-aggregate checks slicing the SAME study result —
+ * flipping an operation's direction never recomputes geometry. */
+export async function seedExploration() {
+  const state = useStore.getState();
+  const section = state.manifest?.plan;
+  if (!section) return;
+  const directions = state.manifest?.directions ?? [];
+  if (!directions.length) {
+    state.set({ error: 'no candidate directions yet — run prep/directions '
+      + '(the crosshair view) before seeding the exploration' });
+    return;
+  }
+  // default the two ops to the most ±Z-like candidates (by vector, not by
+  // index — the axes prefix is a convention, not a guarantee)
+  const dotZ = directions.map((d) => d[2]);
+  const d10 = dotZ.indexOf(Math.max(...dotZ));
+  const d20 = dotZ.indexOf(Math.min(...dotZ));
+  const studyParams = { direction_indices: [], tools: DEFAULT_TOOLS };
+  const plan: Plan = {
+    ...section.plan,
+    operations: [
+      ...section.plan.operations,
+      { id: 'op10', kind: 'cnc_setup', label: 'OP10',
+        config: { direction_index: d10, tilt: 90 } },
+      { id: 'op20', kind: 'cnc_setup', label: 'OP20',
+        config: { direction_index: d20, tilt: 90 } },
+    ],
+    checks: [
+      ...section.plan.checks,
+      { id: 'chk-reach-study', analysis: 'cnc/reach_study',
+        params: studyParams, policy: { scope: 'study' },
+        lens: 'cnc:reach_study', visible: false },
+      { id: 'chk-reach-op10', analysis: 'cnc/reach_study',
+        params: studyParams, operation: 'op10',
+        policy: { scope: 'operation' }, lens: 'cnc:reach_op', visible: true },
+      { id: 'chk-reach-op20', analysis: 'cnc/reach_study',
+        params: studyParams, operation: 'op20',
+        policy: { scope: 'operation' }, lens: 'cnc:reach_op', visible: true },
+      { id: 'chk-reach-route', analysis: 'cnc/reach_study',
+        params: studyParams,
+        policy: { scope: 'route', aggregation: 'geometry-union' },
+        lens: 'cnc:reach_aggregate', visible: true },
+    ],
   };
   await storePlan(plan, plan.revision);
 }

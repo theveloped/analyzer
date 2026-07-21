@@ -14,10 +14,14 @@ export interface V2State {
   theme: 'light' | 'dark';
   /** Compute params per analysis id (backend job payload). */
   compute: Record<string, Record<string, unknown>>;
+  /** The plan check the right rail is scoped to (several checks can share
+   * one analysis, so the active modeId alone cannot identify it). */
+  activeCheckId: string | null;
 
   setAdvanced: (advanced: boolean) => void;
   toggleTheme: () => void;
   setCompute: (analysisId: string, key: string, value: unknown) => void;
+  setActiveCheck: (id: string | null) => void;
 }
 
 const initialCompute = Object.fromEntries(
@@ -28,8 +32,10 @@ export const useV2 = create<V2State>()((set) => ({
   advanced: false,
   theme: 'light',
   compute: initialCompute,
+  activeCheckId: null,
 
   setAdvanced: (advanced) => set({ advanced }),
+  setActiveCheck: (activeCheckId) => set({ activeCheckId }),
   toggleTheme: () => set((s) => ({ theme: s.theme === 'light' ? 'dark' : 'light' })),
   setCompute: (analysisId, key, value) =>
     set((s) => ({

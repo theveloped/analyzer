@@ -1,4 +1,7 @@
-import type { DispositionEvent, PlanCheck, ResultEntry } from '../../api/types';
+import type {
+  DispositionEvent, PlanCheck, PlanOperation, ResultEntry,
+} from '../../api/types';
+import { findStudy, opReach, type ReachCtx } from '../../processes/cnc/reach';
 import type { Analysis } from '../analyses';
 import type { VerdictState } from './status';
 
@@ -51,6 +54,81 @@ export function evaluateCheck(
       severity: 'review',
     }],
   };
+}
+
+/** Per-operation reach: faces visible somewhere in the operation's tilt
+ * cone that NO library tool reaches. Async — unions cached masks. */
+export async function evaluateReachOp(
+  ctx: ReachCtx, check: PlanCheck, op: PlanOperation,
+): Promise<Evaluation> {
+  const primary = Number(op.config?.direction_index);
+  const tilt = Number(op.config?.tilt ?? 90);
+  if (!Number.isFinite(primary)) return { verdict: 'unknown', findings: [] };
+  const study = findStudy(ctx);
+  const { reach, visible } = await opReach(ctx, study, primary, tilt);
+  let blocked = 0;
+  for (let f = 0; f < ctx.faceCount; f++) if (visible[f] && !reach[f]) blocked++;
+  if (!blocked) return { verdict: 'pass', findings: [] };
+  return {
+    verdict: 'review',
+    findings: [{
+      id: `${check.id}:tool_blocked`,
+      code: 'op_tool_blocked',
+      label: `${op.label ?? op.id}: faces no tool reaches`,
+      detail: `${blocked} faces visible in the ±${tilt}° cone of direction `
+        + `${primary} are blocked for every library tool`,
+      severity: 'review',
+    }],
+  };
+}
+
+/** Route aggregate: faces unreachable in EVERY operation (geometry-union
+ * of the per-op reach masks, inverted) — the customer-facing verdict. */
+export async function evaluateReachRoute(
+  ctx: ReachCtx, check: PlanCheck, ops: PlanOperation[],
+): Promise<Evaluation> {
+  const configured = ops.filter(
+    (op) => Number.isFinite(Number(op.config?.direction_index)));
+  if (!configured.length) return { verdict: 'unknown', findings: [] };
+  const study = findStudy(ctx);
+  const anyReach = new Uint8Array(ctx.faceCount);
+  const anyVisible = new Uint8Array(ctx.faceCount);
+  for (const op of configured) {
+    const { reach, visible } = await opReach(
+      ctx, study, Number(op.config!.direction_index),
+      Number(op.config?.tilt ?? 90));
+    for (let f = 0; f < ctx.faceCount; f++) {
+      anyReach[f] |= reach[f];
+      anyVisible[f] |= visible[f];
+    }
+  }
+  let blocked = 0, hidden = 0;
+  for (let f = 0; f < ctx.faceCount; f++) {
+    if (anyReach[f]) continue;
+    if (anyVisible[f]) blocked++; else hidden++;
+  }
+  if (!blocked && !hidden) return { verdict: 'pass', findings: [] };
+  const findings: Finding[] = [];
+  if (blocked) {
+    findings.push({
+      id: `${check.id}:route_tool_blocked`,
+      code: 'route_tool_blocked',
+      label: 'Not producible by the route (tooling)',
+      detail: `${blocked} faces are visible from some operation but no `
+        + `library tool reaches them in any operation`,
+      severity: 'fail',
+    });
+  }
+  if (hidden) {
+    findings.push({
+      id: `${check.id}:route_undercut`,
+      code: 'route_undercut',
+      label: 'Not producible by the route (undercut)',
+      detail: `${hidden} faces are undercuts for every operation's cone`,
+      severity: 'fail',
+    });
+  }
+  return { verdict: 'fail', findings };
 }
 
 /** A finding's effective disposition state ('open' when never judged). */

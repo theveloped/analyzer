@@ -7,6 +7,7 @@ import { CncControls } from './Controls';
 import {
   accessMode, classMode, gapMode, stickoutMode, thinSpanMode, unifiedMode,
 } from './modes';
+import { reachAggregateMode, reachOpMode, reachStudyMode } from './reach';
 import { featuresMode, inspectFeature } from './features';
 import { cncSplitHost, loadSetups, setupsMode } from './setups';
 import { currentSource, currentTip } from './sources';
@@ -65,11 +66,17 @@ export const cncPlugin: ProcessPlugin = {
   processId: 'cnc',
   label: 'CNC machining',
   modes: [setupsMode, featuresMode, unifiedMode, accessMode, classMode,
-          gapMode, stickoutMode, thinSpanMode, brepFacesMode, faceAttrsMode,
-          highlightsMode],
+          gapMode, stickoutMode, thinSpanMode, reachStudyMode, reachOpMode,
+          reachAggregateMode, brepFacesMode, faceAttrsMode, highlightsMode],
   defaults: () => ({
     source: 0,
     tip: 0,
+    reachHash: null,
+    reachDirection: null,
+    reachTool: 0,
+    opPrimary: null,
+    opTilt: 90,
+    reachOps: [],
     tolerance: 0.1,
     stickout: '',
     holder: '',

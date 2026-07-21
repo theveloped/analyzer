@@ -90,7 +90,8 @@ def run_reach_study(workdir, params, progress):
                               fields=list(cached["arrays"]))
 
     result = pipeline.reach_study(
-        workdir, directions=[int(i) for i in params["directions"] or []],
+        workdir,
+        directions=[int(i) for i in params["direction_indices"] or []],
         tools=pipeline.parse_tools(params["tools"]),
         tollerance=params["tollerance"],
         wall_tollerance=params["wall_tollerance"], pixel=params["pixel"],
@@ -236,7 +237,10 @@ PROCESS = ProcessDef(
                         "per-op and aggregate views without recomputing.",
             requires=["prep/directions"],
             params=[
-                Param("directions", "int_list", default=[],
+                # NOT named "directions": prep salt fields would collide with
+                # a declared param of that name in the cache key (resolver
+                # guards against it)
+                Param("direction_indices", "int_list", default=[],
                       label="Direction indices (blank = all sampled)"),
                 Param("tools", "tool_list", default=DEFAULT_TOOLS,
                       label="Tool library (D : rc : stickout : holder radius)"),

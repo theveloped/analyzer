@@ -1,11 +1,15 @@
 import { useStore } from '../../state/store';
+import { catalogAnalysisFor } from '../checks/catalog';
 import { AnalysisToolbar } from './AnalysisToolbar';
 import { DirectionsRail } from './DirectionsRail';
 import { DirectionTooltip } from './DirectionTooltip';
-import { useActiveLens, useCheckActive, useDirectionsActive } from './hooks';
+import {
+  useActiveLens, useCheckActive, useDirectionsActive, useSelectedPlanCheck,
+} from './hooks';
 import { Legend } from './Legend';
 import { LensRail } from './LensRail';
 import { PipelineRail } from './PipelineRail';
+import { PlanCheckRail } from './PlanCheckRail';
 import { PmiRail } from './PmiRail';
 import { SettingsRail } from './SettingsRail';
 import { TopBar } from './TopBar';
@@ -25,9 +29,14 @@ export function Workspace() {
   const directionsActive = useDirectionsActive();
   const checkActive = useCheckActive();
   const activeLens = useActiveLens();
+  const selected = useSelectedPlanCheck();
+  // a selected non-threshold plan check (reach study/op/route) gets its own
+  // rail; threshold checks keep the SettingsRail keyed off the active mode
+  const planCheckRail = selected && !catalogAnalysisFor(selected.check);
 
   const rightRail = modeId === 'pmi' ? <PmiRail />
     : directionsActive ? <DirectionsRail />
+    : planCheckRail ? <PlanCheckRail />
     : checkActive ? <SettingsRail />
     : activeLens ? <LensRail />
     : <SettingsRail />;

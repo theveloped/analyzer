@@ -129,9 +129,24 @@ def apply_defaults(analysis, params):
     return merged
 
 
+def _canonical_numbers(obj):
+    """Integral floats as ints, recursively: JSON round-trips through
+    JavaScript strip the float-ness of x.0, so 1.0 and 1 must hash the
+    same or client-submitted params land on different keys than the
+    server derives from the same logical values."""
+    if isinstance(obj, float) and obj.is_integer():
+        return int(obj)
+    if isinstance(obj, dict):
+        return {k: _canonical_numbers(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_canonical_numbers(v) for v in obj]
+    return obj
+
+
 def params_hash(params):
     """Stable short hash of a parameter dict, used as the cache key."""
-    canonical = json.dumps(params, sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(_canonical_numbers(params), sort_keys=True,
+                           separators=(",", ":"))
     return hashlib.sha1(canonical.encode()).hexdigest()[:12]
 
 

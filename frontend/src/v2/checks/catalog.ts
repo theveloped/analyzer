@@ -1,0 +1,203 @@
+import { Axis3d, Eye, ShieldCheck, type LucideIcon } from 'lucide-react';
+import { create } from 'zustand';
+import type {
+  Manifest, Plan, PlanCheck, PlanCheckStatus, PlanOperation,
+} from '../../api/types';
+import { fetchField } from '../../fields/fields';
+import type { ReachCtx } from '../../processes/cnc/reach';
+import { ANALYSES, type Analysis } from '../analyses';
+import {
+  evaluateCheck, evaluateReachOp, evaluateReachRoute, type Evaluation,
+} from './evaluators';
+import { resultForHash } from './status';
+
+/**
+ * Check descriptors: how a plan check presents (label/icon), which lens it
+ * activates with what scope bound in, and how its verdict is evaluated.
+ * Threshold checks evaluate synchronously from stats; reach checks union
+ * cached masks asynchronously, memoized by the eval key
+ * (expected result hash + policy + the operation config it interprets) —
+ * the derivation-cache identity from docs/PLAN-ARCHITECTURE.md.
+ */
+
+/** Mirror of processes/cnc.py DEFAULT_TOOLS (template seeding). */
+export const DEFAULT_TOOLS = [
+  { diameter: 16.0, corner_radius: 0.0, stickout: 80.0, holder_radius: 8.0 },
+  { diameter: 8.0, corner_radius: 0.0, stickout: 40.0, holder_radius: 4.0 },
+  { diameter: 4.0, corner_radius: 0.0, stickout: 20.0, holder_radius: 2.0 },
+  { diameter: 10.0, corner_radius: 5.0, stickout: 50.0, holder_radius: 5.0 },
+  { diameter: 4.0, corner_radius: 2.0, stickout: 20.0, holder_radius: 2.0 },
+];
+
+export interface CheckView {
+  kind: 'threshold' | 'reach_study' | 'reach_op' | 'reach_route';
+  label: string;
+  blurb: string;
+  icon: LucideIcon;
+  tier: 'primary' | 'advanced';
+  /** Catalog entry for threshold checks (units, slider vocabulary). */
+  analysis: Analysis | null;
+  /** Viewer activation: shared-store mode + viewerParams patch. */
+  activate(expectedHash: string | null): {
+    processId: string; modeId: string; params: Record<string, unknown>;
+  };
+}
+
+export function catalogAnalysisFor(check: PlanCheck): Analysis | null {
+  return ANALYSES.find(
+    (a) => `${a.process}/${a.analysis}` === check.analysis) ?? null;
+}
+
+export function describeCheck(check: PlanCheck, plan: Plan): CheckView | null {
+  const a = catalogAnalysisFor(check);
+  if (a) {
+    return {
+      kind: 'threshold',
+      label: a.label,
+      blurb: a.blurb,
+      icon: a.icon,
+      tier: a.tier,
+      analysis: a,
+      activate: () => ({ processId: a.process, modeId: a.id, params: {} }),
+    };
+  }
+  if (check.analysis !== 'cnc/reach_study') return null;
+  const scope = (check.policy?.scope ?? 'study') as string;
+  if (scope === 'operation') {
+    const op = plan.operations.find((o) => o.id === check.operation);
+    return {
+      kind: 'reach_op',
+      label: `Reach — ${op?.label ?? check.operation ?? '?'}`,
+      blurb: 'Faces no library tool reaches within this operation\'s cone.',
+      icon: Axis3d,
+      tier: 'primary',
+      analysis: null,
+      activate: (hash) => ({
+        processId: 'cnc', modeId: 'reach_op',
+        params: {
+          reachHash: hash,
+          opPrimary: op?.config?.direction_index ?? null,
+          opTilt: op?.config?.tilt ?? 90,
+        },
+      }),
+    };
+  }
+  if (scope === 'route') {
+    return {
+      kind: 'reach_route',
+      label: 'Route reach (aggregate)',
+      blurb: 'Faces unreachable in every operation — the route verdict.',
+      icon: ShieldCheck,
+      tier: 'primary',
+      analysis: null,
+      activate: (hash) => ({
+        processId: 'cnc', modeId: 'reach_aggregate',
+        params: { reachHash: hash, reachOps: routeOps(plan) },
+      }),
+    };
+  }
+  return {
+    kind: 'reach_study',
+    label: 'Reach study',
+    blurb: 'Per-(direction × tool) machinable masks — the exploration data '
+      + 'the operation checks slice.',
+    icon: Eye,
+    tier: 'primary',
+    analysis: null,
+    activate: (hash) => ({
+      processId: 'cnc', modeId: 'reach_study',
+      params: { reachHash: hash },
+    }),
+  };
+}
+
+/** The lens-facing op list for the aggregate view. */
+export function routeOps(plan: Plan) {
+  return plan.operations
+    .filter((op) => op.kind === 'cnc_setup'
+      && Number.isFinite(Number(op.config?.direction_index)))
+    .map((op) => ({
+      primary: Number(op.config!.direction_index),
+      tilt: Number(op.config?.tilt ?? 90),
+      label: op.label ?? op.id,
+    }));
+}
+
+// --- async evaluation memo -------------------------------------------------
+
+const evalCache = new Map<string, Evaluation>();
+const evalPending = new Set<string>();
+/** Bumped when an async evaluation lands so subscribers re-read the memo. */
+const useEvalTick = create<{ n: number; bump: () => void }>()((set) => ({
+  n: 0, bump: () => set((s) => ({ n: s.n + 1 })),
+}));
+
+function reachCtx(manifest: Manifest, expectedHash: string): ReachCtx | null {
+  const faceCount = manifest.part.counts?.faces;
+  if (!faceCount) return null;
+  return {
+    manifest,
+    directions: manifest.directions,
+    faceCount,
+    params: { reachHash: expectedHash },
+    getField: fetchField,
+  };
+}
+
+function opFor(check: PlanCheck, plan: Plan): PlanOperation | null {
+  return plan.operations.find((o) => o.id === check.operation) ?? null;
+}
+
+/** Evaluation of a plan check against its pinned policy. Threshold checks
+ * resolve synchronously; reach checks return null while the mask unions are
+ * in flight and re-render via the eval tick when done. */
+export function useCheckEvaluation(
+  check: PlanCheck, plan: Plan, status: PlanCheckStatus | undefined,
+  manifest: Manifest | null,
+): Evaluation | null {
+  useEvalTick((s) => s.n); // re-read the memo when an evaluation lands
+  const view = describeCheck(check, plan);
+  if (!view || !manifest) return { verdict: 'unknown', findings: [] };
+
+  if (view.kind === 'threshold' && view.analysis) {
+    const result = resultForHash(manifest, view.analysis,
+      status?.expected_hash ?? null);
+    return evaluateCheck(view.analysis, check, result);
+  }
+  if (view.kind === 'reach_study') return { verdict: 'na', findings: [] };
+  if (!status?.exists || !status.expected_hash) {
+    return { verdict: 'unknown', findings: [] };
+  }
+
+  const scopeConfig = view.kind === 'reach_op'
+    ? opFor(check, plan)?.config ?? {}
+    : routeOps(plan);
+  const key = [check.id, status.expected_hash,
+    JSON.stringify(check.policy ?? {}), JSON.stringify(scopeConfig)].join('|');
+  const hit = evalCache.get(key);
+  if (hit) return hit;
+  if (!evalPending.has(key)) {
+    evalPending.add(key);
+    const ctx = reachCtx(manifest, status.expected_hash);
+    const run = async (): Promise<Evaluation> => {
+      if (!ctx) return { verdict: 'unknown', findings: [] };
+      if (view.kind === 'reach_op') {
+        const op = opFor(check, plan);
+        if (!op) return { verdict: 'unknown', findings: [] };
+        return evaluateReachOp(ctx, check, op);
+      }
+      return evaluateReachRoute(ctx, check, plan.operations);
+    };
+    run()
+      .catch((err) => {
+        console.warn(`check ${check.id} evaluation failed:`, err);
+        return { verdict: 'unknown', findings: [] } as Evaluation;
+      })
+      .then((evaluation) => {
+        evalCache.set(key, evaluation);
+        evalPending.delete(key);
+        useEvalTick.getState().bump();
+      });
+  }
+  return null; // evaluating…
+}

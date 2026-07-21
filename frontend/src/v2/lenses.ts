@@ -104,6 +104,18 @@ const CURATION: Record<string, Curation> = {
   'injection_molding:gapAngle': { icon: Compass, category: 'geometry', advanced: true },
 
   // cnc
+  'cnc:reach_study': {
+    icon: Eye,
+    blurb: 'One (direction × tool) machinable mask from the reach study.',
+  },
+  'cnc:reach_op': {
+    icon: Axis3d,
+    blurb: 'Faces no tool reaches within one operation\'s tilt cone.',
+  },
+  'cnc:reach_aggregate': {
+    icon: ShieldCheck,
+    blurb: 'Faces unreachable in every operation — the route verdict.',
+  },
   'cnc:setups': { icon: Axis3d },
   'cnc:features': { icon: Drill },
   'cnc:unified': { icon: ShieldCheck },

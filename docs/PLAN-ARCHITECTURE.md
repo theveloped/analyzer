@@ -61,6 +61,15 @@ Status is four independent axes, never one field:
 - **No whole-plan "decisions" salt.** Decision values reach computations as materialized
   params, so `params_hash` keys them with exact per-analysis granularity; a plan-wide salt
   would over-invalidate (a material change would orphan reachability results).
+- **Numbers canonicalize before hashing** (`params_hash` folds integral floats to ints):
+  params round-tripping through JavaScript lose the float-ness of `1.0`, and `1` vs `1.0`
+  hashed differently — client-submitted runs landed on different keys than the server
+  derived from the same logical values.
+- **Analysis param names must not collide with prep salt fields** (`mesh`, `directions`,
+  `accessibility`, `aag`, `splits`): the salt would silently overwrite the declared param
+  in the cache key, collapsing distinct runs onto one hash. `resolver.cache_key` now raises
+  on a clash (bit `cnc/reach_study`'s original `directions` param → renamed
+  `direction_indices`).
 
 ## Storage — per-part sidecars in the workdir
 

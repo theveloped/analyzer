@@ -124,7 +124,7 @@ def main():
         # registry runner: stores under resolver.cache_key, second run cached
         analysis = get_analysis("cnc", "reach_study")
         params = apply_defaults(analysis, {
-            "directions": [UP], "tools": [SMALL, BIG]})
+            "direction_indices": [UP], "tools": [SMALL, BIG]})
         first = analysis.run(wd, params, None)
         key = resolver.cache_key(wd, "cnc/reach_study", params)
         json_path, _ = result_paths(wd, "cnc", "reach_study", key)

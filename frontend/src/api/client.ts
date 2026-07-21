@@ -144,6 +144,24 @@ export async function putPlan(
   return res.json();
 }
 
+/** Dry-run a plan edit: per check `unchanged` | `revalidates` | `recomputes`
+ * | `error`. Pure hash arithmetic server-side — never enqueues a job. */
+export async function postPlanImpact(
+  partId: string, patch: Record<string, any>,
+): Promise<Record<string, { outcome: string; expected_hash: string | null;
+  error: string | null }>> {
+  const res = await fetch(`${planUrl(partId)}/impact`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patch }),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `impact preview failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function postDisposition(
   partId: string,
   body: { finding_id: string; state: DispositionEvent['state']; by: string;
