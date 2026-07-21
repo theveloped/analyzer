@@ -1,5 +1,9 @@
 # Backlog — self-contained work items
 
+> The v2 production-plan workbench (lenses/checks/findings/plans, phased) is tracked in
+> docs/PLAN-ARCHITECTURE.md — read that before picking up any v2-frontend or plan-layer
+> work. Items 9, 12 and 17 below intersect with it.
+
 One item per section, written to be picked up cold in a fresh session:
 problem, evidence, where to start, suggested approach, verification.
 Delete a section when it lands (git history keeps the record). Ordering
