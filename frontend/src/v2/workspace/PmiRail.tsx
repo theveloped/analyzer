@@ -3,12 +3,12 @@ import { Frame } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { PmiData, PmiDatum, PmiDimension, PmiTolerance } from '../../api/types';
 import { useStore } from '../../state/store';
-import { VIEW_BY_ID } from '../views';
+import { lensByMode } from '../lenses';
 import { DimensionCallout, ToleranceFrame } from './ControlFrame';
 
 const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 const sectionCls = 'mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400';
-const PROCESS = VIEW_BY_ID['pmi'].process;
+const PROCESS = lensByMode('pmi')!.processId;
 
 const rowCls = (active: boolean) => clsx(
   'w-full rounded-lg border p-2 text-left transition',

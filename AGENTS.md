@@ -110,6 +110,8 @@ python test_sheet.py         # sheet detect + K-factor unfold + DXF round-trip
 python test_tube.py          # tube/profile classification + unroll
 python test_pressbrake.py    # press-brake core: kinematics, envelopes, tooling, search
 python test_bendplan.py      # bend-plan adapter + analysis on STEP fixtures
+python test_plan.py          # production-plan sidecars: revisions, dispositions, check status, impact
+python test_reach.py         # cnc/reach_study: per-(direction, tool) masks vs compose_tool
 ```
 
 They build synthetic parts with known-correct answers and assert on them; a green

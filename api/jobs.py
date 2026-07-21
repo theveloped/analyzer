@@ -25,6 +25,14 @@ class PartBusyError(Exception):
     pass
 
 
+class JobCancelled(BaseException):
+    """Raised inside the worker when a running job is cancelled.
+
+    BaseException on purpose: analyses catch broad Exception in places;
+    the cancellation must unwind all the way to the worker loop.
+    """
+
+
 @dataclass
 class Job:
     id: int
@@ -32,11 +40,12 @@ class Job:
     process: str
     analysis: str
     params: dict
-    status: str = "queued"  # queued | running | done | error
+    status: str = "queued"  # queued | running | done | error | cancelled
     progress: float = 0.0
     message: str = ""
     error: str = None
     result: dict = None
+    cancelled: bool = False  # cooperative flag checked at progress reports
     created: str = field(default_factory=lambda: datetime.datetime.now(
         datetime.timezone.utc).isoformat())
 
@@ -86,6 +95,27 @@ class JobManager:
     def get(self, job_id):
         return self._jobs.get(job_id)
 
+    def cancel(self, job_id):
+        """Cancel a queued or running job (None for unknown ids).
+
+        Queued jobs flip to cancelled immediately (the worker skips them on
+        dequeue). Running jobs cancel COOPERATIVELY: the flag raises at the
+        job's next progress report — long non-reporting stretches inside
+        meshlib finish first, but the queue unblocks as soon as the analysis
+        reports again, and the part stops counting as busy for submits.
+        """
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            if job.status == "queued":
+                job.status = "cancelled"
+                job.message = "cancelled before it started"
+            elif job.status == "running":
+                job.cancelled = True
+                job.message = "cancelling…"
+            return job
+
     def list(self, part_id=None):
         jobs = sorted(self._jobs.values(), key=lambda j: j.id, reverse=True)
         if part_id is not None:
@@ -96,9 +126,13 @@ class JobManager:
         while True:
             job_id = self._queue.get()
             job = self._jobs[job_id]
+            if job.status == "cancelled":
+                continue  # cancelled while still queued
             job.status = "running"
 
             def report(fraction, message, job=job):
+                if job.cancelled:
+                    raise JobCancelled()
                 job.progress = max(0.0, min(float(fraction), 1.0))
                 job.message = str(message)
 
@@ -117,7 +151,19 @@ class JobManager:
                 job.result = result.to_dict() if result is not None else None
                 job.progress = 1.0
                 job.status = "done"
+            except JobCancelled:
+                logger.info(f"Job #{job.id} cancelled")
+                job.message = "cancelled"
+                job.status = "cancelled"
             except BaseException as exc:
+                if job.cancelled:
+                    # the cancellation surfaced as a secondary error while
+                    # unwinding — the user's intent wins over the traceback
+                    logger.info(f"Job #{job.id} cancelled (unwound via "
+                                f"{type(exc).__name__})")
+                    job.message = "cancelled"
+                    job.status = "cancelled"
+                    continue
                 logger.exception(f"Job #{job.id} failed")
                 job.error = f"{type(exc).__name__}: {exc}"
                 job.message = traceback.format_exc(limit=3)

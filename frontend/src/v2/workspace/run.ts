@@ -1,3 +1,4 @@
+import type { PlanCheck, PlanCheckStatus } from '../../api/types';
 import { useStore } from '../../state/store';
 import { runAnalysisJob } from '../../viewer/jobs';
 import type { Analysis } from '../analyses';
@@ -14,6 +15,19 @@ export function runAnalysis(a: Analysis): void {
   if (!partId) return;
   const compute = useV2.getState().compute[a.id] ?? defaultCompute(a);
   runAnalysisJob(partId, a.process, a.analysis, compute).catch((err) =>
+    useStore.getState().set({
+      error: err instanceof Error ? err.message : String(err),
+    }),
+  );
+}
+
+/** Run a PLAN check: submits the server-materialized params verbatim, so the
+ * result lands exactly under the check's expected hash. */
+export function runPlanCheck(check: PlanCheck, status: PlanCheckStatus | undefined): void {
+  const partId = useStore.getState().partId;
+  if (!partId || !status?.params) return;
+  const [process, analysis] = check.analysis.split('/');
+  runAnalysisJob(partId, process, analysis, status.params).catch((err) =>
     useStore.getState().set({
       error: err instanceof Error ? err.message : String(err),
     }),

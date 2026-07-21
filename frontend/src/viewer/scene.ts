@@ -527,6 +527,21 @@ export class Scene3D {
     this.scene.background = new THREE.Color(color as THREE.ColorRepresentation);
   }
 
+  /** One frame rendered and read back as PNG, plus the camera pose —
+   * report evidence. Rendering immediately before toDataURL makes the
+   * readback valid without preserveDrawingBuffer. */
+  capture(): { image: string;
+    camera: { position: number[]; target: number[] } } {
+    this.renderer.render(this.scene, this.camera);
+    return {
+      image: this.renderer.domElement.toDataURL('image/png'),
+      camera: {
+        position: this.camera.position.toArray(),
+        target: this.controls.target.toArray(),
+      },
+    };
+  }
+
   setMeshOpacity(alpha: number) {
     if (!this.mesh) return;
     const material = this.mesh.material as THREE.MeshPhongMaterial;

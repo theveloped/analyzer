@@ -1,4 +1,7 @@
-import type { Job, Manifest, Part, ProcessInfo } from './types';
+import type {
+  DispositionEvent, Job, Manifest, Part, Plan, PlanSection, ProcessInfo,
+  Report, ReportSummary, RouteSummary,
+} from './types';
 
 async function getJSON<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -53,6 +56,17 @@ export async function submitJob(
 }
 
 export const fetchJob = (id: number) => getJSON<Job>(`/api/jobs/${id}`);
+
+/** Cancel a queued/running job (running ones cancel cooperatively at their
+ * next progress report). */
+export async function cancelJob(id: number): Promise<Job> {
+  const res = await fetch(`/api/jobs/${id}/cancel`, { method: 'POST' });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `cancel failed: ${res.status}`);
+  }
+  return res.json();
+}
 
 export async function fetchOverrides(
   url: string,
@@ -121,6 +135,129 @@ export const deleteLastSplit = (partId: string) =>
 
 export const clearSplits = (partId: string) =>
   splitsMutation(splitsUrl(partId), 'DELETE');
+
+const planUrl = (partId: string) =>
+  `/api/parts/${encodeURIComponent(partId)}/plan`;
+
+/** Store a new plan revision. `revision` is the revision the client edited;
+ * a concurrent edit surfaces as a 409 — reload the manifest and retry. */
+export async function putPlan(
+  partId: string, plan: Plan, revision: number,
+): Promise<PlanSection> {
+  const res = await fetch(planUrl(partId), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ plan, revision }),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `saving plan failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Dry-run a plan edit: per check `unchanged` | `revalidates` | `recomputes`
+ * | `error`. Pure hash arithmetic server-side — never enqueues a job. */
+export async function postPlanImpact(
+  partId: string, patch: Record<string, any>,
+): Promise<Record<string, { outcome: string; expected_hash: string | null;
+  error: string | null }>> {
+  const res = await fetch(`${planUrl(partId)}/impact`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ patch }),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `impact preview failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function postDisposition(
+  partId: string,
+  body: { finding_id: string; state: DispositionEvent['state']; by: string;
+    why?: string; evidence?: Record<string, any> },
+): Promise<{ stored: DispositionEvent;
+  dispositions: Record<string, DispositionEvent> }> {
+  const res = await fetch(
+    `/api/parts/${encodeURIComponent(partId)}/dispositions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `saving disposition failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export const fetchRoutes = () =>
+  getJSON<RouteSummary[]>('/api/catalogue/routes');
+
+export const fetchMachines = () =>
+  getJSON<{ name: string; label: string; kind: string | null }[]>(
+    '/api/catalogue/machines');
+
+/** Snapshot a machine template into the part's plan_assets (manual op adds). */
+export async function postPlanMachine(
+  partId: string, name: string,
+): Promise<{ template: string; sha: string; path: string;
+  machine: Record<string, any> }> {
+  const res = await fetch(`${planUrl(partId)}/machine`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `machine snapshot failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+/** Instantiate a catalogue route template into the part's plan. */
+export async function postPlanRoute(
+  partId: string, name: string,
+): Promise<PlanSection> {
+  const res = await fetch(`${planUrl(partId)}/route`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `route instantiation failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+const reportsUrl = (partId: string) =>
+  `/api/parts/${encodeURIComponent(partId)}/reports`;
+
+export const fetchReports = (partId: string) =>
+  getJSON<ReportSummary[]>(reportsUrl(partId));
+
+export const fetchReport = (partId: string, rid: string) =>
+  getJSON<Report>(`${reportsUrl(partId)}/${encodeURIComponent(rid)}`);
+
+/** Publish an immutable report bundle; returns the stored report. */
+export async function publishReport(
+  partId: string,
+  body: { title: string; part: string; checks: Record<string, any>[] },
+): Promise<Report> {
+  const res = await fetch(reportsUrl(partId), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `publishing failed: ${res.status}`);
+  }
+  return res.json();
+}
 
 export async function postEjectorSimulate<T>(
   partId: string, body: Record<string, any>,

@@ -126,9 +126,20 @@ def run_bend_plan(workdir, params, progress):
         min_thickness=params["min_thickness"], keep_unfold=True,
         progress=progress)
 
-    machine = machine_mod.load_machine(params["machine_path"] or None)
-    punches = machine_mod.load_punches(params["punches_path"] or None)
-    dies = machine_mod.load_dies(params["dies_path"] or None)
+    # relative catalogue paths resolve against the WORKDIR first: plan
+    # checks bind machine_path to the content-addressed plan_assets
+    # snapshot, so the stored (portable) relative path is part of the cache
+    # key and changes exactly when the machine content does
+    def _catalogue_path(value):
+        if value and not os.path.isabs(value):
+            candidate = os.path.join(workdir, value)
+            if os.path.exists(candidate):
+                return candidate
+        return value or None
+
+    machine = machine_mod.load_machine(_catalogue_path(params["machine_path"]))
+    punches = machine_mod.load_punches(_catalogue_path(params["punches_path"]))
+    dies = machine_mod.load_dies(_catalogue_path(params["dies_path"]))
     for key, catalogue, label in ((params["punch_id"], punches, "punch"),
                                   (params["die_id"], dies, "die")):
         if key and key not in catalogue:

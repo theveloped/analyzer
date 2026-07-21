@@ -1,0 +1,30 @@
+# Press brake: embeds the machine profile (a copy of the pressbrake
+# demo catalogue) so the plan-assets snapshot is self-contained and the
+# bend_plan check can run against it via machine_path.
+kind: press_brake
+label: Press brake 135t
+machine:
+  name: generic-135t-3100
+  x_length: 3100.0
+  daylight: 470.0
+  stroke: 200.0
+  throat_depth: 410.0
+  max_force_kn: 1350.0
+  ram_profile:
+  - - -30.0
+    - 0.0
+  - - 30.0
+    - 0.0
+  - - 30.0
+    - 500.0
+  - - -30.0
+    - 500.0
+  table_profile:
+  - - -30.0
+    - -500.0
+  - - 30.0
+    - -500.0
+  - - 30.0
+    - 0.0
+  - - -30.0
+    - 0.0

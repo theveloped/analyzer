@@ -105,6 +105,14 @@ def cache_key(workdir, target_id, params):
     if analysis.schema is not None:
         key["schema"] = analysis.schema
     for salt in _prep_salts(workdir, analysis):
+        # a salt field silently overwriting a declared param would drop that
+        # param from the key entirely — two different runs would collide on
+        # one hash (bit cnc/reach_study's original `directions` param)
+        clash = set(salt) & own
+        if clash:
+            raise ValueError(
+                f"{target_id}: declared param(s) {sorted(clash)} collide with "
+                f"prep salt fields — rename the analysis param")
         key.update(salt)
     if "splits" in analysis.salts:
         import pipeline

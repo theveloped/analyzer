@@ -69,6 +69,10 @@ export async function watchJob(
       await refreshManifest();
       await onDone?.();
       schedulePaint(true);
+    } else if (current.status === 'cancelled') {
+      // prep artifacts finished before the cancel are valid — surface them
+      await refreshManifest();
+      schedulePaint(true);
     }
   } finally {
     watched.delete(job.id);

@@ -1231,6 +1231,97 @@ def setup_verdict(workdir, *, option=0, tools=(), tollerance=0.1,
     return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
 
 
+def reach_study(workdir, *, directions=(), tools=(), tollerance=0.1,
+                wall_tollerance=1.0, pixel=None, window=0.3, progress=None):
+    """Face-reachability study over (candidate direction × tool).
+
+    The broad reusable computation behind operation-scoped CNC checks
+    (docs/PLAN-ARCHITECTURE.md): for every selected candidate direction and
+    every tool in the library, the per-face machinable mask — the same
+    ``tool_face_verdict`` rule ``setup_verdict`` applies, but stored
+    per-pair instead of OR-folded into one plan's coverage. Downstream
+    slicing (an operation's tilt cone, any/all-tool unions, cross-operation
+    aggregates) is pure mask logic over the stored arrays — never a new
+    geometry pass. Fields come from the zmap DirectionCache, computed
+    lazily and persisted, so re-running with more tools or directions only
+    pays for the new pairs.
+
+    ``directions`` empty selects every sampled direction. Masks are named
+    ``reach_<direction>_<tool index>`` (global direction index; tool index
+    into the passed library, echoed in stats["tools"]).
+    """
+    import machining
+    from zmap import DirectionCache, tool_face_verdict
+
+    tools = parse_tools(tools)
+    if not tools:
+        raise ValueError("reach_study needs at least one tool")
+
+    pixel = resolve_pixel(workdir, pixel)
+    verts, faces = load_mesh_arrays(workdir)
+    all_directions = np.load(os.path.join(workdir, DIRECTIONS_FILE))
+    accessibility = np.load(os.path.join(workdir, ACCESSIBILITY_FILE))
+    weights = machining.face_areas(verts, faces)
+    normals = load_face_normals(workdir)
+
+    selected = sorted({int(d) for d in directions}) or list(range(len(all_directions)))
+    bad = [d for d in selected if not 0 <= d < len(all_directions)]
+    if bad:
+        raise ValueError(f"direction indices out of range: {bad} "
+                         f"(0..{len(all_directions) - 1})")
+
+    arrays, field_meta = {}, {}
+    pairs = []
+    total_steps = max(len(selected) * len(tools), 1)
+    step = 0
+    for d in selected:
+        visible = accessibility[d]
+        cache = angles = None
+        if visible.any():
+            cache = DirectionCache(workdir, d, verts=verts, faces=faces,
+                                   pixel=pixel, window=window)
+            angles = machining.face_angles_deg(normals, all_directions[d])
+        for t, tool in enumerate(tools):
+            _report(progress, step / total_steps,
+                    f"direction {d}: tool {t + 1}/{len(tools)}")
+            step += 1
+            if cache is None:
+                reach = np.zeros(len(faces), dtype=bool)
+            else:
+                cylinders = ([(tool["holder_radius"], 0.0)]
+                             if tool["holder_radius"] else None)
+                machinable, _, _ = tool_face_verdict(
+                    cache, faces, angles, diameter=tool["diameter"],
+                    corner_radius=tool["corner_radius"],
+                    stickout=tool["stickout"], cylinders=cylinders,
+                    tollerance=tollerance, wall_tollerance=wall_tollerance)
+                reach = machinable & visible
+            name = f"reach_{d}_{t}"
+            arrays[name] = reach.astype(np.uint8)
+            field_meta[name] = {"association": "face", "role": "mask",
+                                "kind": "reach", "direction": d, "tool": t}
+            pairs.append({
+                "direction": d, "tool": t,
+                "reachable_faces": int(reach.sum()),
+                "reachable_area": round(float(weights[reach].sum()), 3),
+            })
+
+    stats = {
+        "directions": selected,
+        "tools": tools,
+        "tollerance": float(tollerance),
+        "wall_tollerance": float(wall_tollerance),
+        "pixel": float(pixel),
+        "window": float(window),
+        "face_count": int(len(faces)),
+        "direction_count": int(all_directions.shape[0]),
+        "total_area": round(float(weights.sum()), 3),
+        "directions_fingerprint": directions_fingerprint(workdir),
+        "pairs": pairs,
+    }
+    return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
+
+
 def thickness_highlights(faces, thickness, hi=1.3):
     """Face indices whose three vertices all exceed hi * mean thickness."""
     mask = thickness > hi * float(np.mean(thickness))

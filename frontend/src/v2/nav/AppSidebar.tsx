@@ -1,14 +1,15 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  Boxes, ClipboardCheck, FolderKanban, Layers, Moon, Package, Plus,
-  RefreshCw, SlidersHorizontal, Sun, Upload, Wrench,
+  Boxes, ClipboardCheck, FileText, FolderKanban, Layers, Moon, Package,
+  Plus, RefreshCw, SlidersHorizontal, Sun, Upload, Wrench,
 } from 'lucide-react';
 import {
   Sidebar, SidebarBody, SidebarFooter, SidebarHeader, SidebarHeading,
   SidebarItem, SidebarLabel, SidebarSection, SidebarSpacer,
 } from '../../catalyst/sidebar';
 import { Switch } from '../../catalyst/switch';
-import type { Part } from '../../api/types';
+import { cancelJob, fetchReports } from '../../api/client';
+import type { Part, ReportSummary } from '../../api/types';
 import { useStore } from '../../state/store';
 import { selectPart, uploadAndSelect } from '../../viewer/controller';
 import { reprocessPart } from '../../viewer/jobs';
@@ -23,6 +24,44 @@ const NAV = [
   { id: 'presets', label: 'Stack presets', icon: Layers, enabled: false },
   { id: 'materials', label: 'Materials', icon: Wrench, enabled: false },
 ];
+
+/** Published report bundles of the selected part (newest first); refetches
+ * when the manifest refreshes (the publish flow bumps it). */
+function ReportsSection() {
+  const partId = useStore((s) => s.partId);
+  const manifestVersion = useStore((s) => s.manifestVersion);
+  const [reports, setReports] = useState<ReportSummary[]>([]);
+
+  useEffect(() => {
+    if (!partId) { setReports([]); return; }
+    let live = true;
+    fetchReports(partId)
+      .then((list) => { if (live) setReports(list); })
+      .catch(() => { if (live) setReports([]); });
+    return () => { live = false; };
+  }, [partId, manifestVersion]);
+
+  if (!partId || !reports.length) return null;
+  return (
+    <SidebarSection>
+      <SidebarHeading>Reports</SidebarHeading>
+      {reports.slice().reverse().map((r) => (
+        <SidebarItem
+          key={r.rid}
+          onClick={() => {
+            window.location.hash =
+              `#report=${encodeURIComponent(partId)}/${encodeURIComponent(r.rid)}`;
+          }}
+        >
+          <FileText data-slot="icon" />
+          <SidebarLabel>
+            {r.title} · rev {r.plan_revision}
+          </SidebarLabel>
+        </SidebarItem>
+      ))}
+    </SidebarSection>
+  );
+}
 
 export function AppSidebar() {
   const parts = useStore((s) => s.parts);
@@ -65,6 +104,24 @@ export function AppSidebar() {
   async function onReprocess(part: Part) {
     try {
       await reprocessPart(part.id);
+    } catch (err) {
+      useStore.getState().set({ error: String(err) });
+    }
+  }
+
+  /** The spinning icon doubles as a cancel button: clicking it cancels the
+   * part's active job (queued instantly; running cooperatively at its next
+   * progress report), freeing the single worker for the next job. */
+  async function onCancel(part: Part) {
+    const active = jobs.find((j) => j.part_id === part.id
+      && (j.status === 'queued' || j.status === 'running'));
+    if (!active) return;
+    try {
+      const updated = await cancelJob(active.id);
+      useStore.getState().set({
+        jobs: useStore.getState().jobs.map(
+          (j) => (j.id === updated.id ? updated : j)),
+      });
     } catch (err) {
       useStore.getState().set({ error: String(err) });
     }
@@ -140,16 +197,23 @@ export function AppSidebar() {
               </SidebarItem>
               <button
                 type="button"
-                title="Reprocess — rebuild from the original file"
-                disabled={busyParts.has(p.id)}
-                onClick={(e) => { e.stopPropagation(); void onReprocess(p); }}
-                className="ml-0.5 shrink-0 rounded-md p-1.5 text-zinc-400 opacity-0 group-hover/part:opacity-100 hover:bg-zinc-950/5 hover:text-zinc-950 focus:opacity-100 disabled:opacity-100 dark:text-zinc-500 dark:hover:bg-white/10 dark:hover:text-white"
+                title={busyParts.has(p.id)
+                  ? 'Cancel the running job'
+                  : 'Reprocess — rebuild from the original file'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (busyParts.has(p.id)) void onCancel(p);
+                  else void onReprocess(p);
+                }}
+                className={`ml-0.5 shrink-0 rounded-md p-1.5 text-zinc-400 group-hover/part:opacity-100 hover:bg-zinc-950/5 hover:text-zinc-950 focus:opacity-100 dark:text-zinc-500 dark:hover:bg-white/10 dark:hover:text-white ${busyParts.has(p.id) ? 'opacity-100' : 'opacity-0'}`}
               >
                 <RefreshCw className={busyParts.has(p.id) ? 'size-4 animate-spin' : 'size-4'} />
               </button>
             </div>
           ))}
         </SidebarSection>
+
+        <ReportsSection />
 
         <input
           ref={fileInput}

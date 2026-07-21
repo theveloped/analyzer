@@ -1,5 +1,9 @@
 # Backlog — self-contained work items
 
+> The v2 production-plan workbench (lenses/checks/findings/plans, phased) is tracked in
+> docs/PLAN-ARCHITECTURE.md — read that before picking up any v2-frontend or plan-layer
+> work. Items 9, 12 and 17 below intersect with it.
+
 One item per section, written to be picked up cold in a fresh session:
 problem, evidence, where to start, suggested approach, verification.
 Delete a section when it lands (git history keeps the record). Ordering
@@ -390,6 +394,86 @@ cross-validation + analytic-vs-shapely equivalence checks) +
 `test_bendplan.py`; re-time `main.py bendplan
 C:/temp/claude/corpus/parts/f488820d15c3` (delete
 `results/sheet_metal/bend_plan` first — results are cached).
+
+### 19. V2 viewport controls, composable render layers and measurement
+
+**Problem/goal.** The v2 toolbar selects the engineering lens (what data is
+shown), but the viewport has no independent, persistent controls for how that
+data is rendered or how the engineer interacts with it. `Scene3D` currently
+uses one vertex-coloured `MeshPhongMaterial`, one `PerspectiveCamera`, and
+lenses directly call `setMeshOpacity`; this cannot cleanly compose solid,
+faceted, X-ray, sectioned and lens-overlay views. Add a compact bottom-centre
+viewport toolbar, keeping the existing legend bottom-left and orientation gizmo
+bottom-right. Treat lens, scope (part/plan/operation/direction), viewport state
+and interaction tool as orthogonal state: changing one must not reset the
+others.
+
+**Controls.** First delivery should include:
+
+- Render style segmented control: **Shaded** (smooth solid, no triangle edges),
+  **Facets** (flat triangle shading plus triangle edges), and **X-ray** (subdued
+  transparent base with camera-normal/Fresnel rim lighting). X-ray findings need
+  a visible pass at full colour and an occluded pass at lower opacity/outline;
+  simply lowering the current material opacity fades the heatmap too and gives
+  misleading transparent-triangle ordering.
+- Lens overlay visibility and opacity, plus **findings only**. Base geometry,
+  lens colours, selection, and annotations must be separate render layers so a
+  heatmap/category field stays legible over any base style.
+- Edge mode: none / true BREP boundaries / tessellation triangles. Do not call
+  triangle wireframe "BREP edges"; if the current artifacts do not provide the
+  necessary boundary polylines, add an explicit same-tessellation edge field.
+- Perspective/orthographic projection, preserving target, orientation and
+  apparent model size when switching.
+- One composable section plane: X/Y/Z/custom orientation, offset slider and
+  numeric value, flip and reset. Apply clipping to base, lens, selection and
+  annotation geometry; section caps can follow after the basic plane is sound.
+- Fit part, fit selection, isolate selection, and ghost unselected context.
+  Saved viewpoints are the next extension and should persist camera plus
+  viewport state for reproducible report evidence.
+
+**Measurement tool.** Include **Measure** as an interaction control, not a
+lens. While active it owns mesh clicks before plugin `onPick` handlers, leaving
+the current lens visible underneath. Two picks A/B capture the rendered world
+locations, fine-face ids and surface normals. Draw persistent A/B markers, the
+straight A-to-B segment, RGB model-axis component legs anchored at A, and the
+two normal directions in an annotation layer that lens repaints do not clear.
+The context rail reports, in model units:
+
+- straight-line picked-point distance `|B-A|`;
+- signed `dX`, `dY`, `dZ` from A to B;
+- signed separation along face A's normal and the remaining in-plane offset;
+- directed normal angle (0-180 degrees) and orientation-independent plane angle
+  (0-90 degrees);
+- picked coordinates and face ids for auditability.
+
+A face normal does not define unique tangent X/Y axes, so do not present an
+invented local XYZ frame without BREP UV/tangent data. Likewise, two mesh picks
+do **not** establish the exact minimum distance between the complete BREP faces:
+label this value as picked-point/straight-line distance. A later explicit
+"minimum between faces" mode may map both picks through `brep_faces` and call an
+OCP shape-distance query, returning the closest-point pair and tolerance. Third
+click starts a new A point; Clear resets while staying active; Escape exits.
+Measurement must use the currently posed geometry/normals during bend animation,
+not the original unposed arrays.
+
+**Implementation seams.** Add a serializable `ViewportState` (render style,
+projection, overlay flags/opacity, edge mode, section, context mode) and a
+separate measurement session to the viewer store. Refactor `Scene3D` into base,
+lens, selection and persistent annotation groups; adapt legacy
+`ViewCtx.setMeshOpacity` into a lens display hint until each mode stops directly
+owning the base material. Add `workspace/ViewportToolbar.tsx` at bottom centre
+and a contextual measurement rail. Camera switching belongs behind `Scene3D`,
+not in React. The report evidence model must snapshot lens key, scope, camera,
+viewport/section state and measurement annotations, along with result hashes.
+
+**Verify.** Add pure tests for measurement deltas, signed normal separation,
+parallel/opposed/orthogonal normal angles and zero-length picks. Run
+`npx tsc -b` and `npm run build`; extend the v2 Playwright smoke to exercise
+every render style, projection switch, section movement and two-point measure.
+Capture desktop and narrow-viewport screenshots plus canvas-pixel checks: the
+part must remain nonblank, lens colours must survive every base style, occluded
+findings must be visible but distinguishable in X-ray, annotations must survive
+lens repaints, and no bottom control may overlap the legend or axis gizmo.
 
 ## Meta
 

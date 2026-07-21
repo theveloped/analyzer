@@ -23,6 +23,41 @@ class SplitRequest(BaseModel):
     end: int
 
 
+class PlanPutRequest(BaseModel):
+    """Store a new plan revision. ``revision`` is the revision the client
+    edited (optimistic concurrency — a mismatch is a 409)."""
+    plan: dict
+    revision: int
+
+
+class PlanImpactRequest(BaseModel):
+    """Dry-run a plan edit: decisions deep-merge, operations/checks replace
+    when present. Never enqueues work."""
+    patch: dict = Field(default_factory=dict)
+
+
+class RouteInstantiateRequest(BaseModel):
+    """Instantiate a catalogue route template into the part's plan."""
+    name: str
+
+
+class ReportPublishRequest(BaseModel):
+    """Publish an immutable report bundle: per-check verdict/findings/
+    evidence plus optional PNG data-URL shots."""
+    title: str = ""
+    part: str = ""
+    checks: list[dict]
+
+
+class DispositionRequest(BaseModel):
+    """One human judgment on a finding (appended, never overwritten)."""
+    finding_id: str
+    state: str  # open | accepted | customer_approval | resolved
+    by: str
+    why: str = ""
+    evidence: dict = Field(default_factory=dict)
+
+
 class EjectorSimRequest(BaseModel):
     """Interactive ejector-pin simulation over a stored ejection_sticking
     result (identified by its cache hash)."""

@@ -93,6 +93,11 @@ export function flyToFocus(focus: LegendFocus) {
   scene?.flyTo(focus.center, focus.direction, focus.radius);
 }
 
+/** Snapshot the viewer (PNG + camera pose) for report evidence. */
+export function captureViewer() {
+  return scene?.capture() ?? null;
+}
+
 /** Switch the viewer between light and dark: repaints the background and the
  * background-matched colour-map variants (batlowW/K, vik/berlin). */
 export function setViewerTheme(bg: ViewerBackground) {

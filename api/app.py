@@ -17,6 +17,7 @@ from api import fields as fields_api
 from api import manifest as manifest_api
 from api import parts as parts_api
 from api import ejector as ejector_api
+from api import plan as plan_api
 from api.jobs import JobManager, PartBusyError
 from api.schemas import EjectorSimRequest, JobRequest, SplitRequest
 import pipeline
@@ -376,6 +377,9 @@ def create_app(root=".", preload=None):
             raise HTTPException(status_code=404, detail="no highlights")
         return FileResponse(path, media_type="application/json")
 
+    plan_api.register(app, part_or_404,
+                      lambda part_id: parts_api.workdir_for(root, part_id))
+
     @app.post("/api/jobs", status_code=201)
     def submit_job(request: JobRequest):
         part_or_404(request.part_id)
@@ -395,6 +399,15 @@ def create_app(root=".", preload=None):
     @app.get("/api/jobs/{job_id}")
     def get_job(job_id: int):
         job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="unknown job")
+        return job.to_dict()
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    def cancel_job(job_id: int):
+        """Cancel a queued/running job. Running jobs cancel cooperatively
+        (at their next progress report) — see JobManager.cancel."""
+        job = jobs.cancel(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="unknown job")
         return job.to_dict()

@@ -1,0 +1,51 @@
+# Mixed sheet route: laser blank -> CNC secondary ops -> press brake.
+# Instantiating a route snapshots each machine template into the plan's
+# plan_assets/ (content-addressed) and appends the operations + checks.
+# Param tokens: $machine_snapshot -> the snapshot's workdir-relative path;
+# $machine:<dotted.path> -> a value from the machine template YAML.
+title: Laser - CNC - press brake
+operations:
+  - id: laser
+    kind: laser
+    label: Laser blank
+    machine: laser_flatbed
+    checks:
+      - id: chk-sheet-detect
+        analysis: sheet_metal/detect
+        policy: {kind: stats, rule: sheet_detect}
+        lens: sheet_metal:sheet_roles
+      - id: chk-flat-pattern
+        analysis: sheet_metal/flat_pattern
+        policy: {kind: stats, rule: flat_pattern}
+        lens: sheet_metal:flat_pattern
+  - id: cnc10
+    kind: cnc_setup
+    label: CNC features
+    machine: cnc_3axis
+    config: {direction_index: 4}
+    produces: {features: holes}
+    checks:
+      - id: chk-features
+        analysis: cnc/features
+        policy: {kind: stats, rule: features}
+        lens: cnc:features
+      - id: chk-reach-cnc10
+        analysis: cnc/reach_study
+        params:
+          # ±Z (the axes prefix of the sampled direction set) — the plate
+          # normals a 3-axis secondary op drills from
+          direction_indices: [4, 5]
+          tools: $machine:tools
+        policy: {scope: operation, mask: features}
+        lens: cnc:reach_op
+  - id: brake
+    kind: press_brake
+    label: Press brake
+    machine: pressbrake_135t
+    checks:
+      - id: chk-bend-plan
+        analysis: sheet_metal/bend_plan
+        params:
+          machine_path: $machine_snapshot
+        policy: {kind: stats, rule: bend_plan}
+        lens: sheet_metal:bend_sequence

@@ -1,0 +1,74 @@
+/* Scoped port of the original viewer panel styles (src/styles.css) so the
+ * existing ProcessPlugin.Controls components render usably inside the v2
+ * right rail. The `.panel` container rules lose their absolute positioning;
+ * everything else is copied under the `.v1-controls` scope. The dark card
+ * look is kept deliberately — the input/button colours are hardcoded for it.
+ * Restyle panel-by-panel later; do not grow this file. */
+
+.v1-controls {
+  background: rgba(24, 28, 33, 0.92); color: #dfe6ea; padding: 12px;
+  border-radius: 10px; font-size: 13px; line-height: 1.45;
+}
+.v1-controls h1 { font-size: 14px; margin: 0 0 10px; }
+.v1-controls label {
+  display: block; margin: 8px 0 2px; color: #9fb0bd; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.v1-controls label.check {
+  text-transform: none; font-size: 13px; color: #dfe6ea;
+  display: flex; align-items: center; gap: 6px; margin-top: 8px;
+}
+.v1-controls select, .v1-controls input[type=text], .v1-controls input[type=number] {
+  width: 100%; background: #10141a; color: #dfe6ea;
+  border: 1px solid #3a4552; border-radius: 5px; padding: 5px 6px; font-size: 13px;
+}
+.v1-controls input[type=checkbox] { width: auto; }
+.v1-controls .row { display: flex; gap: 8px; align-items: flex-end; }
+.v1-controls .row > div, .v1-controls .row > select { flex: 1; min-width: 0; }
+.v1-controls button {
+  background: #26313d; color: #dfe6ea; border: 1px solid #3a4552;
+  border-radius: 5px; padding: 5px 10px; font-size: 12px; cursor: pointer;
+}
+.v1-controls button:hover { background: #31404f; }
+.v1-controls button:disabled { opacity: 0.5; cursor: default; }
+.v1-controls button.upload { flex: none; }
+.v1-controls button.active { background: #3b5268; border-color: #5a7793; }
+.v1-controls button.primary { width: 100%; margin-top: 8px; background: #2f6d4a; border-color: #3f8a60; }
+.v1-controls button.primary:hover { background: #388055; }
+.v1-controls .warn {
+  margin: 6px 0; padding: 5px 8px; font-size: 12px;
+  background: #4a3a10; color: #f0d89a; border: 1px solid #7a6320; border-radius: 5px;
+}
+.v1-controls .dir-list { list-style: none; margin: 4px 0; padding: 0; }
+.v1-controls .dir-list li {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; font-size: 12px; padding: 3px 0;
+}
+.v1-controls .dir-list li button { padding: 1px 7px; line-height: 1; }
+.v1-controls .tabs { display: flex; gap: 4px; margin-top: 10px; }
+.v1-controls .tabs button { flex: 1; padding: 5px 2px; font-size: 11px; }
+.v1-controls .tabs button.active { background: #3b5268; border-color: #5a7793; }
+.v1-controls .ramp {
+  height: 12px; border-radius: 3px; margin-top: 4px;
+  background: linear-gradient(90deg, #30123b, #4145ab, #2ab07f, #fcce39, #f05b12, #7a0403);
+}
+.v1-controls .compute { margin-top: 12px; padding-top: 8px; border-top: 1px solid #3a4552; }
+.v1-controls .compute summary {
+  cursor: pointer; color: #9fb0bd; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.v1-controls .compute .run { margin-top: 10px; width: 100%; }
+.v1-controls .hint { color: #9fb0bd; font-size: 11px; margin-top: 4px; }
+.v1-controls .hint.error { color: #e08a80; }
+.v1-controls .proposal-list { display: flex; flex-direction: column; gap: 3px; margin-top: 6px; }
+.v1-controls .proposal-list button { text-align: left; font-size: 11px; }
+.v1-controls .proposal-list button.selected { background: #3b5268; border-color: #5a7793; }
+.v1-controls .proposal-list button.over { border-color: #a33; color: #e08a80; }
+.v1-controls .jobs { margin-top: 8px; }
+.v1-controls .job {
+  display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap;
+  font-size: 11px; padding: 3px 0; border-top: 1px dotted #3a4552; color: #9fb0bd;
+}
+.v1-controls .job.running { color: #dfe6ea; }
+.v1-controls .job.error { color: #e08a80; }
+.v1-controls .job.done { color: #9cc79a; }
