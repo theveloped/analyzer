@@ -36,6 +36,11 @@ class PlanImpactRequest(BaseModel):
     patch: dict = Field(default_factory=dict)
 
 
+class RouteInstantiateRequest(BaseModel):
+    """Instantiate a catalogue route template into the part's plan."""
+    name: str
+
+
 class ReportPublishRequest(BaseModel):
     """Publish an immutable report bundle: per-check verdict/findings/
     evidence plus optional PNG data-URL shots."""

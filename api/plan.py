@@ -13,7 +13,8 @@ from fastapi.responses import FileResponse
 
 import plans
 from api.schemas import (DispositionRequest, PlanImpactRequest,
-                         PlanPutRequest, ReportPublishRequest)
+                         PlanPutRequest, ReportPublishRequest,
+                         RouteInstantiateRequest)
 
 _plan_lock = threading.Lock()
 
@@ -49,6 +50,23 @@ def register(app, part_or_404, workdir_for):
             return plans.impact_preview(workdir_for(part["id"]), body.patch)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error))
+
+    @app.get("/api/catalogue/routes")
+    def get_routes():
+        return plans.list_routes()
+
+    @app.post("/api/parts/{part_id}/plan/route")
+    def post_plan_route(part_id: str, body: RouteInstantiateRequest):
+        part = part_or_404(part_id)
+        workdir = workdir_for(part["id"])
+        with _plan_lock:
+            try:
+                plans.instantiate_route(workdir, body.name)
+            except plans.RevisionConflictError as error:
+                raise HTTPException(status_code=409, detail=str(error))
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error))
+        return plans.plan_section(workdir)
 
     @app.get("/api/parts/{part_id}/reports")
     def get_reports(part_id: str):

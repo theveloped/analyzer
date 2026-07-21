@@ -1,0 +1,9 @@
+# Flatbed laser cutter — the blank-cutting step of sheet routes.
+# Machine templates are snapshotted into a plan's plan_assets/ by content
+# hash when a route is instantiated (docs/PLAN-ARCHITECTURE.md, Phase 4).
+kind: laser
+label: Flatbed laser 3kW
+sheet:
+  max_x: 3000.0
+  max_y: 1500.0
+  max_thickness: 12.0

@@ -232,6 +232,61 @@ def test_reports(workdir):
           is None)
 
 
+def test_routes(workdir):
+    import hashlib
+    import os
+
+    routes = plans.list_routes()
+    check("catalogue lists the mixed route",
+          any(r["name"] == "laser_cnc_brake" and r["operations"] == 3
+              for r in routes))
+
+    expect_raises("unknown route rejected", ValueError,
+                  lambda: plans.instantiate_route(workdir, "nope"))
+    expect_raises("path-escaping route name rejected", ValueError,
+                  lambda: plans.instantiate_route(workdir, "../evil"))
+
+    plan = plans.instantiate_route(workdir, "laser_cnc_brake")
+    check("route appends operations + checks",
+          [op["id"] for op in plan["operations"]] == ["laser", "cnc10", "brake"]
+          and len(plan["checks"]) == 5 and plan["revision"] == 1)
+
+    brake = next(op for op in plan["operations"] if op["id"] == "brake")
+    source = open(os.path.join(plans.CATALOGUE_DIR, "machines",
+                               "pressbrake_135t.yaml"), "rb").read()
+    sha = hashlib.sha1(source).hexdigest()[:12]
+    snapshot = os.path.join(workdir, "plan_assets", "machines", f"{sha}.yaml")
+    check("machine snapshot is content-addressed",
+          brake["machine"]["sha"] == sha and os.path.exists(snapshot)
+          and open(snapshot, "rb").read() == source)
+
+    bend = next(c for c in plan["checks"] if c["id"] == "chk-bend-plan")
+    check("$machine_snapshot binds machine_path to the snapshot",
+          bend["params"]["machine_path"] == f"plan_assets/machines/{sha}.yaml")
+
+    reach = next(c for c in plan["checks"] if c["id"] == "chk-reach-cnc10")
+    check("$machine:tools resolves the CNC tool library",
+          isinstance(reach["params"]["tools"], list)
+          and reach["params"]["tools"][0]["diameter"] == 16.0)
+
+    cnc = next(op for op in plan["operations"] if op["id"] == "cnc10")
+    check("machine config merges under step config",
+          cnc["config"] == {"tilt": 0, "direction_index": 4}
+          and cnc["produces"] == {"features": "holes"})
+
+    expect_raises("op-id clash rejected", ValueError,
+                  lambda: plans.instantiate_route(workdir, "laser_cnc_brake"))
+    check("failed re-instantiation left the plan untouched",
+          plans.load_plan(workdir)["revision"] == 1)
+
+    # the derived status machinery accepts the route checks (params are
+    # declared-valid; bend_plan's machine_path is part of its cache key)
+    section = plans.plan_section(workdir)
+    check("route checks key cleanly through the resolver",
+          all(section["checks"][c["id"]]["error"] is None
+              for c in plan["checks"]))
+
+
 def main():
     with tempfile.TemporaryDirectory() as workdir:
         test_crud_and_history(workdir)
@@ -244,6 +299,8 @@ def main():
         test_impact(workdir)
     with tempfile.TemporaryDirectory() as workdir:
         test_reports(workdir)
+    with tempfile.TemporaryDirectory() as workdir:
+        test_routes(workdir)
 
     print(f"\n{PASSED} passed, {FAILED} failed")
     if FAILED == 0:

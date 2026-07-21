@@ -1,0 +1,12 @@
+# 3-axis vertical machining centre — secondary operations on sheet routes.
+# `config` seeds the operation (tilt 0 = plain 3-axis: the setup covers only
+# its primary direction); `tools` is the default library route checks bind
+# via the $machine:tools token.
+kind: cnc_setup
+label: 3-axis VMC
+config:
+  tilt: 0
+tools:
+  - {diameter: 16.0, corner_radius: 0.0, stickout: 80.0, holder_radius: 8.0}
+  - {diameter: 8.0, corner_radius: 0.0, stickout: 40.0, holder_radius: 4.0}
+  - {diameter: 4.0, corner_radius: 0.0, stickout: 20.0, holder_radius: 2.0}

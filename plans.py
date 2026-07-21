@@ -39,6 +39,7 @@ the CLI import them directly.
 
 import base64
 import copy
+import hashlib
 import json
 import os
 import re
@@ -56,6 +57,11 @@ DISPOSITIONS_FILE = "dispositions.jsonl"
 REPORTS_DIR = "reports"
 REPORT_SCHEMA = 1
 _PNG_PREFIX = "data:image/png;base64,"
+
+# repo-level template library (docs/PLAN-ARCHITECTURE.md, Phase 4)
+CATALOGUE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "catalogue")
+PLAN_ASSETS_DIR = "plan_assets"
 
 DISPOSITION_STATES = ("open", "accepted", "customer_approval", "resolved")
 
@@ -264,6 +270,140 @@ def impact_preview(workdir, patch):
                                "expected_hash": then["expected_hash"],
                                "error": then["error"]}
     return report
+
+
+def list_routes():
+    """Available route templates: name, title and step count."""
+    base = os.path.join(CATALOGUE_DIR, "routes")
+    if not os.path.isdir(base):
+        return []
+    routes = []
+    for filename in sorted(os.listdir(base)):
+        if not filename.endswith(".yaml"):
+            continue
+        import yaml
+        with open(os.path.join(base, filename)) as f:
+            data = yaml.safe_load(f)
+        routes.append({
+            "name": filename[:-len(".yaml")],
+            "title": str(data.get("title", filename)),
+            "operations": len(data.get("operations", [])),
+        })
+    return routes
+
+
+def instantiate_route(workdir, name):
+    """Instantiate a route template into the part's plan (a new revision).
+
+    Each step's machine template YAML is snapshotted into
+    ``plan_assets/machines/<sha12>.yaml`` (content-addressed copy — the
+    plan stays self-contained as the library evolves) and the step's
+    operations + checks are appended. Check param tokens resolve here:
+
+    - ``$machine_snapshot``      → the snapshot's workdir-relative path
+      (results-tier params embed it, so the cache key changes exactly when
+      the machine content does — the snapshot name IS its content hash)
+    - ``$machine:<dotted.path>`` → a value from the machine template YAML
+
+    Rejected when any of the route's operation ids already exist.
+    """
+    import yaml
+
+    if _safe_name(name) != name:
+        raise ValueError(f"invalid route name {name!r}")
+    path = os.path.join(CATALOGUE_DIR, "routes", f"{name}.yaml")
+    if not os.path.exists(path):
+        raise ValueError(f"unknown route template {name!r}")
+    with open(path) as f:
+        route = yaml.safe_load(f)
+
+    plan = load_plan(workdir)
+    existing_ops = {op["id"] for op in plan["operations"]}
+    clash = [step["id"] for step in route.get("operations", [])
+             if step["id"] in existing_ops]
+    if clash:
+        raise ValueError(
+            f"route operations already in the plan: {sorted(clash)}")
+
+    patched = copy.deepcopy(plan)
+    for step in route.get("operations", []):
+        machine_name = step.get("machine")
+        machine_data, snapshot_rel = {}, None
+        if machine_name:
+            machine_data, snapshot_rel = _snapshot_machine(
+                workdir, machine_name)
+        operation = {
+            "id": step["id"],
+            "kind": step.get("kind"),
+            "label": step.get("label", step["id"]),
+            "config": {**machine_data.get("config", {}),
+                       **step.get("config", {})},
+        }
+        if machine_name:
+            operation["machine"] = {
+                "template": machine_name,
+                "sha": os.path.splitext(os.path.basename(snapshot_rel))[0],
+            }
+        if step.get("produces") is not None:
+            operation["produces"] = step["produces"]
+        patched["operations"].append(operation)
+
+        for check in step.get("checks", []):
+            params = {
+                key: _resolve_token(value, machine_data, snapshot_rel,
+                                    check.get("id"))
+                for key, value in (check.get("params") or {}).items()
+            }
+            patched["checks"].append({
+                "id": check["id"],
+                "analysis": check["analysis"],
+                "params": params,
+                "policy": check.get("policy") or {},
+                "operation": step["id"],
+                "lens": check.get("lens"),
+                "visible": check.get("visible", True),
+            })
+
+    return save_plan(workdir, patched, expected_revision=plan["revision"])
+
+
+def _snapshot_machine(workdir, machine_name):
+    """Copy a machine template into plan_assets by content hash; returns
+    (parsed template, workdir-relative snapshot path)."""
+    import yaml
+
+    if _safe_name(machine_name) != machine_name:
+        raise ValueError(f"invalid machine template {machine_name!r}")
+    source = os.path.join(CATALOGUE_DIR, "machines", f"{machine_name}.yaml")
+    if not os.path.exists(source):
+        raise ValueError(f"unknown machine template {machine_name!r}")
+    with open(source, "rb") as f:
+        content = f.read()
+    sha = hashlib.sha1(content).hexdigest()[:12]
+    rel = os.path.join(PLAN_ASSETS_DIR, "machines", f"{sha}.yaml")
+    target = os.path.join(workdir, rel)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    if not os.path.exists(target):
+        with open(target, "wb") as f:
+            f.write(content)
+    return yaml.safe_load(content), rel.replace(os.sep, "/")
+
+
+def _resolve_token(value, machine_data, snapshot_rel, check_id):
+    if value == "$machine_snapshot":
+        if snapshot_rel is None:
+            raise ValueError(
+                f"check {check_id}: $machine_snapshot without a machine")
+        return snapshot_rel
+    if isinstance(value, str) and value.startswith("$machine:"):
+        node = machine_data
+        for segment in value[len("$machine:"):].split("."):
+            node = node.get(segment) if isinstance(node, dict) else None
+            if node is None:
+                raise ValueError(
+                    f"check {check_id}: machine template has no {value!r}")
+        return node
+    return value
 
 
 def publish_report(workdir, payload):
