@@ -202,6 +202,6 @@ specific views.
 
 - `tests/` — input fixtures: `testpart_42.stp/.stl` (small, use for smoke runs),
   `Aligator.STEP`, `large_part.stl`, two large real STLs, GLB assemblies.
-- `large_part/`, `21007-010-rev1-*/` — pre-built sample workdirs (committed on
-  purpose).
+- No sample workdirs are committed — build one locally by meshing a `tests/`
+  fixture (see TESTING.md).
 - `highlights.json` at repo root — legacy sample output; not read by code.

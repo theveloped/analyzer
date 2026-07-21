@@ -92,7 +92,7 @@ the CLI can compute can also be launched from the browser:
 ```bash
 python main.py view testpart_42            # open the app preloaded on a workdir
 python main.py view tests/testpart_42.stp  # register a raw STEP/STL and open on it
-python main.py view large_part --port 9000 --no-browser --timeout 3600
+python main.py view testpart_42 --port 9000 --no-browser --timeout 3600
 ```
 
 The app is a FastAPI server (`api/`) plus a Vite/React frontend

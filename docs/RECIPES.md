@@ -114,8 +114,9 @@ version-checked).
    must recompute from already-fetched fields client-side (see
    `processes/cnc/compose.ts`) — do not add API endpoints for them.
 3. Before committing: `npx tsc -b`, `npm run build`, and `node smoke.mjs` with a
-   server running on a part that has cached fields (e.g. the committed
-   `large_part/`).
+   server running on a part that has cached fields (mesh a `tests/` fixture
+   first, e.g. `python main.py mesh tests/testpart_42.stp -o testpart_42
+   --subdivide 1.0`).
 
 ## Performance sanity
 

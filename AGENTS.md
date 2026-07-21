@@ -64,8 +64,8 @@ contract edges but drives the claude CLI — run it deliberately, not by default
    CLI uses the registry too.
 8. **Don't commit generated part caches.** `zcache/`, `results/`, `normals.npy`,
    `part.json`, `/testpart_42/`, `/aligator/`, `frontend/dist/` are gitignored.
-   `large_part/` and the two `21007-*` directories are intentionally committed
-   sample workdirs — leave them alone.
+   The repo carries no pre-built sample workdirs — mesh a fixture from `tests/`
+   locally when you need one (see TESTING.md).
 
 ## Environment & commands
 
