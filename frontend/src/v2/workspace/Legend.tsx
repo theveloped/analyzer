@@ -1,7 +1,7 @@
 import { COL } from '../../colorizers/core';
-import type { RGB } from '../../registry/types';
+import type { LegendEntry, RGB } from '../../registry/types';
 import { useStore } from '../../state/store';
-import { flyToFocus } from '../../viewer/controller';
+import { flyToFocus, selectLegendGroup } from '../../viewer/controller';
 import { useActiveAnalysis, useActiveLens, useCheckActive, useDirectionsActive } from './hooks';
 
 const rgbCss = (c: RGB | readonly number[]) =>
@@ -18,6 +18,15 @@ const sub = 'text-[10px] tabular-nums text-zinc-500 dark:text-zinc-400';
 export function Legend() {
   const colorbar = useStore((s) => s.colorbar);
   const legend = useStore((s) => s.legend);
+  const selection = useStore((s) => s.selection);
+  // clicking a row flies to the group AND selects it (fit-selection /
+  // isolate / ghost act on the selection); clicking again deselects
+  const pick = (entry: LegendEntry) => {
+    flyToFocus(entry.focus!);
+    if (!entry.focus?.faces?.length) return;
+    const already = selection?.label === entry.label;
+    selectLegendGroup(entry.label, already ? null : entry.focus.faces);
+  };
   const activeAnalysis = useActiveAnalysis();
   const activeLens = useActiveLens();
   const checkActive = useCheckActive();
@@ -78,9 +87,13 @@ export function Legend() {
             key={i}
             type="button"
             disabled={!entry.focus}
-            onClick={entry.focus ? () => flyToFocus(entry.focus!) : undefined}
-            className="flex items-center gap-2 text-left text-xs/5 text-zinc-950 enabled:hover:text-blue-600 disabled:cursor-default dark:text-white dark:enabled:hover:text-blue-400"
-            title={entry.focus ? 'click to view these faces' : undefined}
+            onClick={entry.focus ? () => pick(entry) : undefined}
+            className={`flex items-center gap-2 text-left text-xs/5 enabled:hover:text-blue-600 disabled:cursor-default dark:enabled:hover:text-blue-400 ${
+              selection?.label === entry.label
+                ? 'font-semibold text-blue-600 dark:text-blue-400'
+                : 'text-zinc-950 dark:text-white'
+            }`}
+            title={entry.focus ? 'click to view + select these faces' : undefined}
           >
             <span
               className="size-2.5 shrink-0 rounded-[3px] ring-1 ring-black/10"

@@ -190,6 +190,7 @@ export class FocusTracker {
   private groups = new Map<string, {
     n: number; nx: number; ny: number; nz: number;
     min: [number, number, number]; max: [number, number, number];
+    faces: number[];
   }>();
 
   constructor(private ctx: ViewCtx) {}
@@ -201,11 +202,13 @@ export class FocusTracker {
         n: 0, nx: 0, ny: 0, nz: 0,
         min: [Infinity, Infinity, Infinity],
         max: [-Infinity, -Infinity, -Infinity],
+        faces: [],
       };
       this.groups.set(key, g);
     }
     const { verts, faces, normals } = this.ctx;
     g.n++;
+    g.faces.push(f);
     g.nx += normals[3 * f];
     g.ny += normals[3 * f + 1];
     g.nz += normals[3 * f + 2];
@@ -234,6 +237,7 @@ export class FocusTracker {
                (g.min[2] + g.max[2]) / 2],
       direction: [g.nx / g.n, g.ny / g.n, g.nz / g.n],
       radius: Math.sqrt(dx * dx + dy * dy + dz * dz) / 2,
+      faces: g.faces,
     };
   }
 
@@ -249,6 +253,7 @@ export class FocusTracker {
     const min = [Infinity, Infinity, Infinity];
     const max = [-Infinity, -Infinity, -Infinity];
     const normal = [0, 0, 0];
+    const faces: number[] = [];
     for (const key of keys) {
       const g = this.groups.get(key);
       if (!g) continue;
@@ -256,6 +261,7 @@ export class FocusTracker {
       normal[0] += g.nx;
       normal[1] += g.ny;
       normal[2] += g.nz;
+      faces.push(...g.faces);
       for (let axis = 0; axis < 3; axis++) {
         min[axis] = Math.min(min[axis], g.min[axis]);
         max[axis] = Math.max(max[axis], g.max[axis]);
@@ -270,6 +276,7 @@ export class FocusTracker {
                  (min[2] + max[2]) / 2],
         direction: [normal[0] / n, normal[1] / n, normal[2] / n],
         radius: Math.sqrt(dx * dx + dy * dy + dz * dz) / 2,
+        faces,
       };
     }
     return out;
@@ -442,16 +449,27 @@ export function heatmapMode(
       let flagged = 0;
       let painted = 0;
       let inBand = 0;
+      // findings for the viewport's "findings only" filter: the highlight
+      // band when one is set, else the threshold-flagged faces
+      const finding = new Uint8Array(ctx.faceCount);
       ctx.paintFaces((f) => {
         const v = vals[f];
         if (!isFinite(v)) return COL.inaccess;
         painted++;
         const isExcl = faceExcluded(f);
-        if (isFinite(thr) && !isExcl && (below ? v <= thr : v >= thr)) flagged++;
+        if (isFinite(thr) && !isExcl && (below ? v <= thr : v >= thr)) {
+          flagged++;
+          if (!bandActive) finding[f] = 1;
+        }
         if (isExcl && maskOn) return COL.ok; // hide known edge artifacts
-        if (bandActive && v >= bLo && v <= bHi) { inBand++; return COL.band; }
+        if (bandActive && v >= bLo && v <= bHi) {
+          inBand++;
+          finding[f] = 1;
+          return COL.band;
+        }
         return colorAt(v);
       });
+      if (bandActive || isFinite(thr)) ctx.setFindings((f) => !!finding[f]);
 
       const colorbar: ColorBar = {
         min: domainMin,
@@ -675,6 +693,7 @@ export const highlightsMode: ViewMode = {
       if (flagged.has(f)) { tracker.add('flagged', f); return COL.tip; }
       tracker.add('ok', f); return COL.ok;
     });
+    ctx.setFindings((f) => flagged.has(f));
     return {
       legend: [
         { color: COL.tip, label: `flagged by last CLI run (${ctx.highlights.length} faces)`, focus: tracker.focus('flagged') },

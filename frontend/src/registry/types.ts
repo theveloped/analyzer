@@ -9,6 +9,9 @@ export interface LegendFocus {
   center: [number, number, number];
   direction: [number, number, number];
   radius: number;
+  /** The group's fine-face indices — clicking the legend row selects them
+   * (fit-selection / isolate / ghost act on the selection). */
+  faces?: number[];
 }
 
 export interface LegendEntry {
@@ -61,8 +64,14 @@ export interface ViewCtx {
   setGraph(key: string, nodes: Float32Array, edges: Uint32Array, radii: Float32Array): void;
   /** Recolor the current graph overlay's nodes (edges interpolate). */
   paintGraph(colorOf: (node: number) => RGB): void;
-  /** Mesh transparency, e.g. to see a graph overlay inside the part. */
+  /** Display HINT: this mode wants a see-through body (e.g. to show a graph
+   * overlay inside the part). Composed with — never overriding — the user's
+   * viewport render style; reset to 1 on every repaint. */
   setMeshOpacity(alpha: number): void;
+  /** Which faces this mode counts as findings (flagged/in-band); drives the
+   * viewport's "findings only" filter. Reset on every repaint; modes with no
+   * findings notion simply never call it. */
+  setFindings(isFinding: ((f: number) => boolean) | null): void;
   /** Re-pose the mesh from indexed per-vertex positions (V*3); null
    * restores the original geometry. `smooth` recomputes lighting normals
    * (skip during playback, recompute on pause). */

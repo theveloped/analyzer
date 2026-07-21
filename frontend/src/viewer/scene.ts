@@ -6,15 +6,50 @@ import * as THREE from 'three';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import type { RGB } from '../registry/types';
 import { CameraRig } from './cameraRig';
-import type { Projection } from './viewportState';
+import {
+  makeBaryAttribute, makeBaseMaterial, makeDepthPrepassMaterial,
+  makeEdgeUniforms, makeLensMaterial, makeLensOccludedMaterial,
+  makeSelectionMaterial, makeXrayMaterial, THEME_COLORS,
+} from './styles';
+import { DEFAULT_VIEWPORT, type Projection, type ViewportState } from './viewportState';
+
+const GHOST_ALPHA = 0.15;
 
 export class Scene3D {
   private scene = new THREE.Scene();
   private rig: CameraRig;
   private renderer: THREE.WebGLRenderer;
+  // ---- composable render layers over ONE set of shared buffer attributes.
+  // `mesh` is the opaque base layer and the raycast/bbox anchor; the lens
+  // layer carries the vertex colours every mode paints; selection renders
+  // the legend-group selection for ghost/isolate; the prepass and occluded
+  // meshes exist for the X-ray two-pass split. All layers share position/
+  // normal attribute INSTANCES, so posing the mesh re-poses every layer.
   private mesh: THREE.Mesh | null = null;
-  private overlay = new THREE.Group();
-  private colorAttr: THREE.BufferAttribute | null = null;
+  private lensMesh: THREE.Mesh | null = null;
+  private lensOccludedMesh: THREE.Mesh | null = null;
+  private depthPrepassMesh: THREE.Mesh | null = null;
+  private selectionMesh: THREE.Mesh | null = null;
+  private edgeLines: THREE.LineSegments | null = null; // BREP boundaries (persistent)
+  private annotations = new THREE.Group(); // measurement etc. (persistent)
+  private overlay = new THREE.Group(); // per-repaint overlays (cleared)
+  private edgeUniforms = makeEdgeUniforms();
+  private baseMaterial = makeBaseMaterial(this.edgeUniforms);
+  private xrayMaterial = makeXrayMaterial();
+  private lensMaterial = makeLensMaterial(this.edgeUniforms);
+  private lensOccludedMaterial = makeLensOccludedMaterial();
+  private selectionMaterial = makeSelectionMaterial(this.edgeUniforms);
+  private depthPrepassMaterial = makeDepthPrepassMaterial();
+  private viewport: ViewportState = DEFAULT_VIEWPORT;
+  private theme: 'light' | 'dark' = 'dark';
+  private lensHint = 1; // legacy setMeshOpacity: "this lens wants a see-through body"
+  private findingMask: Uint8Array | null = null;
+  private findingsVersion = 0;
+  private lensAlphaState = ''; // skip redundant full-buffer alpha rewrites
+  private selectionMask: Uint8Array | null = null;
+  private selectionColorAttr: THREE.BufferAttribute | null = null;
+  private posed = false; // vertex positions currently overridden (bend anim)
+  private colorAttr: THREE.BufferAttribute | null = null; // lens RGBA
   private faceCount = 0;
   private meshFaces: Uint32Array | null = null;
   private originalPositions: Float32Array | null = null;
@@ -69,6 +104,7 @@ export class Scene3D {
     this.viewHelper = this.makeViewHelper();
 
     this.scene.add(this.overlay);
+    this.scene.add(this.annotations);
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.0));
     const dir1 = new THREE.DirectionalLight(0xffffff, 0.55);
     dir1.position.set(-3, 10, -10);
@@ -203,10 +239,9 @@ export class Scene3D {
       positions[3 * i + 2] = verts[3 * v + 2];
     }
 
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color',
-      new THREE.BufferAttribute(new Float32Array(faces.length * 3).fill(0.9), 3));
+    const positionAttr = new THREE.BufferAttribute(positions, 3);
+    const baseGeometry = new THREE.BufferGeometry();
+    baseGeometry.setAttribute('position', positionAttr);
     if (faceNormals && faceNormals.length === faces.length) {
       const normals = new Float32Array(faces.length * 3);
       for (let f = 0; f < this.faceCount; f++) {
@@ -216,21 +251,57 @@ export class Scene3D {
           normals[9 * f + 3 * corner + 2] = faceNormals[3 * f + 2];
         }
       }
-      geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+      baseGeometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
     } else {
-      geometry.computeVertexNormals();
+      baseGeometry.computeVertexNormals();
+    }
+    const normalAttr = baseGeometry.attributes.normal as THREE.BufferAttribute;
+    const baryAttr = makeBaryAttribute(this.faceCount);
+    baseGeometry.setAttribute('aBary', baryAttr);
+
+    this.mesh = new THREE.Mesh(baseGeometry, this.baseMaterial);
+    this.mesh.renderOrder = -1;
+
+    // lens layer: shares position/normal/aBary, adds RGBA vertex colours
+    // (itemSize 4 → three's USE_COLOR_ALPHA; the alpha channel implements
+    // "findings only"). Painted grey/opaque so an unpainted mesh looks like
+    // the classic viewer.
+    const lensColors = new Float32Array(faces.length * 4);
+    for (let i = 0; i < faces.length; i++) {
+      lensColors[4 * i] = 0.9;
+      lensColors[4 * i + 1] = 0.9;
+      lensColors[4 * i + 2] = 0.9;
+      lensColors[4 * i + 3] = 1;
+    }
+    const lensGeometry = new THREE.BufferGeometry();
+    lensGeometry.setAttribute('position', positionAttr);
+    lensGeometry.setAttribute('normal', normalAttr);
+    lensGeometry.setAttribute('aBary', baryAttr);
+    this.colorAttr = new THREE.BufferAttribute(lensColors, 4);
+    lensGeometry.setAttribute('color', this.colorAttr);
+    this.lensMesh = new THREE.Mesh(lensGeometry, this.lensMaterial);
+    this.lensMesh.renderOrder = 1;
+    this.lensOccludedMesh = new THREE.Mesh(lensGeometry, this.lensOccludedMaterial);
+    this.lensOccludedMesh.renderOrder = 0;
+    this.depthPrepassMesh = new THREE.Mesh(baseGeometry, this.depthPrepassMaterial);
+    this.depthPrepassMesh.renderOrder = -2;
+    // shared attributes leave the derived geometries' bounding spheres stale;
+    // only the base mesh (the raycast target) keeps a live one
+    for (const m of [this.lensMesh, this.lensOccludedMesh, this.depthPrepassMesh]) {
+      m.frustumCulled = false;
+      this.scene.add(m);
     }
 
-    const material = new THREE.MeshPhongMaterial({
-      vertexColors: true, specular: 0x111111, shininess: 18,
-    });
-    this.mesh = new THREE.Mesh(geometry, material);
-    this.colorAttr = geometry.attributes.color as THREE.BufferAttribute;
     this.meshFaces = faces;
     this.originalPositions = positions.slice();
-    this.originalNormals = (geometry.attributes.normal.array as Float32Array)
-      .slice();
+    this.originalNormals = (normalAttr.array as Float32Array).slice();
+    this.posed = false;
+    this.selectionMask = null;
+    this.selectionColorAttr = null;
+    this.findingMask = null;
+    this.lensAlphaState = '';
     this.scene.add(this.mesh);
+    this.applyRenderState();
   }
 
   /** Re-pose the mesh from indexed per-vertex positions (V*3), expanded
@@ -239,6 +310,9 @@ export class Scene3D {
    * lighting normals — skip it during playback and recompute on pause. */
   setVertexPositions(verts: Float32Array | null, smooth = true) {
     if (!this.mesh || !this.meshFaces) return;
+    // position/normal attributes are SHARED across every render layer, so
+    // writing the base geometry's arrays re-poses base, lens, prepass and
+    // selection alike
     const geometry = this.mesh.geometry as THREE.BufferGeometry;
     const positionAttr = geometry.attributes.position as THREE.BufferAttribute;
     const positions = positionAttr.array as Float32Array;
@@ -262,6 +336,20 @@ export class Scene3D {
     }
     positionAttr.needsUpdate = true;
     geometry.computeBoundingSphere();
+    // BREP boundary polylines are built from the ORIGINAL vertex positions —
+    // hide them while posed rather than show them floating off the part
+    this.posed = verts !== null;
+    this.updateEdgeVisibility();
+  }
+
+  /** Surface normal at a face, read from the LIVE normal attribute: the
+   * exact BREP normal when unposed, the recomputed geometric normal when
+   * posed (stale during playing animation until pause recomputes). */
+  faceNormalAt(f: number): [number, number, number] {
+    if (!this.mesh) return [0, 0, 1];
+    const normals = (this.mesh.geometry as THREE.BufferGeometry)
+      .attributes.normal.array as Float32Array;
+    return [normals[9 * f], normals[9 * f + 1], normals[9 * f + 2]];
   }
 
   /** Extrude a YZ profile polygon along machine X over the given spans and
@@ -303,7 +391,7 @@ export class Scene3D {
         0, 0, 0, 1,
       );
       if (spec.tag) mesh.userData.tag = spec.tag;
-      mesh.renderOrder = 1;
+      mesh.renderOrder = 2; // after the lens layer in the transparent pass
       this.overlay.add(mesh);
     }
   }
@@ -393,11 +481,15 @@ export class Scene3D {
            depthTest = false) {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    // transparent (even at opacity 1) so the lines sort into the transparent
+    // pass AFTER the lens layer — an opaque depth-less line would be painted
+    // over by the lens overlay
     const material = new THREE.LineBasicMaterial({
       color: new THREE.Color(...color), depthTest, depthWrite: false,
+      transparent: true,
     });
     const lines = new THREE.LineSegments(geometry, material);
-    lines.renderOrder = depthTest ? 0 : 1; // through-lines draw over the mesh
+    lines.renderOrder = depthTest ? 2 : 4; // through-lines draw over the mesh
     this.overlay.add(lines);
   }
 
@@ -501,7 +593,7 @@ export class Scene3D {
       vertexColors: true,
     });
     this.graphPoints = new THREE.Points(pointGeometry, pointMaterial);
-    this.graphPoints.renderOrder = 2;
+    this.graphPoints.renderOrder = 4; // after the lens layer (transparent pass)
 
     const lineGeometry = new THREE.BufferGeometry();
     lineGeometry.setAttribute('position', positionAttr);
@@ -512,7 +604,7 @@ export class Scene3D {
       depthTest: false, depthWrite: false,
     });
     this.graphLines = new THREE.LineSegments(lineGeometry, lineMaterial);
-    this.graphLines.renderOrder = 1;
+    this.graphLines.renderOrder = 3; // after the lens layer (transparent pass)
 
     this.graphColorAttr = colorAttr;
     this.scene.add(this.graphLines);
@@ -542,9 +634,20 @@ export class Scene3D {
     this.graphKey = '';
   }
 
-  /** Set the scene clear color (viewer background), e.g. for light/dark mode. */
-  setBackground(color: string | number) {
+  /** Set the scene clear color (viewer background) and restyle the neutral
+   * layers (base grey, edge colours, X-ray shell) for light/dark mode. */
+  setBackground(color: string | number, theme: 'light' | 'dark' = 'dark') {
     this.scene.background = new THREE.Color(color as THREE.ColorRepresentation);
+    this.theme = theme;
+    const colors = THEME_COLORS[theme];
+    this.baseMaterial.color.setHex(colors.base);
+    this.edgeUniforms.uEdgeColor.value.setHex(colors.triEdge);
+    (this.xrayMaterial.uniforms.uBase.value as THREE.Color).setHex(colors.xrayBase);
+    (this.xrayMaterial.uniforms.uRim.value as THREE.Color).setHex(colors.xrayRim);
+    if (this.edgeLines) {
+      (this.edgeLines.material as THREE.LineBasicMaterial)
+        .color.setHex(colors.brepEdge);
+    }
   }
 
   /** One frame rendered and read back as PNG, plus the camera pose —
@@ -562,35 +665,258 @@ export class Scene3D {
     };
   }
 
-  setMeshOpacity(alpha: number) {
-    if (!this.mesh) return;
-    const material = this.mesh.material as THREE.MeshPhongMaterial;
-    material.transparent = alpha < 1;
-    material.opacity = alpha;
-    material.depthWrite = alpha >= 1;
-    material.needsUpdate = true;
+  /** Legacy `ViewCtx.setMeshOpacity`, demoted to a transient per-paint hint:
+   * "this lens wants a see-through body" (skeleton/graph/flat-pattern
+   * views). Reset to 1 by the controller on every repaint; composed with
+   * the persistent viewport state in applyRenderState. */
+  setLensDisplayHint(alpha: number) {
+    if (this.lensHint === alpha) return;
+    this.lensHint = alpha;
+    this.applyRenderState();
+  }
+
+  /** Persistent viewport state changed (render style, edges, projection,
+   * section, context). Applied directly — no repaint needed, the lens data
+   * is unchanged. */
+  setViewport(vs: ViewportState) {
+    this.viewport = vs;
+    this.setProjection(vs.projection);
+    this.applyRenderState();
+  }
+
+  /** Which faces the active lens counts as findings (null = no notion).
+   * Reset by the controller on every repaint; drives "findings only". */
+  setFindings(isFinding: ((f: number) => boolean) | null) {
+    if (!isFinding) {
+      this.findingMask = null;
+      return;
+    }
+    const mask = new Uint8Array(this.faceCount);
+    for (let f = 0; f < this.faceCount; f++) mask[f] = isFinding(f) ? 1 : 0;
+    this.findingMask = mask;
+    this.findingsVersion++; // a new mask invalidates the written alpha state
+  }
+
+  /** The legend-group selection (fine-face indices), rendered by the
+   * selection layer under ghost/isolate and targeted by fitSelection. */
+  setSelectionFaces(faces: number[] | null) {
+    if (!faces || !this.faceCount) {
+      this.selectionMask = null;
+    } else {
+      const mask = new Uint8Array(this.faceCount);
+      for (const f of faces) if (f < this.faceCount) mask[f] = 1;
+      this.selectionMask = mask;
+    }
+    this.applyRenderState();
+  }
+
+  /** Fit the current selection in view (posed corner positions). */
+  fitSelection() {
+    if (!this.mesh || !this.selectionMask) return;
+    const positions = (this.mesh.geometry as THREE.BufferGeometry)
+      .attributes.position.array as Float32Array;
+    const box = new THREE.Box3();
+    const v = new THREE.Vector3();
+    for (let f = 0; f < this.faceCount; f++) {
+      if (!this.selectionMask[f]) continue;
+      for (let k = 0; k < 3; k++) {
+        const i = 3 * (3 * f + k);
+        box.expandByPoint(v.set(positions[i], positions[i + 1], positions[i + 2]));
+      }
+    }
+    if (box.isEmpty()) return;
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = box.getSize(new THREE.Vector3()).length() / 2;
+    this.rig.fitTo(center, Math.max(radius * 1.2, 1e-3));
+  }
+
+  /** Persistent BREP boundary polylines (segment endpoints, N*2*3 floats);
+   * null removes them. Survives repaints — only a part switch clears it. */
+  setBrepEdges(segments: Float32Array | null) {
+    if (this.edgeLines) {
+      this.scene.remove(this.edgeLines);
+      this.edgeLines.geometry.dispose();
+      (this.edgeLines.material as THREE.Material).dispose();
+      this.edgeLines = null;
+    }
+    if (!segments || !segments.length) return;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(segments, 3));
+    const material = new THREE.LineBasicMaterial({
+      color: new THREE.Color(THEME_COLORS[this.theme].brepEdge),
+    });
+    this.edgeLines = new THREE.LineSegments(geometry, material);
+    this.edgeLines.renderOrder = 2;
+    this.scene.add(this.edgeLines);
+    this.updateEdgeVisibility();
+  }
+
+  private updateEdgeVisibility() {
+    if (this.edgeLines) {
+      this.edgeLines.visible = this.viewport.edgeMode === 'brep' && !this.posed
+        && this.viewport.context !== 'isolate';
+    }
+  }
+
+  /** Rewrite the lens alpha channel for the findings-only filter (skipped
+   * when the desired state already applies — it touches every corner). */
+  private refreshLensAlpha() {
+    if (!this.colorAttr) return;
+    const mask = this.viewport.findingsOnly ? this.findingMask : null;
+    const state = mask ? `mask:${this.findingsVersion}` : 'all';
+    if (state === this.lensAlphaState) return;
+    this.lensAlphaState = state;
+    for (let f = 0; f < this.faceCount; f++) {
+      const alpha = mask && !mask[f] ? 0 : 1;
+      for (let k = 0; k < 3; k++) this.colorAttr.setW(3 * f + k, alpha);
+    }
+    this.colorAttr.needsUpdate = true;
+  }
+
+  /** (Re)build the selection layer's colours: the lens RGB where selected
+   * (so ghost/isolate show the real lens data), discarded elsewhere. */
+  private refreshSelectionColors() {
+    if (!this.mesh || !this.lensMesh || !this.selectionMask || !this.colorAttr) return;
+    if (!this.selectionMesh) {
+      const geometry = new THREE.BufferGeometry();
+      const baseGeometry = this.mesh.geometry as THREE.BufferGeometry;
+      geometry.setAttribute('position', baseGeometry.attributes.position);
+      geometry.setAttribute('normal', baseGeometry.attributes.normal);
+      geometry.setAttribute('aBary', baseGeometry.attributes.aBary);
+      this.selectionColorAttr = new THREE.BufferAttribute(
+        new Float32Array(this.faceCount * 12), 4);
+      geometry.setAttribute('color', this.selectionColorAttr);
+      this.selectionMesh = new THREE.Mesh(geometry, this.selectionMaterial);
+      this.selectionMesh.renderOrder = 0;
+      this.selectionMesh.frustumCulled = false;
+      this.scene.add(this.selectionMesh);
+    }
+    const lens = this.colorAttr;
+    const sel = this.selectionColorAttr!;
+    for (let f = 0; f < this.faceCount; f++) {
+      const selected = this.selectionMask[f];
+      for (let k = 0; k < 3; k++) {
+        const i = 3 * f + k;
+        sel.setXYZW(i, lens.getX(i), lens.getY(i), lens.getZ(i), selected ? 1 : 0);
+      }
+    }
+    sel.needsUpdate = true;
+  }
+
+  /** Compose the persistent viewport state with the transient lens display
+   * hint into concrete material/visibility settings on every layer. Called
+   * after each repaint and on every viewport change. */
+  applyRenderState() {
+    if (!this.mesh || !this.lensMesh || !this.lensOccludedMesh
+      || !this.depthPrepassMesh) return;
+    const vs = this.viewport;
+    const xray = vs.style === 'xray';
+    const facets = vs.style === 'facets';
+    const hasSelection = !!this.selectionMask;
+    const ghost = vs.context === 'ghost' && hasSelection;
+    const isolate = vs.context === 'isolate' && hasSelection;
+
+    // base: opaque phong for shaded/facets, the Fresnel shell for X-ray
+    this.mesh.material = xray ? this.xrayMaterial : this.baseMaterial;
+    this.mesh.visible = !isolate;
+    this.depthPrepassMesh.visible = xray && !isolate;
+
+    // flat shading (facets) on every phong layer; triangle edges are part of
+    // the facets look and additive via the tessellation edge mode
+    for (const m of [this.baseMaterial, this.lensMaterial,
+      this.lensOccludedMaterial, this.selectionMaterial]) {
+      if (m.flatShading !== facets) {
+        m.flatShading = facets;
+        m.needsUpdate = true;
+      }
+    }
+    this.edgeUniforms.uEdges.value =
+      facets || vs.edgeMode === 'tessellation' ? 1 : 0;
+    this.updateEdgeVisibility();
+
+    // base opacity: the lens display hint × ghosting (X-ray is already
+    // see-through and ignores the hint)
+    const baseAlpha = Math.min(this.lensHint, ghost ? GHOST_ALPHA : 1);
+    if (!xray) {
+      this.baseMaterial.transparent = baseAlpha < 1;
+      this.baseMaterial.opacity = baseAlpha;
+      this.baseMaterial.depthWrite = baseAlpha >= 1;
+      this.baseMaterial.needsUpdate = true;
+    }
+
+    // lens overlay: visibility, opacity (three multiplies material opacity
+    // with the per-vertex alpha), findings-only alpha, X-ray occluded pass
+    const lensAlpha = vs.lensOpacity
+      * Math.min(this.lensHint, ghost ? GHOST_ALPHA : 1);
+    this.lensMesh.visible = vs.lensVisible && !isolate && lensAlpha > 0;
+    this.lensMaterial.opacity = lensAlpha;
+    this.lensMaterial.depthWrite = false;
+    this.lensOccludedMesh.visible = xray && this.lensMesh.visible;
+    this.lensOccludedMaterial.opacity = lensAlpha * 0.25;
+    this.refreshLensAlpha();
+
+    // selection layer: only meaningful under ghost/isolate
+    if (ghost || isolate) this.refreshSelectionColors();
+    if (this.selectionMesh) {
+      this.selectionMesh.visible = (ghost || isolate) && hasSelection;
+    }
   }
 
   clearMesh() {
     this.clearOverlays();
     this.clearGraph();
+    this.clearAnnotations();
+    this.setBrepEdges(null);
     this.animator = null;
-    if (this.mesh) {
-      this.scene.remove(this.mesh);
-      this.mesh.geometry.dispose();
-      (this.mesh.material as THREE.Material).dispose();
-      this.mesh = null;
-      this.colorAttr = null;
-      this.faceCount = 0;
-      this.meshFaces = null;
-      this.originalPositions = null;
-      this.originalNormals = null;
+    // dispose every layer geometry; the shared attributes go with them (the
+    // materials are long-lived and reused by the next part)
+    for (const m of [this.mesh, this.lensMesh, this.lensOccludedMesh,
+      this.depthPrepassMesh, this.selectionMesh]) {
+      if (!m) continue;
+      this.scene.remove(m);
+    }
+    this.mesh?.geometry.dispose();
+    this.lensMesh?.geometry.dispose(); // shared by lensOccludedMesh
+    this.selectionMesh?.geometry.dispose();
+    this.mesh = null;
+    this.lensMesh = null;
+    this.lensOccludedMesh = null;
+    this.depthPrepassMesh = null;
+    this.selectionMesh = null;
+    this.selectionColorAttr = null;
+    this.selectionMask = null;
+    this.findingMask = null;
+    this.lensAlphaState = '';
+    this.posed = false;
+    this.colorAttr = null;
+    this.faceCount = 0;
+    this.meshFaces = null;
+    this.originalPositions = null;
+    this.originalNormals = null;
+  }
+
+  /** Remove everything in the persistent annotation layer (measurement
+   * markers). Called on part switch and by the measurement session. */
+  clearAnnotations() {
+    for (const child of [...this.annotations.children]) {
+      this.annotations.remove(child);
+      const obj = child as THREE.Mesh | THREE.Line | THREE.Sprite;
+      if ('geometry' in obj) (obj.geometry as THREE.BufferGeometry)?.dispose();
+      const material = (obj as { material?: THREE.Material }).material;
+      if (material) {
+        const map = (material as THREE.SpriteMaterial).map;
+        map?.dispose();
+        material.dispose();
+      }
     }
   }
 
   dispose() {
     this.disposed = true;
     this.clearMesh();
+    for (const m of [this.baseMaterial, this.xrayMaterial, this.lensMaterial,
+      this.lensOccludedMaterial, this.selectionMaterial,
+      this.depthPrepassMaterial]) m.dispose();
     this.viewHelper.dispose();
     window.removeEventListener('resize', this.onResize);
     this.renderer.dispose();

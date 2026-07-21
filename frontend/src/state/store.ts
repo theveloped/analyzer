@@ -17,6 +17,9 @@ export interface AppState {
   viewerParams: Record<string, Record<string, any>>;
 
   legend: LegendEntry[];
+  /** Legend-group selection (fine-face indices) — what fit-selection,
+   * isolate and ghost operate on. Survives repaints and lens switches. */
+  selection: { label: string; faces: number[] } | null;
   /** Continuous colour scale for the active heatmap (null for other views). */
   colorbar: ColorBar | null;
   stats: string;
@@ -48,6 +51,7 @@ export const useStore = create<AppState>()((set) => ({
   viewerParams: {},
 
   legend: [],
+  selection: null,
   colorbar: null,
   stats: '',
   pick: 'click a face to inspect',

@@ -12,6 +12,8 @@ import { clearFieldCache, fetchBin, fetchField } from '../fields/fields';
 import { getPlugin } from '../registry';
 import type { LegendFocus, ViewCtx } from '../registry/types';
 import { useStore } from '../state/store';
+import { edgeDescriptors } from '../splits/splits';
+import { nakedEdgeSegments } from './brepEdges';
 import { setColorBackground, VIEWER_BG, type ViewerBackground } from './colormaps';
 import { Scene3D } from './scene';
 import { DEFAULT_VIEWPORT, type ViewportState } from './viewportState';
@@ -20,6 +22,8 @@ let scene: Scene3D | null = null;
 // how the scene renders/sections, independent of the active lens. The v1 app
 // never changes it (classic look); the v2 shell pushes its store slice here.
 let viewportState: ViewportState = DEFAULT_VIEWPORT;
+// which (part, manifest) the scene's BREP boundary polylines were built for
+let brepEdgesKey = '';
 let verts: Float32Array | null = null;
 let faces: Uint32Array | null = null;
 let normals: Float32Array | null = null;
@@ -40,7 +44,7 @@ async function loadOverrides(manifest: Manifest) {
 
 export function attach(container: HTMLElement) {
   scene = new Scene3D(container);
-  scene.setProjection(viewportState.projection);
+  scene.setViewport(viewportState);
   scene.onPick = (face, point) => void inspect(face, point);
   // arrow clicks (directions view): stash the selected arrow + screen position
   // so the tooltip can show its provenance / delete control, and highlight the
@@ -108,7 +112,8 @@ export function captureViewer() {
  * its layers directly. */
 export function setViewportState(vs: ViewportState) {
   viewportState = vs;
-  scene?.setProjection(vs.projection);
+  scene?.setViewport(vs);
+  void ensureBrepEdges();
 }
 
 /** Fit the whole part in view, keeping the current view direction. */
@@ -116,11 +121,49 @@ export function fitPart() {
   scene?.fit();
 }
 
+/** Fit the current legend-group selection in view. */
+export function fitSelection() {
+  scene?.fitSelection();
+}
+
+/** Select a legend entry's face group (fit-selection/isolate/ghost act on
+ * it); null clears. Toggled from the v2 legend. */
+export function selectLegendGroup(label: string, faces: number[] | null) {
+  const selection = faces && faces.length ? { label, faces } : null;
+  useStore.getState().set({ selection });
+  scene?.setSelectionFaces(selection ? selection.faces : null);
+}
+
+/** Fetch + install the BREP boundary polylines when the edge mode wants
+ * them: the served interior segments (subface-aware) plus the naked mesh
+ * boundary edges the backend omits. STL parts have neither — no-op. */
+async function ensureBrepEdges() {
+  const { manifest, partId, manifestVersion } = useStore.getState();
+  if (!scene || !manifest || !partId || !verts || !faces) return;
+  if (viewportState.edgeMode !== 'brep') return;
+  const key = `${partId}:${manifestVersion}`;
+  if (key === brepEdgesKey) return;
+  const descriptors = edgeDescriptors(manifest);
+  if (!descriptors) return;
+  brepEdgesKey = key;
+  try {
+    const interior = await fetchField(descriptors.edges) as Float32Array;
+    const naked = nakedEdgeSegments(verts, faces);
+    const segments = new Float32Array(interior.length + naked.length);
+    segments.set(interior);
+    segments.set(naked, interior.length);
+    scene?.setBrepEdges(segments);
+  } catch (err) {
+    brepEdgesKey = '';
+    useStore.getState().set({ error: String(err) });
+  }
+}
+
 /** Switch the viewer between light and dark: repaints the background and the
  * background-matched colour-map variants (batlowW/K, vik/berlin). */
 export function setViewerTheme(bg: ViewerBackground) {
   setColorBackground(bg);
-  scene?.setBackground(VIEWER_BG[bg]);
+  scene?.setBackground(VIEWER_BG[bg], bg);
   schedulePaint(true);
 }
 
@@ -143,9 +186,10 @@ export async function selectPart(partId: string) {
   faces = null;
   normals = null;
   lastPaintKey = '';
+  brepEdgesKey = '';
   scene?.clearMesh();
   store.set({
-    partId, manifest: null, meshReady: false, highlights: null,
+    partId, manifest: null, meshReady: false, highlights: null, selection: null,
     legend: [], stats: 'loading…', pick: 'click a face to inspect', error: null,
   });
 
@@ -257,7 +301,8 @@ function buildCtx(): ViewCtx | null {
       theScene.setGraph(key, nodes, edges, radii);
     },
     paintGraph: (colorOf) => theScene.paintGraph(colorOf),
-    setMeshOpacity: (alpha) => theScene.setMeshOpacity(alpha),
+    setMeshOpacity: (alpha) => theScene.setLensDisplayHint(alpha),
+    setFindings: (isFinding) => theScene.setFindings(isFinding),
     setVertexPositions: (positions, smooth) =>
       theScene.setVertexPositions(positions, smooth),
     addOverlayMesh: (spec) => theScene.addOverlayMesh(spec),
@@ -295,7 +340,8 @@ async function repaint() {
   const mode = plugin?.modes.find((m) => m.id === store.modeId) ?? plugin?.modes[0];
   if (!plugin || !mode) return;
   graphTouched = false;
-  scene?.setMeshOpacity(1);
+  scene?.setLensDisplayHint(1);
+  scene?.setFindings(null);
   // animation state never outlives a paint: modes re-register in paint()
   scene?.setAnimator(null);
   scene?.setVertexPositions(null);
@@ -315,6 +361,10 @@ async function repaint() {
   } finally {
     // modes that showed a graph re-key it every paint; anyone else clears it
     if (!graphTouched) scene?.clearGraph();
+    // re-compose the persistent viewport state over the fresh paint (findings
+    // alpha, selection colours, lens display hint)
+    scene?.applyRenderState();
+    void ensureBrepEdges();
   }
 }
 

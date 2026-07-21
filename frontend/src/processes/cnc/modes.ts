@@ -74,6 +74,13 @@ export const unifiedMode: ViewMode = {
       if (holderBlocked) { nHold++; tracker.add('holder', f); return COL.holder; }
       nOk++; tracker.add('ok', f); return COL.ok;
     });
+    // findings = everything not producible in this setup (blocked walls/tips,
+    // holder collisions, undercuts) — the faces an engineer must act on
+    const problem = new Set<number>();
+    for (const key of ['tip', 'holder', 'inaccess']) {
+      for (const f of tracker.focus(key)?.faces ?? []) problem.add(f);
+    }
+    ctx.setFindings((f) => problem.has(f));
     const legend = [
       { color: COL.ok, label: 'reachable (tool bottom)', focus: tracker.focus('ok') },
       { color: COL.tip, label: 'blocked — tool cannot reach', focus: tracker.focus('tip') },
@@ -108,6 +115,7 @@ export const accessMode: ViewMode = {
       if (access[f]) { n++; tracker.add('ok', f); return COL.ok; }
       tracker.add('inaccess', f); return COL.inaccess;
     });
+    ctx.setFindings((f) => !access[f]);
     return {
       legend: [
         { color: COL.ok, label: 'accessible (not an undercut)', focus: tracker.focus('ok') },
