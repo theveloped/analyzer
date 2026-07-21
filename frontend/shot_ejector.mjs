@@ -3,7 +3,7 @@
 // server runs on :8000 and the part has a cached ejection_sticking result.
 import { chromium } from 'playwright-core';
 
-const part = process.env.PART ?? '21007-010-rev1-240103_assy-wireless_top';
+const part = process.env.PART ?? 'testpart_42';
 const browser = await chromium.launch({
   executablePath: process.env.CHROMIUM_PATH,
   args: ['--enable-unsafe-swiftshader'],
