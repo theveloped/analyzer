@@ -976,6 +976,8 @@ const thicknessMode = heatmapMode(
     thresholdParam: 'minThickness',
     minParam: 'thicknessMin',
     scaleParam: 'thicknessScale',
+    bandLoParam: 'thicknessBandLo',
+    bandHiParam: 'thicknessBandHi',
     okLabel: 'thick — ok',
     exclusion: (ctx) => edgeExclusion(ctx, 'thickness', 'thickness'),
     maskParam: 'maskExplained',
@@ -989,6 +991,8 @@ const gapsMode = heatmapMode(
     thresholdParam: 'minGap',
     minParam: 'gapMin',
     scaleParam: 'gapScale',
+    bandLoParam: 'gapBandLo',
+    bandHiParam: 'gapBandHi',
     okLabel: 'clearance ok (incl. no opposing wall in range)',
     exclusion: (ctx) => edgeExclusion(ctx, 'gaps', 'gap'),
     maskParam: 'maskExplained',
@@ -1002,6 +1006,8 @@ const rayThicknessMode = heatmapMode(
     thresholdParam: 'minRayThickness',
     minParam: 'rayThicknessMin',
     scaleParam: 'rayThicknessScale',
+    bandLoParam: 'rayThicknessBandLo',
+    bandHiParam: 'rayThicknessBandHi',
     okLabel: 'thick — ok',
   });
 
@@ -1013,6 +1019,8 @@ const rayGapMode = heatmapMode(
     thresholdParam: 'minRayGap',
     minParam: 'rayGapMin',
     scaleParam: 'rayGapScale',
+    bandLoParam: 'rayGapBandLo',
+    bandHiParam: 'rayGapBandHi',
     okLabel: 'clearance ok (incl. no opposing wall in range)',
   });
 
@@ -1040,6 +1048,8 @@ const thinSpanMode = heatmapMode(
     thresholdParam: 'maxSpanRatio',
     minParam: 'spanMin',
     scaleParam: 'spanScale',
+    bandLoParam: 'spanBandLo',
+    bandHiParam: 'spanBandHi',
     units: '×',
     okLabel: 'well supported — ok',
   });

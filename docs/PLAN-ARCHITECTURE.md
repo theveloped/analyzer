@@ -125,12 +125,14 @@ already on disk — reverting is free) | `recomputes` (+ cost tier). Never enque
   gaps, ray variants, thin span — `v2/fieldLenses.ts`) are pinned to the ribbon and clicking
   one runs the backing analysis with plain defaults when nothing current is cached; the
   paint is the un-thresholded heatmap over the real data range (edge artifacts visible).
-  All interpretation lives in the side panel (`FieldLensRail`): a clipping band (min–max)
-  in a chosen unit (mm / % of reference) against a reference (origin, mean, p5/p50/p95)
-  that recolors instantly by driving the heatmap's domain params, a re-run button that only
-  arms when a compute knob actually changed, and **"Save band as check"** — the moment
-  exploration becomes a pinned policy on the plan. Lens = data, band = interpretation,
-  check = saved interpretation.
+  All interpretation lives in the side panel (`FieldLensRail`): a **highlight band** —
+  faces whose value falls inside it paint COL.band magenta ON TOP of the unchanged
+  heatmap — defined by two open-ended bounds, each a number in its own unit (field units,
+  % of mean, % of median, or percentile), so "≥ 5 mm", "the bottom p5" (to 5 percentile)
+  and "70–130 % of the mean" are each one or two number+dropdown gestures. Band edits
+  recolor instantly; the re-run button only arms when a compute knob actually changed;
+  **"Save band as check"** is the moment exploration becomes a pinned policy on the plan.
+  Lens = data, band = interpretation, check = saved interpretation.
 - **Check → lens**: selecting a check activates its preferred lens with scope bound into
   `viewerParams`; selecting a finding also flies the camera. The engineer can switch to any
   lens at any time.

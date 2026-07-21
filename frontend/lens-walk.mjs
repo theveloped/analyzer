@@ -35,8 +35,8 @@ await page.locator('button[title^="Thin span"]').click();
 await page.waitForTimeout(1500);
 console.log('auto-run observed:', /computing…/.test(await railText()));
 await page.waitForFunction(
-  () => /Clipping band/.test(document.body.textContent ?? '')
-    && /field spans/.test(document.body.textContent ?? ''),
+  () => /Highlight band/.test(document.body.textContent ?? '')
+    && /Field spans/i.test(document.body.textContent ?? ''),
   null, { timeout: 480000 });
 await page.waitForTimeout(1500);
 console.log('thin span rail:', (await railText()).slice(0, 260));
@@ -46,17 +46,25 @@ await page.screenshot({ path: shot('lens_thinspan_plain.png') });
 const rerun = page.getByRole('button', { name: /Re-run analysis/ });
 console.log('re-run disabled:', await rerun.isDisabled());
 
-// 4. band edit: clip the upper bound to 150 % of the median (p50 reference)
-await page.locator('select[aria-label="reference"]').selectOption('p50');
-await page.locator('select[aria-label="unit of measure"]').selectOption('%');
-await page.waitForTimeout(300);
-await page.locator('input[aria-label="band max"]').fill('150');
-await page.locator('input[aria-label="band min"]').fill('0');
+// 4a. "the bottom p5" in one gesture: to = 5 percentile
+await page.locator('select[aria-label="band to unit"]').selectOption('pct');
+await page.locator('input[aria-label="band to"]').fill('5');
 await page.waitForTimeout(1500); // instant recolor, no job
-console.log('band applied:', (await railText()).match(/= [\d.]+ – [\d.]+ ×/)?.[0]);
-console.log('no job during band edit:',
+console.log('bottom p5:', (await railText()).match(/highlighting [^—]+/)?.[0]);
+const legendBand = await page.getByText(/in band/).count();
+console.log('band legend entry:', legendBand > 0);
+await page.screenshot({ path: shot('lens_band_bottom_p5.png') });
+
+// 4b. "70–130 % of the mean"
+await page.locator('select[aria-label="band from unit"]').selectOption('mean');
+await page.locator('input[aria-label="band from"]').fill('70');
+await page.locator('select[aria-label="band to unit"]').selectOption('mean');
+await page.locator('input[aria-label="band to"]').fill('130');
+await page.waitForTimeout(1500);
+console.log('70-130% of mean:', (await railText()).match(/highlighting [^—]+/)?.[0]);
+console.log('no job during band edits:',
   !/computing…|running…/.test(await page.locator('body').textContent() ?? ''));
-await page.screenshot({ path: shot('lens_thinspan_band.png') });
+await page.screenshot({ path: shot('lens_band_mean.png') });
 
 // 5. save the band as a check (Phase-1 seeding may already own the id)
 await page.getByRole('button',

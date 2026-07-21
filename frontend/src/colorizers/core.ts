@@ -22,6 +22,9 @@ export const COL = {
   slope: [0.38, 0.68, 0.66] as RGB,
   overhang: [0.72, 0.42, 0.55] as RGB,
   chamfer: [0.85, 0.72, 0.32] as RGB,
+  /** Highlight-band selection over a heatmap — magenta, the one hue the
+   * batlow/viridis sequential ramps never produce. */
+  band: [1.0, 0.15, 0.65] as RGB,
 };
 
 // --- bitmask helpers for membership/assignment fields ---
@@ -343,6 +346,11 @@ export interface HeatmapOpts {
   /** ctx.params key of a boolean: when true, edge-explained faces are hidden. */
   maskParam?: string;
   maskedLabel?: string;
+  /** ctx.params keys of the HIGHLIGHT band bounds: the heatmap stays
+   * unchanged, faces whose value falls inside [lo, hi] (a missing bound is
+   * open-ended) are painted COL.band on top of it. */
+  bandLoParam?: string;
+  bandHiParam?: string;
   // retired but kept for call-site compatibility (no longer used):
   autoFloor?: number;
   okLabel?: string;
@@ -423,9 +431,17 @@ export function heatmapMode(
         gradient = sequentialGradientCss();
       }
 
+      // highlight band: selection painted OVER the unchanged heatmap
+      const bandLo = parse(ctx.params[opts.bandLoParam ?? '']);
+      const bandHi = parse(ctx.params[opts.bandHiParam ?? '']);
+      const bandActive = isFinite(bandLo) || isFinite(bandHi);
+      const bLo = isFinite(bandLo) ? bandLo : -Infinity;
+      const bHi = isFinite(bandHi) ? bandHi : Infinity;
+
       const below = opts.flagDirection !== 'above';
       let flagged = 0;
       let painted = 0;
+      let inBand = 0;
       ctx.paintFaces((f) => {
         const v = vals[f];
         if (!isFinite(v)) return COL.inaccess;
@@ -433,6 +449,7 @@ export function heatmapMode(
         const isExcl = faceExcluded(f);
         if (isFinite(thr) && !isExcl && (below ? v <= thr : v >= thr)) flagged++;
         if (isExcl && maskOn) return COL.ok; // hide known edge artifacts
+        if (bandActive && v >= bLo && v <= bHi) { inBand++; return COL.band; }
         return colorAt(v);
       });
 
@@ -444,16 +461,29 @@ export function heatmapMode(
         gradient,
         threshold: isFinite(thr) ? thr : undefined,
       };
+      const bandTxt = bandActive
+        ? (isFinite(bandLo) && isFinite(bandHi)
+          ? `${bandLo.toFixed(2)} – ${bandHi.toFixed(2)} ${units}`
+          : isFinite(bandLo) ? `≥ ${bandLo.toFixed(2)} ${units}`
+          : `≤ ${bandHi.toFixed(2)} ${units}`)
+        : '';
       // minimal discrete entries for the original viewer + as a fallback
       const legend: LegendEntry[] = [
+        ...(bandActive
+          ? [{ color: COL.band, label: `in band ${bandTxt}` }] : []),
         { color: colorAt(domainMin), label: `${domainMin.toFixed(2)} ${units}` },
         { color: colorAt(domainMax), label: `${domainMax.toFixed(2)} ${units}` },
         { color: COL.inaccess, label: opts.maskedLabel ?? 'no data' },
       ];
       const rangeTxt = `range ${domainMin.toFixed(2)} – ${domainMax.toFixed(2)} ${units}`;
-      const stats = isFinite(thr)
-        ? `${flagged} of ${painted} faces ${below ? 'below' : 'above'} ${thr} ${units} · ${rangeTxt}`
-        : rangeTxt;
+      const parts = [
+        bandActive ? `${inBand} of ${painted} faces in band ${bandTxt}` : '',
+        isFinite(thr)
+          ? `${flagged} of ${painted} faces ${below ? 'below' : 'above'} ${thr} ${units}`
+          : '',
+        rangeTxt,
+      ].filter(Boolean);
+      const stats = parts.join(' · ');
       return { legend, stats, colorbar };
     },
   };

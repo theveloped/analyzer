@@ -85,6 +85,8 @@ export function selectLens(l: Lens) {
     store.setViewerParam(field.process, field.thresholdParam, '');
     store.setViewerParam(field.process, field.minParam, '');
     store.setViewerParam(field.process, field.scaleParam, '');
+    store.setViewerParam(field.process, field.bandLoParam, '');
+    store.setViewerParam(field.process, field.bandHiParam, '');
     if (field.maskParam) store.setViewerParam(field.process, field.maskParam, false);
   }
   store.set({ processId: l.processId, modeId: l.modeId });

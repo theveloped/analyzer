@@ -22,6 +22,10 @@ export interface FieldLensDef {
   thresholdParam: string;
   minParam: string;
   scaleParam: string;
+  /** Viewer params of the HIGHLIGHT band (selection over the unchanged
+   * heatmap; a blank bound is open-ended). */
+  bandLoParam: string;
+  bandHiParam: string;
   /** Paint flag hiding edge-explained faces — forced off for the plain view. */
   maskParam?: string;
   flagDirection: 'below' | 'above';
@@ -38,7 +42,8 @@ export const FIELD_LENSES: Record<string, FieldLensDef> = {
     process: 'injection_molding', analysis: 'thickness', modeId: 'thickness',
     fieldName: 'thickness',
     thresholdParam: 'minThickness', minParam: 'thicknessMin',
-    scaleParam: 'thicknessScale', maskParam: 'maskExplained',
+    scaleParam: 'thicknessScale',
+    bandLoParam: 'thicknessBandLo', bandHiParam: 'thicknessBandHi', maskParam: 'maskExplained',
     flagDirection: 'below', unit: 'mm',
     computeFields: A.thickness?.advancedFields ?? [],
   },
@@ -47,7 +52,8 @@ export const FIELD_LENSES: Record<string, FieldLensDef> = {
     process: 'injection_molding', analysis: 'gaps', modeId: 'gaps',
     fieldName: 'gap',
     thresholdParam: 'minGap', minParam: 'gapMin',
-    scaleParam: 'gapScale', maskParam: 'maskExplained',
+    scaleParam: 'gapScale',
+    bandLoParam: 'gapBandLo', bandHiParam: 'gapBandHi', maskParam: 'maskExplained',
     flagDirection: 'below', unit: 'mm',
     computeFields: A.gaps?.advancedFields ?? [],
   },
@@ -57,6 +63,7 @@ export const FIELD_LENSES: Record<string, FieldLensDef> = {
     fieldName: 'ray_thickness',
     thresholdParam: 'minRayThickness', minParam: 'rayThicknessMin',
     scaleParam: 'rayThicknessScale',
+    bandLoParam: 'rayThicknessBandLo', bandHiParam: 'rayThicknessBandHi',
     flagDirection: 'below', unit: 'mm',
     computeFields: A.rayThickness?.advancedFields ?? [],
   },
@@ -66,6 +73,7 @@ export const FIELD_LENSES: Record<string, FieldLensDef> = {
     fieldName: 'ray_gap',
     thresholdParam: 'minRayGap', minParam: 'rayGapMin',
     scaleParam: 'rayGapScale',
+    bandLoParam: 'rayGapBandLo', bandHiParam: 'rayGapBandHi',
     flagDirection: 'below', unit: 'mm',
     computeFields: A.rayGap?.advancedFields ?? [],
   },
@@ -75,6 +83,7 @@ export const FIELD_LENSES: Record<string, FieldLensDef> = {
     fieldName: 'span_ratio',
     thresholdParam: 'maxSpanRatio', minParam: 'spanMin',
     scaleParam: 'spanScale',
+    bandLoParam: 'spanBandLo', bandHiParam: 'spanBandHi',
     flagDirection: 'above', unit: '×',
     computeFields: [],
   },
@@ -110,6 +119,8 @@ export function fieldDescriptor(
 export interface FieldStats {
   min: number; max: number; mean: number;
   p5: number; p50: number; p95: number;
+  /** 201 quantile samples (0.5 % steps) — percentile bounds read off it. */
+  quantiles: number[];
 }
 
 const statsCache = new Map<string, Promise<FieldStats>>();
@@ -128,32 +139,45 @@ export function fieldStats(desc: FieldDescriptor): Promise<FieldStats> {
       return {
         min: finite[0] ?? 0, max: finite[n - 1] ?? 0, mean,
         p5: at(0.05), p50: at(0.5), p95: at(0.95),
+        quantiles: Array.from({ length: 201 }, (_, i) => at(i / 200)),
       };
     })());
   }
   return statsCache.get(desc.url)!;
 }
 
-export type BandReference = 'origin' | 'mean' | 'p5' | 'p50' | 'p95';
-export type BandUnit = 'mm' | '%';
+/** One band bound = a number in a unit. A blank value is an open bound, so
+ * every target expression is one or two number-and-dropdown rows:
+ * "≥ 5 mm" → from 5 mm · "the bottom p5" → to 5 percentile ·
+ * "0–70 % of the median" → to 70 % of median ·
+ * "70–130 % of the mean" → from 70, to 130, % of mean. */
+export type BoundUnit = 'abs' | 'mean' | 'p50' | 'pct';
 
-export const BAND_REFERENCES: { id: BandReference; label: string }[] = [
-  { id: 'origin', label: 'origin (absolute)' },
-  { id: 'mean', label: 'mean of the field' },
-  { id: 'p5', label: 'p5' },
-  { id: 'p50', label: 'median (p50)' },
-  { id: 'p95', label: 'p95' },
-];
-
-export function referenceValue(ref: BandReference, stats: FieldStats): number {
-  return ref === 'origin' ? 0 : stats[ref];
+export interface BandBound {
+  /** Raw input; '' = open bound. */
+  value: string;
+  unit: BoundUnit;
 }
 
-/** A band bound resolved to an absolute field value: mm offsets add to the
- * reference; % scales it (so "80–120 % of mean" reads literally). */
+export const BOUND_UNITS = (fieldUnit: string):
+{ id: BoundUnit; label: string }[] => [
+  { id: 'abs', label: fieldUnit },
+  { id: 'mean', label: '% of mean' },
+  { id: 'p50', label: '% of median' },
+  { id: 'pct', label: 'percentile' },
+];
+
+/** A bound resolved to an absolute field value (null = open). */
 export function resolveBound(
-  value: number, unit: BandUnit, ref: BandReference, stats: FieldStats,
-): number {
-  const base = referenceValue(ref, stats);
-  return unit === '%' ? base * (value / 100) : base + value;
+  bound: BandBound, stats: FieldStats,
+): number | null {
+  if (bound.value.trim() === '') return null;
+  const v = parseFloat(bound.value);
+  if (!isFinite(v)) return null;
+  if (bound.unit === 'abs') return v;
+  if (bound.unit === 'pct') {
+    const q = Math.min(100, Math.max(0, v));
+    return stats.quantiles[Math.round(q * 2)];
+  }
+  return stats[bound.unit] * (v / 100);
 }
