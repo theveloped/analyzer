@@ -129,6 +129,20 @@ export async function opReach(
 const pct = (part: number, whole: number) =>
   whole > 0 ? `${((100 * part) / whole).toFixed(1)}%` : '—';
 
+/** Latest non-stale cnc/features feature_id field (0 = not a feature) —
+ * the declarative "this operation produces these features" scoping. */
+export async function fetchFeatureMask(
+  ctx: ReachCtx,
+): Promise<Uint32Array | null> {
+  const list = ctx.manifest.results.filter(
+    (r) => r.process === 'cnc' && r.analysis === 'features' && !r.stale);
+  const result = list[list.length - 1];
+  if (!result) return null;
+  const desc = ctx.manifest.fields.find(
+    (f) => f.id === `results.cnc.features.${result.hash}.feature_id`);
+  return desc ? await ctx.getField(desc) as Uint32Array : null;
+}
+
 export const reachStudyMode: ViewMode = {
   id: 'reach_study',
   label: 'Reach study (direction × tool)',
@@ -176,24 +190,33 @@ export const reachOpMode: ViewMode = {
     }
     const tilt = parseFloat(ctx.params.opTilt) || 0;
     const { reach, visible, members } = await opReach(ctx, study, primary, tilt);
+    // features scoping: only the faces this operation PRODUCES are judged;
+    // the rest of the part renders as neutral context
+    const featureMask = ctx.params.reachFeatureMask
+      ? await fetchFeatureMask(ctx) : null;
     const areas = faceAreas(ctx);
     const tracker = new FocusTracker(ctx);
     let ok = 0, blocked = 0, blockedArea = 0;
     ctx.paintFaces((f) => {
+      if (featureMask && !featureMask[f]) return COL.below;
       if (reach[f]) { ok++; tracker.add('ok', f); return COL.ok; }
       if (!visible[f]) { tracker.add('inaccess', f); return COL.inaccess; }
       blocked++; blockedArea += areas[f];
       tracker.add('blocked', f); return COL.tip;
     });
+    const scopeTxt = featureMask ? 'machined-feature faces' : 'faces';
     return {
       legend: [
+        ...(featureMask
+          ? [{ color: COL.below, label: 'not a machined feature (context)' }]
+          : []),
         { color: COL.ok, label: 'reachable in this operation', focus: tracker.focus('ok') },
         { color: COL.tip, label: 'visible but no tool reaches', focus: tracker.focus('blocked') },
         { color: COL.inaccess, label: 'undercut for the whole cone', focus: tracker.focus('inaccess') },
       ],
       stats: `direction ${primary} ±${tilt}° (${members.length} sampled) · `
-        + `${study.tools.length} tools · ${ok} reachable `
-        + `(${pct(ok, ctx.faceCount)}) · blocked ${blocked} (${blockedArea.toFixed(0)} mm²)`,
+        + `${study.tools.length} tools · ${ok} ${scopeTxt} reachable `
+        + `· blocked ${blocked} (${blockedArea.toFixed(0)} mm²)`,
     };
   },
 };

@@ -1,6 +1,6 @@
 import type {
   DispositionEvent, Job, Manifest, Part, Plan, PlanSection, ProcessInfo,
-  Report, ReportSummary,
+  Report, ReportSummary, RouteSummary,
 } from './types';
 
 async function getJSON<T>(url: string): Promise<T> {
@@ -178,6 +178,25 @@ export async function postDisposition(
   if (!res.ok) {
     const detail = (await res.json().catch(() => null))?.detail;
     throw new Error(detail ?? `saving disposition failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export const fetchRoutes = () =>
+  getJSON<RouteSummary[]>('/api/catalogue/routes');
+
+/** Instantiate a catalogue route template into the part's plan. */
+export async function postPlanRoute(
+  partId: string, name: string,
+): Promise<PlanSection> {
+  const res = await fetch(`${planUrl(partId)}/route`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `route instantiation failed: ${res.status}`);
   }
   return res.json();
 }

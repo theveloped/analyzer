@@ -1,9 +1,16 @@
 import clsx from 'clsx';
-import { CircleDashed, Compass, FileUp, Plus, Route } from 'lucide-react';
-import { useState } from 'react';
-import type { PlanCheck, PlanCheckStatus, PlanOperation } from '../../api/types';
+import {
+  CircleDashed, Compass, FileUp, Hammer, Plus, Route, Zap,
+} from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { postPlanRoute } from '../../api/client';
+import { fetchRoutes } from '../../api/client';
+import type {
+  PlanCheck, PlanCheckStatus, PlanOperation, RouteSummary,
+} from '../../api/types';
 import { Button } from '../../catalyst/button';
 import { Select } from '../../catalyst/select';
+import { refreshManifest } from '../../viewer/controller';
 import { useStore } from '../../state/store';
 import type { Analysis } from '../analyses';
 import { describeCheck, useCheckEvaluation } from '../checks/catalog';
@@ -96,8 +103,12 @@ function PlanCheckCard({ check, status, isActive }: {
   );
 }
 
-/** Operation header: the decision surface (direction + tilt); edits stage an
- * impact preview before anything is applied. */
+const KIND_ICON: Record<string, typeof Route> = {
+  laser: Zap, press_brake: Hammer, cnc_setup: Compass,
+};
+
+/** Operation header: the decision surface (direction + tilt for CNC,
+ * machine label for the rest); edits stage an impact preview first. */
 function OperationCard({ op, stage }: {
   op: PlanOperation; stage: (edit: PendingEdit) => void;
 }) {
@@ -106,6 +117,7 @@ function OperationCard({ op, stage }: {
   const directions = manifest?.directions ?? [];
   const sources = manifest?.direction_sources ?? [];
   const current = Number(op.config?.direction_index);
+  const KindIcon = KIND_ICON[op.kind ?? ''] ?? Route;
 
   const patchOps = (config: Record<string, unknown>) =>
     (section?.plan.operations ?? []).map((o) =>
@@ -114,9 +126,16 @@ function OperationCard({ op, stage }: {
   return (
     <div className="mb-1 rounded-lg bg-zinc-950/2.5 p-2 dark:bg-white/5">
       <div className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
-        <Route className="size-3" /> {op.label ?? op.id}
-        <span className="ml-auto normal-case tracking-normal">±{op.config?.tilt ?? 90}°</span>
+        <KindIcon className="size-3" /> {op.label ?? op.id}
+        <span className="ml-auto normal-case tracking-normal">
+          {op.kind === 'cnc_setup' ? `±${op.config?.tilt ?? 90}°` : ''}
+        </span>
       </div>
+      {op.machine && (
+        <div className="mt-0.5 text-[11px]/4 text-zinc-500 dark:text-zinc-400">
+          {op.machine.template} · {op.machine.sha.slice(0, 8)}
+        </div>
+      )}
       {op.kind === 'cnc_setup' && directions.length > 0 && (
         <div className="mt-1.5">
           <Select
@@ -158,6 +177,22 @@ export function PipelineRail() {
   void manifestVersion;
   const [pending, setPending] = useState<PendingEdit | null>(null);
   const [publishing, setPublishing] = useState<string | null>(null);
+  const [routes, setRoutes] = useState<RouteSummary[]>([]);
+  const [instantiating, setInstantiating] = useState(false);
+  useEffect(() => {
+    let live = true;
+    fetchRoutes().then((r) => { if (live) setRoutes(r); }).catch(() => {});
+    return () => { live = false; };
+  }, []);
+
+  const addRoute = (name: string) => {
+    if (!partId) return;
+    setInstantiating(true);
+    void postPlanRoute(partId, name)
+      .then(() => refreshManifest())
+      .catch((err) => useStore.getState().set({ error: String(err) }))
+      .finally(() => setInstantiating(false));
+  };
 
   const publish = () => {
     setPublishing('publishing…');
@@ -264,9 +299,17 @@ export function PipelineRail() {
         {!hasCncOps && (
           <Button outline onClick={() => void seedExploration()} className="w-full"
             disabled={!manifest}>
-            <Route data-slot="icon" /> Add CNC exploration
+            <Compass data-slot="icon" /> Add CNC exploration
           </Button>
         )}
+        {operations.length === 0 && routes.map((route) => (
+          <Button key={route.name} outline className="w-full"
+            onClick={() => addRoute(route.name)}
+            disabled={!manifest || instantiating}>
+            <Route data-slot="icon" />
+            {instantiating ? 'Instantiating…' : `Add route: ${route.title}`}
+          </Button>
+        ))}
         {hasPlan && (
           <Button onClick={publish} className="w-full"
             disabled={!manifest || !!publishing}>

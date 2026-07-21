@@ -1,4 +1,7 @@
-import { Axis3d, Eye, ShieldCheck, type LucideIcon } from 'lucide-react';
+import {
+  Axis3d, Drill, Expand, Eye, Layers, ListOrdered, ShieldCheck,
+  type LucideIcon,
+} from 'lucide-react';
 import { create } from 'zustand';
 import type {
   Manifest, Plan, PlanCheck, PlanCheckStatus, PlanOperation,
@@ -9,7 +12,7 @@ import { ANALYSES, type Analysis } from '../analyses';
 import { FIELD_LENSES } from '../fieldLenses';
 import {
   evaluateBandCheck, evaluateCheck, evaluateReachOp, evaluateReachRoute,
-  type Evaluation,
+  evaluateStatsCheck, type Evaluation,
 } from './evaluators';
 import { resultForHash } from './status';
 
@@ -32,7 +35,7 @@ export const DEFAULT_TOOLS = [
 ];
 
 export interface CheckView {
-  kind: 'threshold' | 'reach_study' | 'reach_op' | 'reach_route';
+  kind: 'threshold' | 'reach_study' | 'reach_op' | 'reach_route' | 'stats';
   label: string;
   blurb: string;
   icon: LucideIcon;
@@ -50,7 +53,48 @@ export function catalogAnalysisFor(check: PlanCheck): Analysis | null {
     (a) => `${a.process}/${a.analysis}` === check.analysis) ?? null;
 }
 
+/** Stats-verdict rules: how a route check presents (label/icon/blurb). */
+const STATS_VIEWS: Record<string, { label: string; blurb: string;
+  icon: LucideIcon }> = {
+  sheet_detect: {
+    label: 'Sheet detection', icon: Layers,
+    blurb: 'Is the part a constant-thickness sheet with a developable skin?',
+  },
+  flat_pattern: {
+    label: 'Flat pattern', icon: Expand,
+    blurb: 'Unfolds cleanly: developable, closed outline, volume preserved.',
+  },
+  bend_plan: {
+    label: 'Bend plan', icon: ListOrdered,
+    blurb: 'A feasible tooling + sequence exists on the plan\'s machine.',
+  },
+  features: {
+    label: 'Feature recognition', icon: Drill,
+    blurb: 'Holes and pockets recognized from the BREP — exploration data.',
+  },
+};
+
+/** A check's preferred lens ("processId:modeId") as an activation target. */
+function lensTarget(check: PlanCheck, params: Record<string, unknown> = {}) {
+  const [processId, modeId] = (check.lens ?? ':').split(':');
+  return () => ({ processId, modeId, params });
+}
+
 export function describeCheck(check: PlanCheck, plan: Plan): CheckView | null {
+  const statsRule = check.policy?.kind === 'stats'
+    ? String(check.policy?.rule ?? '') : null;
+  if (statsRule) {
+    const view = STATS_VIEWS[statsRule];
+    return {
+      kind: 'stats',
+      label: view?.label ?? statsRule,
+      blurb: view?.blurb ?? '',
+      icon: view?.icon ?? Layers,
+      tier: 'primary',
+      analysis: null,
+      activate: lensTarget(check),
+    };
+  }
   const a = catalogAnalysisFor(check);
   if (a) {
     // field-lens-backed checks open as the plain heatmap — the band comes
@@ -90,6 +134,7 @@ export function describeCheck(check: PlanCheck, plan: Plan): CheckView | null {
           reachHash: hash,
           opPrimary: op?.config?.direction_index ?? null,
           opTilt: op?.config?.tilt ?? 90,
+          reachFeatureMask: check.policy?.mask === 'features',
         },
       }),
     };
@@ -160,6 +205,26 @@ function opFor(check: PlanCheck, plan: Plan): PlanOperation | null {
   return plan.operations.find((o) => o.id === check.operation) ?? null;
 }
 
+function checkRef(check: PlanCheck): { process: string; analysis: string } {
+  const [process, analysis] = check.analysis.split('/');
+  return { process, analysis };
+}
+
+/** Latest non-stale cnc/features result (feature-masked reach scoping). */
+function latestFeatures(manifest: Manifest) {
+  const list = manifest.results.filter(
+    (r) => r.process === 'cnc' && r.analysis === 'features' && !r.stale);
+  return list[list.length - 1] ?? null;
+}
+
+async function featureMaskOf(manifest: Manifest): Promise<Uint32Array | null> {
+  const result = latestFeatures(manifest);
+  if (!result) return null;
+  const desc = manifest.fields.find(
+    (f) => f.id === `results.cnc.features.${result.hash}.feature_id`);
+  return desc ? await fetchField(desc) as Uint32Array : null;
+}
+
 /** Cached-or-launch: returns the memoized evaluation, or kicks the async
  * run off (once) and returns null; the eval tick re-renders subscribers
  * when it lands. */
@@ -192,6 +257,11 @@ export async function evaluateNow(
 ): Promise<Evaluation> {
   const view = describeCheck(check, plan);
   if (!view) return { verdict: 'unknown', findings: [] };
+  if (view.kind === 'stats') {
+    const result = resultForHash(manifest, checkRef(check),
+      status?.expected_hash ?? null);
+    return evaluateStatsCheck(String(check.policy?.rule ?? ''), check, result);
+  }
   if (view.kind === 'threshold' && view.analysis) {
     const a = view.analysis;
     const def = FIELD_LENSES[`${a.process}:${a.id}`];
@@ -212,7 +282,9 @@ export async function evaluateNow(
   if (view.kind === 'reach_op') {
     const op = opFor(check, plan);
     if (!op) return { verdict: 'unknown', findings: [] };
-    return evaluateReachOp(ctx, check, op);
+    const mask = check.policy?.mask === 'features'
+      ? await featureMaskOf(manifest) : null;
+    return evaluateReachOp(ctx, check, op, mask);
   }
   return evaluateReachRoute(ctx, check, plan.operations);
 }
@@ -229,6 +301,11 @@ export function useCheckEvaluation(
   const view = describeCheck(check, plan);
   if (!view || !manifest) return { verdict: 'unknown', findings: [] };
 
+  if (view.kind === 'stats') {
+    const result = resultForHash(manifest, checkRef(check),
+      status?.expected_hash ?? null);
+    return evaluateStatsCheck(String(check.policy?.rule ?? ''), check, result);
+  }
   if (view.kind === 'threshold' && view.analysis) {
     const a = view.analysis;
     const def = FIELD_LENSES[`${a.process}:${a.id}`];
@@ -258,7 +335,10 @@ export function useCheckEvaluation(
   const scopeConfig = view.kind === 'reach_op'
     ? opFor(check, plan)?.config ?? {}
     : routeOps(plan);
-  const key = ['reach', check.id, status.expected_hash,
+  // a features-masked evaluation depends on the features result too
+  const featuresHash = check.policy?.mask === 'features'
+    ? latestFeatures(manifest)?.hash ?? 'none' : '';
+  const key = ['reach', check.id, status.expected_hash, featuresHash,
     JSON.stringify(check.policy ?? {}), JSON.stringify(scopeConfig)].join('|');
   const hash = status.expected_hash;
   return runMemoized(key, async () => {
@@ -267,7 +347,9 @@ export function useCheckEvaluation(
     if (view.kind === 'reach_op') {
       const op = opFor(check, plan);
       if (!op) return { verdict: 'unknown', findings: [] };
-      return evaluateReachOp(ctx, check, op);
+      const mask = check.policy?.mask === 'features'
+        ? await featureMaskOf(manifest) : null;
+      return evaluateReachOp(ctx, check, op, mask);
     }
     return evaluateReachRoute(ctx, check, plan.operations);
   });

@@ -77,6 +77,7 @@ export const cncPlugin: ProcessPlugin = {
     opPrimary: null,
     opTilt: 90,
     reachOps: [],
+    reachFeatureMask: false,
     tolerance: 0.1,
     stickout: '',
     holder: '',

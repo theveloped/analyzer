@@ -142,8 +142,17 @@ export interface PlanOperation {
   label?: string;
   config?: Record<string, any>;
   machine?: { template: string; sha: string };
+  /** Declarative workpiece-state annotation: what this operation produces
+   * over the final-part face space (e.g. {features: "holes"}). */
+  produces?: Record<string, any>;
   /** Structured quotation inputs (setup count, bend count, …). */
   outputs?: Record<string, any>;
+}
+
+export interface RouteSummary {
+  name: string;
+  title: string;
+  operations: number;
 }
 
 export interface PlanCheck {

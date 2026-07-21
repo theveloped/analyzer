@@ -32,7 +32,9 @@ operations:
       - id: chk-reach-cnc10
         analysis: cnc/reach_study
         params:
-          direction_indices: []
+          # ±Z (the axes prefix of the sampled direction set) — the plate
+          # normals a 3-axis secondary op drills from
+          direction_indices: [4, 5]
           tools: $machine:tools
         policy: {scope: operation, mask: features}
         lens: cnc:reach_op

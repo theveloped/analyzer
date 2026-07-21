@@ -126,7 +126,7 @@ export function planCheckState(
  * params share a hash — the analysis id lives in the store directory), so
  * the analysis must be part of the match. */
 export function resultForHash(
-  manifest: Manifest | null, a: Analysis, expectedHash: string | null,
+  manifest: Manifest | null, a: AnalysisRef, expectedHash: string | null,
 ): ResultEntry | null {
   if (!manifest || !expectedHash) return null;
   return manifest.results.find(

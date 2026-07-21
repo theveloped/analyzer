@@ -112,9 +112,13 @@ export async function evaluateBandCheck(
 }
 
 /** Per-operation reach: faces visible somewhere in the operation's tilt
- * cone that NO library tool reaches. Async — unions cached masks. */
+ * cone that NO library tool reaches. Async — unions cached masks. With a
+ * `featureMask` (cnc/features feature_id per face) only machined-feature
+ * faces count: "are the features this operation produces reachable" —
+ * the declarative workpiece-state scoping, on the final-part mesh. */
 export async function evaluateReachOp(
   ctx: ReachCtx, check: PlanCheck, op: PlanOperation,
+  featureMask?: Uint32Array | null,
 ): Promise<Evaluation> {
   const primary = Number(op.config?.direction_index);
   const tilt = Number(op.config?.tilt ?? 90);
@@ -122,19 +126,77 @@ export async function evaluateReachOp(
   const study = findStudy(ctx);
   const { reach, visible } = await opReach(ctx, study, primary, tilt);
   let blocked = 0;
-  for (let f = 0; f < ctx.faceCount; f++) if (visible[f] && !reach[f]) blocked++;
+  let scoped = 0;
+  for (let f = 0; f < ctx.faceCount; f++) {
+    if (featureMask && !featureMask[f]) continue;
+    scoped++;
+    if (visible[f] && !reach[f]) blocked++;
+  }
+  if (featureMask && !scoped) return { verdict: 'unknown', findings: [] };
   if (!blocked) return { verdict: 'pass', findings: [] };
+  const what = featureMask ? 'machined-feature faces' : 'faces';
   return {
     verdict: 'review',
     findings: [{
       id: `${check.id}:tool_blocked`,
       code: 'op_tool_blocked',
-      label: `${op.label ?? op.id}: faces no tool reaches`,
-      detail: `${blocked} faces visible in the ±${tilt}° cone of direction `
+      label: `${op.label ?? op.id}: ${what} no tool reaches`,
+      detail: `${blocked} ${what} visible in the ±${tilt}° cone of direction `
         + `${primary} are blocked for every library tool`,
       severity: 'review',
     }],
   };
+}
+
+/** Stats-verdict checks: judged directly from the stored result's stats
+ * (sheet detection / flat pattern / bend plan / feature recognition).
+ * Findings carry stable per-reason ids so dispositions survive re-runs. */
+export function evaluateStatsCheck(
+  rule: string, check: PlanCheck, result: ResultEntry | null,
+): Evaluation {
+  if (!result) return { verdict: 'unknown', findings: [] };
+  const stats = result.stats as Record<string, any>;
+  const finding = (code: string, label: string, detail: string): Finding =>
+    ({ id: `${check.id}:${code}`, code, label, detail, severity: 'review' });
+
+  if (rule === 'sheet_detect') {
+    if (stats.verdict === 'sheet') return { verdict: 'pass', findings: [] };
+    const reasons: string[] = stats.reasons ?? [];
+    return {
+      verdict: 'review',
+      findings: [finding('not_sheet', 'Not detected as sheet metal',
+        reasons.join('; ') || `verdict: ${stats.verdict}`)],
+    };
+  }
+  if (rule === 'flat_pattern') {
+    const findings: Finding[] = [];
+    if (stats.developable === false) {
+      findings.push(finding('not_developable', 'Not developable',
+        'the skin contains non-developable regions'));
+    }
+    if (stats.open_wires) {
+      findings.push(finding('open_wires', 'Open wires in the pattern',
+        `${stats.open_wires} open wires in the unfolded outline`));
+    }
+    if (stats.volume_ok === false) {
+      findings.push(finding('volume_error', 'Unfold volume mismatch',
+        `volume error ${Number(stats.volume_error_pct).toFixed(1)} %`));
+    }
+    return findings.length
+      ? { verdict: 'review', findings }
+      : { verdict: 'pass', findings: [] };
+  }
+  if (rule === 'bend_plan') {
+    if (stats.feasible) return { verdict: 'pass', findings: [] };
+    return {
+      verdict: 'fail',
+      findings: [finding('infeasible', 'No feasible bend plan',
+        'no tooling/sequence combination bends this part on the selected '
+        + 'machine')],
+    };
+  }
+  if (rule === 'features') return { verdict: 'na', findings: [] };
+  return { verdict: 'unknown', findings: [] };
 }
 
 /** Route aggregate: faces unreachable in EVERY operation (geometry-union
