@@ -8,6 +8,7 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
 
 SETUPS_SCHEMA = 3  # result schema version, salted into the cache key
 FEATURES_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/features.ts
+REACH_STUDY_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/reach.ts
 
 # default library: 3 flat endmills + 2 ball mills, each at its longest
 # practical reach (stickout 5xD) with the shank as the holder cylinder
@@ -77,6 +78,27 @@ def run_features(workdir, params, progress):
 
     store_result(workdir, "cnc", "features", cache_params, result["stats"],
                  arrays=result["arrays"], field_meta=result["field_meta"])
+    return AnalysisResult(stats=result["stats"],
+                          fields=list(result["arrays"]))
+
+
+def run_reach_study(workdir, params, progress):
+    cache_params = resolver.cache_key(workdir, "cnc/reach_study", params)
+    cached = load_cached_result(workdir, "cnc", "reach_study", cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    result = pipeline.reach_study(
+        workdir, directions=[int(i) for i in params["directions"] or []],
+        tools=pipeline.parse_tools(params["tools"]),
+        tollerance=params["tollerance"],
+        wall_tollerance=params["wall_tollerance"], pixel=params["pixel"],
+        window=params["window"], progress=progress)
+
+    store_result(workdir, "cnc", "reach_study", cache_params,
+                 result["stats"], arrays=result["arrays"],
+                 field_meta=result["field_meta"])
     return AnalysisResult(stats=result["stats"],
                           fields=list(result["arrays"]))
 
@@ -204,6 +226,31 @@ PROCESS = ProcessDef(
             schema=SETUPS_SCHEMA,
             salts=("splits",),
             key_extra={"verdict": 1},
+        ),
+        AnalysisDef(
+            id="reach_study",
+            label="Reachability study",
+            description="Per-face machinable masks for every (candidate "
+                        "direction × tool) pair — the reusable exploration "
+                        "computation operation-scoped checks slice into "
+                        "per-op and aggregate views without recomputing.",
+            requires=["prep/directions"],
+            params=[
+                Param("directions", "int_list", default=[],
+                      label="Direction indices (blank = all sampled)"),
+                Param("tools", "tool_list", default=DEFAULT_TOOLS,
+                      label="Tool library (D : rc : stickout : holder radius)"),
+                Param("tollerance", "number", default=1e-1, unit="mm", min=0,
+                      label="Gap threshold"),
+                Param("wall_tollerance", "number", default=1.0, unit="deg",
+                      min=0, label="Wall angle tolerance (side-milled)"),
+                Param("pixel", "number", default=None, unit="mm", min=0,
+                      label="Height map pixel (blank = resolution/5)"),
+                Param("window", "number", default=0.3, unit="mm", min=0,
+                      label="Exact gap window"),
+            ],
+            run=run_reach_study,
+            schema=REACH_STUDY_SCHEMA,
         ),
         AnalysisDef(
             id="precompute",
