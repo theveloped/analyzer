@@ -95,11 +95,11 @@ const CURATION: Record<string, Curation> = {
   'directions:directions': { icon: Crosshair, hidden: true },
 
   // geometry (process-independent measures, hosted by injection_molding)
-  'injection_molding:thickness': { icon: Ruler, category: 'geometry' },
-  'injection_molding:gaps': { icon: Spline, category: 'geometry' },
-  'injection_molding:rayThickness': { icon: Ratio, category: 'geometry' },
-  'injection_molding:rayGap': { icon: Radius, category: 'geometry' },
-  'injection_molding:thinSpan': { icon: Waves, category: 'geometry' },
+  'injection_molding:thickness': { icon: Ruler, category: 'geometry', pinned: true },
+  'injection_molding:gaps': { icon: Spline, category: 'geometry', pinned: true },
+  'injection_molding:rayThickness': { icon: Ratio, category: 'geometry', pinned: true },
+  'injection_molding:rayGap': { icon: Radius, category: 'geometry', pinned: true },
+  'injection_molding:thinSpan': { icon: Waves, category: 'geometry', pinned: true },
   'injection_molding:thicknessAngle': { icon: Compass, category: 'geometry', advanced: true },
   'injection_molding:gapAngle': { icon: Compass, category: 'geometry', advanced: true },
 

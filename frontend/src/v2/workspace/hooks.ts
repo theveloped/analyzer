@@ -1,11 +1,16 @@
+import { useEffect } from 'react';
 import { putPlan } from '../../api/client';
 import type { Plan, PlanCheck, PlanCheckStatus, PlanSection } from '../../api/types';
 import { useStore } from '../../state/store';
 import { refreshManifest } from '../../viewer/controller';
+import { runAnalysisJob } from '../../viewer/jobs';
 import type { Analysis } from '../analyses';
 import { ANALYSIS_BY_ID, ANALYSES, defaultCompute } from '../analyses';
 import { DEFAULT_TOOLS, describeCheck } from '../checks/catalog';
 import { checkState, type CheckState } from '../checks/status';
+import {
+  FIELD_LENSES, fieldLensCompute, latestResult, type FieldLensDef,
+} from '../fieldLenses';
 import type { Lens } from '../lenses';
 import { lensFor } from '../lenses';
 import { useV2 } from '../store';
@@ -70,10 +75,53 @@ export function useActiveLens(): Lens | null {
 }
 
 /** Activate an inspection lens (drives the shared viewer's mode + process).
- * A lens picked directly is free exploration — it drops the check scope. */
+ * A lens picked directly is free exploration — it drops the check scope.
+ * Field lenses open as the PLAIN heatmap: no threshold, full data range,
+ * edge artifacts visible — interpretation lives in the side panel. */
 export function selectLens(l: Lens) {
-  useStore.getState().set({ processId: l.processId, modeId: l.modeId });
+  const store = useStore.getState();
+  const field = FIELD_LENSES[l.key];
+  if (field) {
+    store.setViewerParam(field.process, field.thresholdParam, '');
+    store.setViewerParam(field.process, field.minParam, '');
+    store.setViewerParam(field.process, field.scaleParam, '');
+    if (field.maskParam) store.setViewerParam(field.process, field.maskParam, false);
+  }
+  store.set({ processId: l.processId, modeId: l.modeId });
   useV2.getState().setActiveCheck(null);
+}
+
+/** The field-lens definition backing the active lens, if any. */
+export function useActiveFieldLens(): FieldLensDef | null {
+  const lens = useActiveLens();
+  return lens ? FIELD_LENSES[lens.key] ?? null : null;
+}
+
+/** A field lens materializes itself: when it's active with nothing cached
+ * and no job in flight, the backing analysis runs with plain defaults.
+ * One attempt per (part, analysis) per session — a failed job surfaces in
+ * the rail instead of looping. */
+const autoRunAttempted = new Set<string>();
+export function useAutoRunFieldLens() {
+  const def = useActiveFieldLens();
+  const partId = useStore((s) => s.partId);
+  const meshReady = useStore((s) => s.meshReady);
+  const manifest = useStore((s) => s.manifest);
+  const jobs = useStore((s) => s.jobs);
+  useEffect(() => {
+    if (!def || !partId || !meshReady) return;
+    const existing = latestResult(manifest, def);
+    if (existing && !existing.stale) return;
+    const busy = jobs.some((j) => j.part_id === partId
+      && (j.status === 'queued' || j.status === 'running'));
+    const key = `${partId}:${def.analysis}`;
+    if (busy || autoRunAttempted.has(key)) return;
+    autoRunAttempted.add(key);
+    runAnalysisJob(partId, def.process, def.analysis, fieldLensCompute(def))
+      .catch((err) => useStore.getState().set({
+        error: err instanceof Error ? err.message : String(err),
+      }));
+  }, [def, partId, meshReady, manifest, jobs]);
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +220,27 @@ export async function pinPolicy(check: PlanCheck, policy: Record<string, unknown
       c.id === check.id ? { ...c, policy: { ...c.policy, ...policy } } : c),
   };
   await storePlan(plan, plan.revision);
+}
+
+/** Save a field lens's current clipping band as a plan check: the compute
+ * params become the check's params (its cache identity) and the band — with
+ * its unit and reference — becomes the pinned policy. Upserts by lens. */
+export async function saveLensCheck(
+  def: FieldLensDef, policy: Record<string, unknown>,
+  compute: Record<string, unknown>,
+) {
+  const section = useStore.getState().manifest?.plan;
+  if (!section) return;
+  const id = `chk-${def.modeId}`;
+  const existing = section.plan.checks.find((c) => c.id === id);
+  const checks = existing
+    ? section.plan.checks.map((c) => (c.id === id
+      ? { ...c, params: compute, policy: { ...c.policy, ...policy } } : c))
+    : [...section.plan.checks, {
+      id, analysis: `${def.process}/${def.analysis}`, params: compute,
+      policy, lens: def.lensKey, visible: true,
+    }];
+  await storePlan({ ...section.plan, checks }, section.plan.revision);
 }
 
 /** Apply an already-previewed plan edit (the impact modal's Apply). */

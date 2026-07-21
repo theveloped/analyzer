@@ -1,21 +1,12 @@
 import { Popover, PopoverButton, PopoverPanel } from '@headlessui/react';
 import clsx from 'clsx';
-import {
-  CheckCircle2, Crosshair, MoreHorizontal, OctagonAlert, RotateCw, Search,
-  TriangleAlert, Wrench,
-} from 'lucide-react';
+import { Crosshair, MoreHorizontal, Search, Wrench } from 'lucide-react';
 import { useState } from 'react';
-import { useStore } from '../../state/store';
-import { evaluateCheck } from '../checks/evaluators';
-import {
-  checkState, planCheckState, resultForHash, statusKindOf,
-} from '../checks/status';
 import { LENS_CATEGORIES, lensesIn, PINNED_LENSES, type Lens } from '../lenses';
 import { useV2 } from '../store';
 import {
-  activateDirections, selectAnalysis, selectLens, useActiveAnalysis,
-  useActiveLens, useCheckActive, useDirectionsActive, usePlanSection,
-  useVisibleAnalyses,
+  activateDirections, selectLens, useActiveLens, useCheckActive,
+  useDirectionsActive,
 } from './hooks';
 
 const btnCls = 'flex size-8 items-center justify-center rounded-lg transition';
@@ -109,35 +100,29 @@ function LensMenu({ activeLens }: { activeLens: Lens | null }) {
 }
 
 /**
- * The floating toolbar over the viewer: pinned inspection lenses, the
- * searchable all-tools menu, the candidate-directions view, then one icon per
- * runnable check with an honest status overlay (verdict, not mere existence).
- * Catalyst ships no tooltip, so hints use native `title` (matches wf-api).
+ * The floating toolbar over the viewer: the pinned inspection lenses
+ * (model data + the always-visible field lenses), the searchable all-tools
+ * menu, the candidate-directions view and the advanced reveal. Field lenses
+ * materialize themselves — clicking one runs the backing analysis when
+ * nothing is cached. Catalyst ships no tooltip, so hints use native `title`.
  */
 export function AnalysisToolbar() {
-  const active = useActiveAnalysis();
   const activeLens = useActiveLens();
   const checkActive = useCheckActive();
-  const analyses = useVisibleAnalyses();
-  const manifest = useStore((s) => s.manifest);
-  const jobs = useStore((s) => s.jobs);
-  const partId = useStore((s) => s.partId);
-  const viewerParams = useStore((s) => s.viewerParams);
   const advanced = useV2((s) => s.advanced);
   const setAdvanced = useV2((s) => s.setAdvanced);
   const inDirections = useDirectionsActive();
-  const planSection = usePlanSection();
 
   return (
     <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-zinc-950/10 bg-white/90 p-1 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10">
-      {/* pinned inspection lenses + the all-tools menu */}
       {PINNED_LENSES.map((l) => (
         <LensButton key={l.key} lens={l} isActive={activeLens?.key === l.key} />
       ))}
       <LensMenu activeLens={checkActive || inDirections ? null : activeLens} />
       <span className="mx-0.5 h-5 w-px bg-zinc-950/10 dark:bg-white/10" />
 
-      {/* candidate-directions view — the orientations every check runs from */}
+      {/* candidate-directions view — the orientations direction-scoped
+          analyses run from */}
       <button
         type="button"
         onClick={activateDirections}
@@ -147,57 +132,6 @@ export function AnalysisToolbar() {
       >
         <Crosshair className="size-4" />
       </button>
-      <span className="mx-0.5 h-5 w-px bg-zinc-950/10 dark:bg-white/10" />
-
-      {analyses.map((a) => {
-        const Icon = a.icon;
-        const isActive = checkActive && a.id === active.id;
-        // plan check when one exists (pinned-policy verdict), else the
-        // exploratory heuristic against the live slider
-        const planCheck = planSection?.plan.checks.find(
-          (c) => c.analysis === `${a.process}/${a.analysis}`);
-        let state;
-        if (planCheck) {
-          const status = planSection?.checks[planCheck.id];
-          const result = resultForHash(manifest, a, status?.expected_hash ?? null);
-          const { verdict } = evaluateCheck(a, planCheck, result);
-          state = planCheckState(status, jobs, partId, a, verdict);
-        } else {
-          const threshold = Number(
-            (viewerParams[a.process] ?? {})[a.thresholdParam] ?? a.thresholdDefault,
-          );
-          state = checkState(manifest, jobs, partId, a, threshold);
-        }
-        const kind = statusKindOf(state);
-        return (
-          <button
-            key={a.id}
-            type="button"
-            onClick={() => selectAnalysis(a)}
-            title={`${a.label} · ${state.note || state.verdict}`}
-            aria-pressed={isActive}
-            className={clsx(btnCls, 'relative', isActive ? activeCls : idleCls)}
-          >
-            <Icon className="size-4" />
-            {!isActive && kind !== 'neutral' && (
-              <span className="absolute -bottom-0.5 -right-0.5 rounded-full bg-white dark:bg-zinc-800">
-                {kind === 'active' && (
-                  <RotateCw className="size-2.5 animate-spin" style={{ color: 'var(--color-blue-600)' }} />
-                )}
-                {kind === 'good' && (
-                  <CheckCircle2 className="size-2.5" style={{ color: 'var(--status-good)' }} />
-                )}
-                {kind === 'warning' && (
-                  <TriangleAlert className="size-2.5" style={{ color: 'var(--status-warning)' }} />
-                )}
-                {(kind === 'serious' || kind === 'critical') && (
-                  <OctagonAlert className="size-2.5" style={{ color: 'var(--status-critical)' }} />
-                )}
-              </span>
-            )}
-          </button>
-        );
-      })}
 
       <span className="mx-0.5 h-5 w-px bg-zinc-950/10 dark:bg-white/10" />
 

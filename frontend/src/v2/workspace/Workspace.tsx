@@ -3,8 +3,10 @@ import { catalogAnalysisFor } from '../checks/catalog';
 import { AnalysisToolbar } from './AnalysisToolbar';
 import { DirectionsRail } from './DirectionsRail';
 import { DirectionTooltip } from './DirectionTooltip';
+import { FieldLensRail } from './FieldLensRail';
 import {
-  useActiveLens, useCheckActive, useDirectionsActive, useSelectedPlanCheck,
+  useActiveFieldLens, useActiveLens, useAutoRunFieldLens, useCheckActive,
+  useDirectionsActive, useSelectedPlanCheck,
 } from './hooks';
 import { Legend } from './Legend';
 import { LensRail } from './LensRail';
@@ -29,14 +31,17 @@ export function Workspace() {
   const directionsActive = useDirectionsActive();
   const checkActive = useCheckActive();
   const activeLens = useActiveLens();
+  const activeFieldLens = useActiveFieldLens();
   const selected = useSelectedPlanCheck();
+  useAutoRunFieldLens(); // field lenses materialize themselves on first look
   // a selected non-threshold plan check (reach study/op/route) gets its own
-  // rail; threshold checks keep the SettingsRail keyed off the active mode
+  // rail; field lenses get the band panel; other checks the SettingsRail
   const planCheckRail = selected && !catalogAnalysisFor(selected.check);
 
   const rightRail = modeId === 'pmi' ? <PmiRail />
     : directionsActive ? <DirectionsRail />
     : planCheckRail ? <PlanCheckRail />
+    : activeFieldLens ? <FieldLensRail />
     : checkActive ? <SettingsRail />
     : activeLens ? <LensRail />
     : <SettingsRail />;

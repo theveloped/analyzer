@@ -4,15 +4,15 @@ import { ChevronDown, Pin, Play, RotateCw, Settings2, Sparkles } from 'lucide-re
 import type { PlanCheck, PlanCheckStatus } from '../../api/types';
 import { Button } from '../../catalyst/button';
 import { Input } from '../../catalyst/input';
-import { Switch } from '../../catalyst/switch';
 import { useStore } from '../../state/store';
-import type { Analysis, ComputeField } from '../analyses';
+import type { Analysis } from '../analyses';
 import { evaluateCheck } from '../checks/evaluators';
 import {
   planCheckState, resultForHash, statusKindOf, type CheckState,
 } from '../checks/status';
 import { StatusBadge } from '../components/status';
 import { useV2 } from '../store';
+import { BoolRow, ComputeInput } from './computeFields';
 import { FindingRow } from './findings';
 import {
   pinPolicy, useActiveAnalysis, useActivePlanCheck, useCheckState,
@@ -39,53 +39,6 @@ function ThresholdField({ a }: { a: Analysis }) {
         <span className="text-sm/6 text-zinc-500 dark:text-zinc-400">{a.unit}</span>
       </div>
       <p className={clsx('mt-2', hintCls)}>Faces past this limit are flagged. Adjusts instantly — no recompute.</p>
-    </div>
-  );
-}
-
-function BoolRow({ label, hint, checked, onChange }: {
-  label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <div>
-        <div className={labelCls}>{label}</div>
-        {hint && <p className={hintCls}>{hint}</p>}
-      </div>
-      <Switch checked={checked} onChange={onChange} aria-label={label} />
-    </div>
-  );
-}
-
-function ComputeInput({ a, field }: { a: Analysis; field: ComputeField }) {
-  const value = useV2((s) => s.compute[a.id]?.[field.key]);
-  const setCompute = useV2((s) => s.setCompute);
-  if (field.type === 'bool') {
-    return (
-      <BoolRow
-        label={field.label}
-        hint={field.hint}
-        checked={value === true}
-        onChange={(v) => setCompute(a.id, field.key, v)}
-      />
-    );
-  }
-  return (
-    <div>
-      <label className={labelCls}>{field.label}{field.unit ? ` (${field.unit})` : ''}</label>
-      <div className="mt-2">
-        <Input
-          type="number"
-          step="0.1"
-          placeholder={field.placeholder}
-          value={value == null ? '' : String(value)}
-          onChange={(e) => {
-            const raw = e.target.value;
-            setCompute(a.id, field.key, raw === '' ? null : Number(raw));
-          }}
-        />
-      </div>
-      {field.hint && <p className={clsx('mt-1', hintCls)}>{field.hint}</p>}
     </div>
   );
 }
@@ -253,7 +206,7 @@ export function SettingsRail() {
                 </div>
               ) : (
                 a.advancedFields.map((field) => (
-                  <ComputeInput key={field.key} a={a} field={field} />
+                  <ComputeInput key={field.key} computeId={a.id} field={field} />
                 ))
               )}
             </DisclosurePanel>

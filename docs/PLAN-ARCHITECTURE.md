@@ -121,6 +121,16 @@ already on disk — reverting is free) | `recomputes` (+ cost tier). Never enque
   overlay (label/icon/category/pinned/hidden). `ProcessPlugin.modes` stays the single source
   of truth; the hardcoded v2 `VIEWS`/`ANALYSES` arrays retire. Ribbon: 5–7 pinned/recent +
   grouped menus + search, not 44 icons.
+- **Field lenses self-materialize** (spike, adopted): the scalar-field lenses (thickness,
+  gaps, ray variants, thin span — `v2/fieldLenses.ts`) are pinned to the ribbon and clicking
+  one runs the backing analysis with plain defaults when nothing current is cached; the
+  paint is the un-thresholded heatmap over the real data range (edge artifacts visible).
+  All interpretation lives in the side panel (`FieldLensRail`): a clipping band (min–max)
+  in a chosen unit (mm / % of reference) against a reference (origin, mean, p5/p50/p95)
+  that recolors instantly by driving the heatmap's domain params, a re-run button that only
+  arms when a compute knob actually changed, and **"Save band as check"** — the moment
+  exploration becomes a pinned policy on the plan. Lens = data, band = interpretation,
+  check = saved interpretation.
 - **Check → lens**: selecting a check activates its preferred lens with scope bound into
   `viewerParams`; selecting a finding also flies the camera. The engineer can switch to any
   lens at any time.
