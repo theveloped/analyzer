@@ -1,4 +1,6 @@
-import type { Job, Manifest, Part, ProcessInfo } from './types';
+import type {
+  DispositionEvent, Job, Manifest, Part, Plan, PlanSection, ProcessInfo,
+} from './types';
 
 async function getJSON<T>(url: string): Promise<T> {
   const res = await fetch(url);
@@ -121,6 +123,45 @@ export const deleteLastSplit = (partId: string) =>
 
 export const clearSplits = (partId: string) =>
   splitsMutation(splitsUrl(partId), 'DELETE');
+
+const planUrl = (partId: string) =>
+  `/api/parts/${encodeURIComponent(partId)}/plan`;
+
+/** Store a new plan revision. `revision` is the revision the client edited;
+ * a concurrent edit surfaces as a 409 — reload the manifest and retry. */
+export async function putPlan(
+  partId: string, plan: Plan, revision: number,
+): Promise<PlanSection> {
+  const res = await fetch(planUrl(partId), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ plan, revision }),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `saving plan failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function postDisposition(
+  partId: string,
+  body: { finding_id: string; state: DispositionEvent['state']; by: string;
+    why?: string; evidence?: Record<string, any> },
+): Promise<{ stored: DispositionEvent;
+  dispositions: Record<string, DispositionEvent> }> {
+  const res = await fetch(
+    `/api/parts/${encodeURIComponent(partId)}/dispositions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `saving disposition failed: ${res.status}`);
+  }
+  return res.json();
+}
 
 export async function postEjectorSimulate<T>(
   partId: string, body: Record<string, any>,

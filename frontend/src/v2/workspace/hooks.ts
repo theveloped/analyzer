@@ -1,6 +1,9 @@
+import { putPlan } from '../../api/client';
+import type { Plan, PlanCheck, PlanCheckStatus, PlanSection } from '../../api/types';
 import { useStore } from '../../state/store';
+import { refreshManifest } from '../../viewer/controller';
 import type { Analysis } from '../analyses';
-import { ANALYSIS_BY_ID, ANALYSES } from '../analyses';
+import { ANALYSIS_BY_ID, ANALYSES, defaultCompute } from '../analyses';
 import { checkState, type CheckState } from '../checks/status';
 import type { Lens } from '../lenses';
 import { lensFor } from '../lenses';
@@ -62,4 +65,79 @@ export function useActiveLens(): Lens | null {
 /** Activate an inspection lens (drives the shared viewer's mode + process). */
 export function selectLens(l: Lens) {
   useStore.getState().set({ processId: l.processId, modeId: l.modeId });
+}
+
+// ---------------------------------------------------------------------------
+// Production plan (manifest.plan → plans.py sidecars)
+
+/** The manifest's plan section (plan + derived per-check status). */
+export function usePlanSection(): PlanSection | null {
+  return useStore((s) => s.manifest?.plan ?? null);
+}
+
+/** Catalog UI metadata for a plan check (icon/label/threshold vocabulary). */
+export function catalogFor(check: PlanCheck): Analysis | null {
+  return ANALYSES.find(
+    (a) => `${a.process}/${a.analysis}` === check.analysis) ?? null;
+}
+
+/** The plan check matching the active analysis, with its derived status. */
+export function useActivePlanCheck():
+{ check: PlanCheck; status: PlanCheckStatus | undefined } | null {
+  const section = usePlanSection();
+  const active = useActiveAnalysis();
+  const checkActive = useCheckActive();
+  if (!section || !checkActive) return null;
+  const check = section.plan.checks.find(
+    (c) => c.analysis === `${active.process}/${active.analysis}`);
+  return check ? { check, status: section.checks[check.id] } : null;
+}
+
+/** Activate a plan check: switch the viewer to its catalog lens. */
+export function selectPlanCheck(check: PlanCheck) {
+  const a = catalogFor(check);
+  if (a) selectAnalysis(a);
+}
+
+async function storePlan(plan: Plan, revision: number) {
+  const partId = useStore.getState().partId;
+  if (!partId) return;
+  try {
+    await putPlan(partId, plan, revision);
+    await refreshManifest();
+  } catch (err) {
+    useStore.getState().set({
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/** Seed the part's plan with one check per catalog analysis, pinning the
+ * default thresholds as policies (the "standard checks" template). */
+export async function seedPlan() {
+  const section = useStore.getState().manifest?.plan;
+  const plan: Plan = section
+    ? { ...section.plan }
+    : { schema: 1, revision: 0, decisions: {}, operations: [], checks: [] };
+  plan.checks = ANALYSES.map((a) => ({
+    id: `chk-${a.id}`,
+    analysis: `${a.process}/${a.analysis}`,
+    params: defaultCompute(a),
+    policy: { threshold: a.thresholdDefault, unit: a.unit },
+    lens: `${a.process}:${a.id}`,
+    visible: true,
+  }));
+  await storePlan(plan, plan.revision);
+}
+
+/** Pin a new policy value on one check (a plan revision). */
+export async function pinPolicy(check: PlanCheck, policy: Record<string, unknown>) {
+  const section = useStore.getState().manifest?.plan;
+  if (!section) return;
+  const plan: Plan = {
+    ...section.plan,
+    checks: section.plan.checks.map((c) =>
+      c.id === check.id ? { ...c, policy: { ...c.policy, ...policy } } : c),
+  };
+  await storePlan(plan, plan.revision);
 }

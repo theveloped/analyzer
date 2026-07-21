@@ -1,16 +1,26 @@
 import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 import clsx from 'clsx';
-import { ChevronDown, Play, RotateCw, Settings2, Sparkles } from 'lucide-react';
+import { ChevronDown, Pin, Play, RotateCw, Settings2, Sparkles } from 'lucide-react';
+import { useState } from 'react';
+import { postDisposition } from '../../api/client';
+import type { PlanCheck, PlanCheckStatus } from '../../api/types';
 import { Button } from '../../catalyst/button';
 import { Input } from '../../catalyst/input';
 import { Switch } from '../../catalyst/switch';
 import { useStore } from '../../state/store';
+import { refreshManifest } from '../../viewer/controller';
 import type { Analysis, ComputeField } from '../analyses';
-import { statusKindOf } from '../checks/status';
+import { dispositionOf, evaluateCheck, type Finding } from '../checks/evaluators';
+import {
+  planCheckState, resultForHash, statusKindOf, type CheckState,
+} from '../checks/status';
 import { StatusBadge } from '../components/status';
 import { useV2 } from '../store';
-import { useActiveAnalysis, useCheckState } from './hooks';
-import { runAnalysis, useBusy } from './run';
+import {
+  pinPolicy, useActiveAnalysis, useActivePlanCheck, useCheckState,
+  usePlanSection,
+} from './hooks';
+import { runAnalysis, runPlanCheck, useBusy } from './run';
 
 const labelCls = 'text-sm/6 font-medium text-zinc-950 dark:text-white';
 const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
@@ -113,15 +123,114 @@ function DisplayAdvanced({ a }: { a: Analysis }) {
   );
 }
 
+/** Pinned policy vs the live exploration slider: the slider recolors freely;
+ * only pinning it changes what the verdict is judged against (plan revision). */
+function PolicyRow({ a, check }: { a: Analysis; check: PlanCheck }) {
+  const params = useStore((s) => s.viewerParams[a.process]) ?? {};
+  const slider = Number(params[a.thresholdParam] ?? a.thresholdDefault);
+  const pinned = Number(check.policy?.threshold ?? a.thresholdDefault);
+  const differs = isFinite(slider) && slider !== pinned;
+  return (
+    <div className="rounded-lg bg-zinc-950/2.5 p-2.5 dark:bg-white/5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs/5 font-medium text-zinc-700 dark:text-zinc-300">
+          Policy: minimum ≥ {pinned} {a.unit}
+        </span>
+        {differs && (
+          <Button plain onClick={() => void pinPolicy(check, { threshold: slider })}>
+            <Pin data-slot="icon" /> Pin {slider}
+          </Button>
+        )}
+      </div>
+      <p className={hintCls}>
+        The verdict follows the pinned limit; the slider above explores freely.
+      </p>
+    </div>
+  );
+}
+
+const DISPOSITION_BADGE = {
+  open: 'neutral', accepted: 'good',
+  customer_approval: 'warning', resolved: 'good',
+} as const;
+
+function FindingRow({ finding, partId }: { finding: Finding; partId: string }) {
+  const section = usePlanSection();
+  const [note, setNote] = useState('');
+  const state = dispositionOf(finding, section?.dispositions);
+  const judge = (next: 'accepted' | 'open') => {
+    void postDisposition(partId, {
+      finding_id: finding.id, state: next, by: 'engineer', why: note,
+    }).then(() => refreshManifest())
+      .catch((err) => useStore.getState().set({ error: String(err) }));
+  };
+  return (
+    <div className="rounded-lg border border-zinc-950/5 p-2 dark:border-white/10">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs/5 font-medium text-zinc-950 dark:text-white">
+          {finding.label}
+        </span>
+        <StatusBadge status={DISPOSITION_BADGE[state]}>{state.replace('_', ' ')}</StatusBadge>
+      </div>
+      <p className={hintCls}>{finding.detail}</p>
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="why…"
+          className="w-full rounded-md bg-zinc-950/5 px-2 py-1 text-xs/5 text-zinc-950 outline-none placeholder:text-zinc-400 dark:bg-white/10 dark:text-white"
+        />
+        {state === 'open' ? (
+          <Button plain onClick={() => judge('accepted')}>Accept</Button>
+        ) : (
+          <Button plain onClick={() => judge('open')}>Reopen</Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PlanFindings({ a, check, status }: {
+  a: Analysis; check: PlanCheck; status: PlanCheckStatus | undefined;
+}) {
+  const manifest = useStore((s) => s.manifest);
+  const partId = useStore((s) => s.partId);
+  const result = resultForHash(manifest, a, status?.expected_hash ?? null);
+  const { verdict, findings } = evaluateCheck(a, check, result);
+  if (!partId) return null;
+  if (!result) {
+    return <p className={hintCls}>Run the check to evaluate it against the policy.</p>;
+  }
+  if (verdict === 'pass') {
+    return <p className={hintCls}>Within policy — nothing to review.</p>;
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      {findings.map((f) => <FindingRow key={f.id} finding={f} partId={partId} />)}
+    </div>
+  );
+}
+
 export function SettingsRail() {
   const a = useActiveAnalysis();
   const globalAdvanced = useV2((s) => s.advanced);
   const stats = useStore((s) => s.stats);
   const error = useStore((s) => s.error);
   const meshReady = useStore((s) => s.meshReady);
+  const manifest = useStore((s) => s.manifest);
+  const jobs = useStore((s) => s.jobs);
+  const partId = useStore((s) => s.partId);
   const busy = useBusy();
-  const state = useCheckState(a);
-  const computed = !!state.result;
+  const heuristic = useCheckState(a);
+  const planCheck = useActivePlanCheck();
+
+  let state: CheckState = heuristic;
+  if (planCheck) {
+    const result = resultForHash(manifest, a, planCheck.status?.expected_hash ?? null);
+    const { verdict } = evaluateCheck(a, planCheck.check, result);
+    state = planCheckState(planCheck.status, jobs, partId, a, verdict);
+  }
+  const computed = state.execution === 'current' || state.execution === 'stale';
   const badgeText = state.note
     || (state.verdict === 'pass' ? 'ok'
       : state.verdict === 'review' ? 'review'
@@ -139,8 +248,15 @@ export function SettingsRail() {
       </div>
 
       <ThresholdField a={a} />
+      {planCheck && <PolicyRow a={a} check={planCheck.check} />}
 
-      <Button onClick={() => runAnalysis(a)} disabled={!meshReady || busy} className="w-full">
+      <Button
+        onClick={() => (planCheck
+          ? runPlanCheck(planCheck.check, planCheck.status)
+          : runAnalysis(a))}
+        disabled={!meshReady || busy || !!planCheck?.status?.error}
+        className="w-full"
+      >
         {busy ? (
           <><RotateCw data-slot="icon" className="animate-spin" /> Running…</>
         ) : computed ? (
@@ -166,9 +282,24 @@ export function SettingsRail() {
               </div>
               <DisplayAdvanced a={a} />
               <div className="h-px bg-zinc-950/10 dark:bg-white/10" />
-              {a.advancedFields.map((field) => (
-                <ComputeInput key={field.key} a={a} field={field} />
-              ))}
+              {planCheck ? (
+                <div>
+                  <div className={clsx(labelCls, 'mb-1')}>Pinned compute params</div>
+                  <p className="whitespace-pre-wrap font-mono text-[11px]/4 text-zinc-500 dark:text-zinc-400">
+                    {Object.entries(planCheck.check.params)
+                      .map(([k, v]) => `${k}: ${v === null ? 'auto' : String(v)}`)
+                      .join('\n')}
+                  </p>
+                  <p className={clsx('mt-1', hintCls)}>
+                    Runs use the plan's params so results land under the
+                    expected hash. Param editing moves into the plan next phase.
+                  </p>
+                </div>
+              ) : (
+                a.advancedFields.map((field) => (
+                  <ComputeInput key={field.key} a={a} field={field} />
+                ))
+              )}
             </DisclosurePanel>
           </>
         )}
@@ -178,7 +309,9 @@ export function SettingsRail() {
 
       <div>
         <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">Findings</div>
-        {error ? (
+        {planCheck ? (
+          <PlanFindings a={a} check={planCheck.check} status={planCheck.status} />
+        ) : error ? (
           <p className="whitespace-pre-wrap text-xs/5 text-red-600 dark:text-red-500">⚠ {error}</p>
         ) : stats ? (
           <p className="whitespace-pre-wrap text-xs/5 text-zinc-500 dark:text-zinc-400">{stats}</p>

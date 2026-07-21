@@ -6,12 +6,16 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import { useStore } from '../../state/store';
-import { checkState, statusKindOf } from '../checks/status';
+import { evaluateCheck } from '../checks/evaluators';
+import {
+  checkState, planCheckState, resultForHash, statusKindOf,
+} from '../checks/status';
 import { LENS_CATEGORIES, lensesIn, PINNED_LENSES, type Lens } from '../lenses';
 import { useV2 } from '../store';
 import {
   activateDirections, selectAnalysis, selectLens, useActiveAnalysis,
-  useActiveLens, useCheckActive, useDirectionsActive, useVisibleAnalyses,
+  useActiveLens, useCheckActive, useDirectionsActive, usePlanSection,
+  useVisibleAnalyses,
 } from './hooks';
 
 const btnCls = 'flex size-8 items-center justify-center rounded-lg transition';
@@ -122,6 +126,7 @@ export function AnalysisToolbar() {
   const advanced = useV2((s) => s.advanced);
   const setAdvanced = useV2((s) => s.setAdvanced);
   const inDirections = useDirectionsActive();
+  const planSection = usePlanSection();
 
   return (
     <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-zinc-950/10 bg-white/90 p-1 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10">
@@ -147,10 +152,22 @@ export function AnalysisToolbar() {
       {analyses.map((a) => {
         const Icon = a.icon;
         const isActive = checkActive && a.id === active.id;
-        const threshold = Number(
-          (viewerParams[a.process] ?? {})[a.thresholdParam] ?? a.thresholdDefault,
-        );
-        const state = checkState(manifest, jobs, partId, a, threshold);
+        // plan check when one exists (pinned-policy verdict), else the
+        // exploratory heuristic against the live slider
+        const planCheck = planSection?.plan.checks.find(
+          (c) => c.analysis === `${a.process}/${a.analysis}`);
+        let state;
+        if (planCheck) {
+          const status = planSection?.checks[planCheck.id];
+          const result = resultForHash(manifest, a, status?.expected_hash ?? null);
+          const { verdict } = evaluateCheck(a, planCheck, result);
+          state = planCheckState(status, jobs, partId, a, verdict);
+        } else {
+          const threshold = Number(
+            (viewerParams[a.process] ?? {})[a.thresholdParam] ?? a.thresholdDefault,
+          );
+          state = checkState(manifest, jobs, partId, a, threshold);
+        }
         const kind = statusKindOf(state);
         return (
           <button

@@ -135,6 +135,65 @@ export interface HoleCandidate {
   detail: Record<string, any>;
 }
 
+/** Production plan sidecars + derived check status (plans.py, plan.json). */
+export interface PlanOperation {
+  id: string;
+  kind?: string;
+  label?: string;
+  config?: Record<string, any>;
+  machine?: { template: string; sha: string };
+  /** Structured quotation inputs (setup count, bend count, …). */
+  outputs?: Record<string, any>;
+}
+
+export interface PlanCheck {
+  id: string;
+  /** Backend analysis id, "process/analysis". */
+  analysis: string;
+  /** Declared analysis params; values may be {"$plan": "dotted.path"}. */
+  params: Record<string, any>;
+  /** Pinned interpretation thresholds — the verdict's inputs. */
+  policy?: Record<string, any>;
+  operation?: string | null;
+  /** Preferred inspection lens key ("processId:modeId"). */
+  lens?: string;
+  visible?: boolean;
+}
+
+export interface Plan {
+  schema: number;
+  revision: number;
+  decisions: Record<string, any>;
+  operations: PlanOperation[];
+  checks: PlanCheck[];
+}
+
+/** Server-derived execution facts for one plan check (never authored). */
+export interface PlanCheckStatus {
+  expected_hash: string | null;
+  /** Materialized params — submit these verbatim to run the check. */
+  params: Record<string, any> | null;
+  exists: boolean;
+  stale: boolean;
+  error: string | null;
+}
+
+export interface DispositionEvent {
+  finding_id: string;
+  state: 'open' | 'accepted' | 'customer_approval' | 'resolved';
+  by: string;
+  at: string;
+  why: string;
+  evidence: Record<string, any>;
+}
+
+export interface PlanSection {
+  plan: Plan;
+  checks: Record<string, PlanCheckStatus>;
+  /** Latest disposition per finding id. */
+  dispositions: Record<string, DispositionEvent>;
+}
+
 export interface Manifest {
   part: Part;
   mesh: MeshLevel | null;
@@ -160,6 +219,8 @@ export interface Manifest {
   assembly_url?: string;
   /** AAG stage summary (prep/aag): stats + mesh staleness */
   aag?: { schema: number; stats: Record<string, any>; stale: boolean };
+  /** production plan + derived check status (docs/PLAN-ARCHITECTURE.md) */
+  plan?: PlanSection;
 }
 
 export interface ParamSpec {

@@ -1,4 +1,4 @@
-import type { Job, Manifest, ResultEntry } from '../../api/types';
+import type { Job, Manifest, PlanCheckStatus, ResultEntry } from '../../api/types';
 import type { StatusKind } from '../components/status';
 import type { Analysis } from '../analyses';
 
@@ -83,6 +83,52 @@ export function checkState(
   }
 
   return { execution, verdict, result, note };
+}
+
+/** State of a PLAN check: execution comes from the server-derived expected
+ * hash (exists/stale) plus the live job overlay; the verdict is evaluated
+ * separately against the pinned policy (evaluators.ts) and merged here. */
+export function planCheckState(
+  status: PlanCheckStatus | undefined,
+  jobs: Job[],
+  partId: string | null,
+  a: Analysis,
+  verdict: VerdictState,
+): CheckState {
+  const job = latestJob(jobs, partId, a);
+  let execution: ExecutionState;
+  let note = '';
+  if (job?.status === 'queued') {
+    execution = 'queued'; note = 'queued…';
+  } else if (job?.status === 'running') {
+    execution = 'running'; note = 'running…';
+  } else if (!status || status.error) {
+    execution = 'error'; note = status?.error ? 'plan config error' : 'no status';
+  } else if (status.exists) {
+    execution = 'current';
+  } else if (status.stale) {
+    execution = 'stale'; note = 'stale — re-run';
+  } else if (job?.status === 'error') {
+    execution = 'error'; note = 'failed';
+  } else {
+    execution = 'not_run'; note = 'not run';
+  }
+  const effective = (execution === 'current' || execution === 'stale')
+    ? verdict : 'unknown';
+  return { execution, verdict: effective, result: null, note };
+}
+
+/** The stored result a plan check's expected hash points at, if present.
+ * Hashes are per-param-dict, NOT per-analysis (two analyses with identical
+ * params share a hash — the analysis id lives in the store directory), so
+ * the analysis must be part of the match. */
+export function resultForHash(
+  manifest: Manifest | null, a: Analysis, expectedHash: string | null,
+): ResultEntry | null {
+  if (!manifest || !expectedHash) return null;
+  return manifest.results.find(
+    (r) => r.process === a.process && r.analysis === a.analysis
+      && r.hash === expectedHash) ?? null;
 }
 
 /** One dot can only show one thing: verdict when we have one, execution

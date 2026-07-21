@@ -14,6 +14,7 @@ import re
 import numpy as np
 
 import pipeline
+import plans
 from processes.base import RESULTS_DIR
 
 
@@ -309,6 +310,11 @@ def build_manifest(root, part):
                 and aag_meta["mesh_fingerprint"]
                 != pipeline.mesh_fingerprint(workdir)),
         }
+
+    # the production plan + derived per-check status (docs/PLAN-ARCHITECTURE.md);
+    # pure fingerprint/hash arithmetic, so it stays cheap enough to rebuild here.
+    # Present even before meshing — plans are independent of the mesh.
+    manifest["plan"] = _json_safe(plans.plan_section(workdir))
 
     if not is_meshed:
         return manifest
