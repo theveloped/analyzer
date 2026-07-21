@@ -2,7 +2,7 @@ import { COL } from '../../colorizers/core';
 import type { RGB } from '../../registry/types';
 import { useStore } from '../../state/store';
 import { flyToFocus } from '../../viewer/controller';
-import { useActiveAnalysis } from './hooks';
+import { useActiveAnalysis, useActiveLens, useCheckActive, useDirectionsActive } from './hooks';
 
 const rgbCss = (c: RGB | readonly number[]) =>
   `rgb(${Math.round(c[0] * 255)} ${Math.round(c[1] * 255)} ${Math.round(c[2] * 255)})`;
@@ -18,7 +18,15 @@ const sub = 'text-[10px] tabular-nums text-zinc-500 dark:text-zinc-400';
 export function Legend() {
   const colorbar = useStore((s) => s.colorbar);
   const legend = useStore((s) => s.legend);
-  const active = useActiveAnalysis();
+  const activeAnalysis = useActiveAnalysis();
+  const activeLens = useActiveLens();
+  const checkActive = useCheckActive();
+  const directionsActive = useDirectionsActive();
+  // title follows what actually painted: the check when one is active,
+  // otherwise the active lens (useActiveAnalysis falls back to thickness)
+  const active = checkActive ? activeAnalysis
+    : directionsActive ? { label: 'Candidate directions' }
+    : activeLens ?? activeAnalysis;
 
   if (colorbar) {
     const { min, max, unit, diverging, gradient, threshold } = colorbar;

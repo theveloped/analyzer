@@ -6,9 +6,10 @@ import { Input } from '../../catalyst/input';
 import { Switch } from '../../catalyst/switch';
 import { useStore } from '../../state/store';
 import type { Analysis, ComputeField } from '../analyses';
+import { statusKindOf } from '../checks/status';
 import { StatusBadge } from '../components/status';
 import { useV2 } from '../store';
-import { resultFor, useActiveAnalysis } from './hooks';
+import { useActiveAnalysis, useCheckState } from './hooks';
 import { runAnalysis, useBusy } from './run';
 
 const labelCls = 'text-sm/6 font-medium text-zinc-950 dark:text-white';
@@ -115,12 +116,16 @@ function DisplayAdvanced({ a }: { a: Analysis }) {
 export function SettingsRail() {
   const a = useActiveAnalysis();
   const globalAdvanced = useV2((s) => s.advanced);
-  const manifest = useStore((s) => s.manifest);
   const stats = useStore((s) => s.stats);
   const error = useStore((s) => s.error);
   const meshReady = useStore((s) => s.meshReady);
   const busy = useBusy();
-  const computed = !!resultFor(manifest, a);
+  const state = useCheckState(a);
+  const computed = !!state.result;
+  const badgeText = state.note
+    || (state.verdict === 'pass' ? 'ok'
+      : state.verdict === 'review' ? 'review'
+      : 'computed');
 
   return (
     <div className="flex h-full w-72 shrink-0 flex-col gap-4 overflow-auto border-l border-zinc-950/5 bg-white p-4 dark:border-white/10 dark:bg-zinc-900">
@@ -128,11 +133,7 @@ export function SettingsRail() {
         <div className="flex items-center gap-2">
           <a.icon className="size-4 text-blue-600 dark:text-blue-400" />
           <h2 className="text-sm/6 font-semibold text-zinc-950 dark:text-white">{a.label}</h2>
-          {computed ? (
-            <StatusBadge status="good">computed</StatusBadge>
-          ) : (
-            <StatusBadge status="neutral">not run</StatusBadge>
-          )}
+          <StatusBadge status={statusKindOf(state)}>{badgeText}</StatusBadge>
         </div>
         <p className={clsx('mt-1', hintCls)}>{a.blurb}</p>
       </div>
