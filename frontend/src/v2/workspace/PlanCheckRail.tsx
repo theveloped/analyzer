@@ -79,7 +79,7 @@ function Rail({ check, status, plan }: {
       {status?.error && (
         <p className="text-xs/5 text-red-600 dark:text-red-500">⚠ {status.error}</p>
       )}
-      {view.kind !== 'reach_study' && (
+      {(view.kind === 'reach_op' || view.kind === 'reach_route') && (
         <p className={hintCls}>
           Shares the reach study's result — running any reach check computes
           for all of them; direction changes only re-slice.
