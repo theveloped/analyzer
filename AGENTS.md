@@ -116,8 +116,11 @@ python test_reach.py         # cnc/reach_study: per-(direction, tool) masks vs c
 
 They build synthetic parts with known-correct answers and assert on them; a green
 run prints assertions passed. Run the test(s) covering the module you touched —
-mapping in docs/RECIPES.md. Frontend: `frontend/smoke.mjs` walks every view mode
-against a running server (needs `CHROMIUM_PATH`).
+mapping in docs/RECIPES.md. Frontend: `cd frontend && npm test` runs the vitest
+unit suites (pure math modules, e.g. `src/viewer/measure.test.ts`);
+`frontend/smoke.mjs` (v1) and `frontend/v2-smoke.mjs` (v2, incl. viewport
+styles/section/measure pixel checks) walk the UI against a running server
+(needs `CHROMIUM_PATH`).
 
 ## Conventions
 
