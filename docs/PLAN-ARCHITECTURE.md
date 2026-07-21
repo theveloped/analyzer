@@ -136,6 +136,36 @@ zero recompute → disposition one finding → publish a report.
 The mixed sheet route (laser → CNC → press brake) is deliberately slice 2: CNC-on-flat-blank
 is a different mesh/face space, exactly the workpiece-state question we defer.
 
+## Phase 2 plan (locked 2026-07-21)
+
+Scope decisions: findings stay at face/area granularity (the cnc/features join is a
+follow-up); operations UI is a seeded template + per-op direction dropdown (no
+add/remove/reorder yet).
+
+1. **`cnc/reach_study`** (`processes/cnc.py` + `pipeline.reach_study`, REACH_STUDY_SCHEMA=1):
+   `setup_verdict`'s inner loop hoisted — per (direction, tool): `DirectionCache` fields
+   (lazy, persistent) → `zmap.tool_face_verdict` AND `accessibility[d]`. Params
+   `directions: int_list` (empty = all) + `tools: tool_list` + `tollerance` /
+   `wall_tollerance` / `pixel` / `window`; `requires=["prep/directions"]`. Stores
+   **per-pair face masks** `reach_<d>_<t>` (manifest-native) + per-pair area stats.
+2. **Plan wiring, no schema change**: operations `{kind: "cnc_setup", config:
+   {direction_index, tilt}}`; a study check owning execution plus per-op and aggregate
+   checks referencing the *same analysis+params* — shared expected hash, so direction
+   changes are interpretation-only (never recompute); only toolset/candidate edits re-key.
+3. **Client-side evaluation**: per-op verdict = union of masks over the op's tilt-cone
+   members (cone membership mirrored in TS from `machining.cone_members`); union ≠ sum, so
+   `v2/checks/evaluators.ts` grows an async path cached by (result hash, policy hash) —
+   the eval-key design lands here. Precedent: `frontend/src/processes/cnc/compose.ts`.
+4. **Lenses** in the cnc plugin (registry seam): `reach_study` (one d×t mask), `reach_op`
+   (unreachable by any tool in the op cone), `reach_aggregate` (unreachable in every op).
+5. **v2 UI**: operation cards in the Steps rail (direction dropdown from
+   `manifest.directions` + source labels, tilt field), a "CNC exploration" template
+   button, and the impact-preview modal on plan edits (POST /plan/impact → show
+   unchanged/revalidates/recomputes → apply).
+6. **Verify**: `test_reach.py` plain script (coarse fixture, 2 dirs × 2 tools; masks ⊆
+   accessibility row; one pair cross-checked against `pipeline.compose_tool`); extend the
+   Playwright walk to the full exploration flow on `testpart_42`.
+
 ## Sequencing
 
 | Phase | Scope |
