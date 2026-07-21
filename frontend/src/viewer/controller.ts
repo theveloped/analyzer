@@ -121,6 +121,16 @@ export function fitPart() {
   scene?.fit();
 }
 
+/** Part bounding box (posed) — sizes the section offset slider. */
+export function partBounds() {
+  return scene?.getBounds() ?? null;
+}
+
+/** Camera view direction — seeds the "custom" section plane normal. */
+export function viewDirection(): [number, number, number] {
+  return scene?.getViewDirection() ?? [0, 0, 1];
+}
+
 /** Fit the current legend-group selection in view. */
 export function fitSelection() {
   scene?.fitSelection();

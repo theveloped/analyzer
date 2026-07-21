@@ -49,6 +49,11 @@ export class Scene3D {
   private selectionMask: Uint8Array | null = null;
   private selectionColorAttr: THREE.BufferAttribute | null = null;
   private posed = false; // vertex positions currently overridden (bend anim)
+  // ONE shared section plane in a constant-length array assigned to every
+  // material the scene creates (constant length → the clipping shader define
+  // never changes, so no program relinks). Disabled = pushed to infinity.
+  private clipPlane = new THREE.Plane(new THREE.Vector3(1, 0, 0), 1e9);
+  private clipPlanes: THREE.Plane[] = [this.clipPlane];
   private colorAttr: THREE.BufferAttribute | null = null; // lens RGBA
   private faceCount = 0;
   private meshFaces: Uint32Array | null = null;
@@ -86,7 +91,14 @@ export class Scene3D {
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     // we clear manually each frame so the ViewHelper can overlay the gizmo
     this.renderer.autoClear = false;
+    // per-material clipping (NOT renderer.clippingPlanes, which would also
+    // cut the axis gizmo): every material the scene creates registers the
+    // shared section plane
+    this.renderer.localClippingEnabled = true;
     container.appendChild(this.renderer.domElement);
+    for (const m of [this.baseMaterial, this.xrayMaterial, this.lensMaterial,
+      this.lensOccludedMaterial, this.selectionMaterial,
+      this.depthPrepassMaterial]) this.registerClipping(m);
     this.rig = new CameraRig(
       container.clientWidth / container.clientHeight,
       this.renderer.domElement);
@@ -374,13 +386,13 @@ export class Scene3D {
       const geometry = new THREE.ExtrudeGeometry(shape, {
         depth: x1 - x0, bevelEnabled: false,
       });
-      const material = new THREE.MeshPhongMaterial({
+      const material = this.registerClipping(new THREE.MeshPhongMaterial({
         color: new THREE.Color(...spec.color),
         transparent: opacity < 1,
         opacity,
         depthWrite: opacity >= 1,
         side: THREE.DoubleSide,
-      });
+      }));
       const mesh = new THREE.Mesh(geometry, material);
       // shape (u,v) is machine (Y,Z); the extrusion axis is machine X
       mesh.matrixAutoUpdate = false;
@@ -484,10 +496,10 @@ export class Scene3D {
     // transparent (even at opacity 1) so the lines sort into the transparent
     // pass AFTER the lens layer — an opaque depth-less line would be painted
     // over by the lens overlay
-    const material = new THREE.LineBasicMaterial({
+    const material = this.registerClipping(new THREE.LineBasicMaterial({
       color: new THREE.Color(...color), depthTest, depthWrite: false,
       transparent: true,
-    });
+    }));
     const lines = new THREE.LineSegments(geometry, material);
     lines.renderOrder = depthTest ? 2 : 4; // through-lines draw over the mesh
     this.overlay.add(lines);
@@ -509,6 +521,8 @@ export class Scene3D {
       const helper = new THREE.ArrowHelper(
         d.clone().negate(), origin, length,
         new THREE.Color(...color).getHex(), 0.3 * length, 0.12 * length);
+      this.registerClipping(helper.line.material as THREE.Material);
+      this.registerClipping(helper.cone.material as THREE.Material);
       helper.userData.arrowIndex = index;
       this.overlay.add(helper);
       this.arrowHelpers.push(helper);
@@ -571,27 +585,36 @@ export class Scene3D {
     pointGeometry.setAttribute('position', positionAttr);
     pointGeometry.setAttribute('color', colorAttr);
     pointGeometry.setAttribute('size', sizeAttr);
-    const pointMaterial = new THREE.ShaderMaterial({
+    // hand-written shader: the clipping chunks must be included explicitly
+    // (and `clipping: true` set) for the section plane to apply
+    const pointMaterial = this.registerClipping(new THREE.ShaderMaterial({
       depthTest: false,
       depthWrite: false,
       transparent: true,
+      clipping: true,
       vertexShader: `
+        #include <common>
+        #include <clipping_planes_pars_vertex>
         attribute float size;
         varying vec3 vColor;
         void main() {
           vColor = color;
-          vec4 mv = modelViewMatrix * vec4(position, 1.0);
-          gl_PointSize = clamp(300.0 * size / -mv.z, 2.0, 24.0);
-          gl_Position = projectionMatrix * mv;
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = clamp(300.0 * size / -mvPosition.z, 2.0, 24.0);
+          gl_Position = projectionMatrix * mvPosition;
+          #include <clipping_planes_vertex>
         }`,
       fragmentShader: `
+        #include <common>
+        #include <clipping_planes_pars_fragment>
         varying vec3 vColor;
         void main() {
+          #include <clipping_planes_fragment>
           if (length(gl_PointCoord - 0.5) > 0.5) discard;
           gl_FragColor = vec4(vColor, 1.0);
         }`,
       vertexColors: true,
-    });
+    }));
     this.graphPoints = new THREE.Points(pointGeometry, pointMaterial);
     this.graphPoints.renderOrder = 4; // after the lens layer (transparent pass)
 
@@ -599,10 +622,10 @@ export class Scene3D {
     lineGeometry.setAttribute('position', positionAttr);
     lineGeometry.setAttribute('color', colorAttr);
     lineGeometry.setIndex(new THREE.BufferAttribute(edges, 1));
-    const lineMaterial = new THREE.LineBasicMaterial({
+    const lineMaterial = this.registerClipping(new THREE.LineBasicMaterial({
       vertexColors: true, transparent: true, opacity: 0.8,
       depthTest: false, depthWrite: false,
-    });
+    }));
     this.graphLines = new THREE.LineSegments(lineGeometry, lineMaterial);
     this.graphLines.renderOrder = 3; // after the lens layer (transparent pass)
 
@@ -681,7 +704,52 @@ export class Scene3D {
   setViewport(vs: ViewportState) {
     this.viewport = vs;
     this.setProjection(vs.projection);
+    this.applySection();
     this.applyRenderState();
+  }
+
+  /** Register a material for the shared section plane. */
+  private registerClipping<T extends THREE.Material>(material: T): T {
+    material.clippingPlanes = this.clipPlanes;
+    return material;
+  }
+
+  /** Aim the shared clipping plane per the viewport's section state: cut
+   * away the half-space the (possibly flipped) normal points into, past
+   * `offset` along the ORIGINAL normal. Disabled = plane at infinity. */
+  private applySection() {
+    const s = this.viewport.section;
+    if (!s.enabled) {
+      this.clipPlane.constant = 1e9;
+      return;
+    }
+    const sign = s.flip ? -1 : 1;
+    const n = new THREE.Vector3(...s.normal).normalize()
+      .multiplyScalar(sign);
+    // three clips fragments with negative signed distance: keep
+    // dot(N, p) <= dot(N, p0) where p0 = normal * offset
+    this.clipPlane.normal.copy(n).negate();
+    this.clipPlane.constant = sign * s.offset;
+  }
+
+  /** Part bounding box (posed), for the section offset range. */
+  getBounds(): { min: [number, number, number]; max: [number, number, number] } | null {
+    if (!this.mesh) return null;
+    const box = new THREE.Box3().setFromObject(this.mesh);
+    if (box.isEmpty()) return null;
+    return {
+      min: [box.min.x, box.min.y, box.min.z],
+      max: [box.max.x, box.max.y, box.max.z],
+    };
+  }
+
+  /** Unit direction the camera looks along (target − position). */
+  getViewDirection(): [number, number, number] {
+    const dir = this.controls.target.clone()
+      .sub(this.camera.position);
+    if (dir.lengthSq() < 1e-12) return [0, 0, 1];
+    dir.normalize();
+    return [dir.x, dir.y, dir.z];
   }
 
   /** Which faces the active lens counts as findings (null = no notion).
@@ -742,9 +810,9 @@ export class Scene3D {
     if (!segments || !segments.length) return;
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(segments, 3));
-    const material = new THREE.LineBasicMaterial({
+    const material = this.registerClipping(new THREE.LineBasicMaterial({
       color: new THREE.Color(THEME_COLORS[this.theme].brepEdge),
-    });
+    }));
     this.edgeLines = new THREE.LineSegments(geometry, material);
     this.edgeLines.renderOrder = 2;
     this.scene.add(this.edgeLines);

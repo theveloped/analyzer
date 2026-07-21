@@ -5,8 +5,12 @@ import {
   Spline, Triangle,
 } from 'lucide-react';
 import { useStore } from '../../state/store';
-import { fitPart, fitSelection, selectLegendGroup } from '../../viewer/controller';
-import type { EdgeMode, RenderStyle } from '../../viewer/viewportState';
+import {
+  fitPart, fitSelection, partBounds, selectLegendGroup, viewDirection,
+} from '../../viewer/controller';
+import {
+  DEFAULT_SECTION, type EdgeMode, type RenderStyle, type SectionState,
+} from '../../viewer/viewportState';
 import { edgeDescriptors } from '../../splits/splits';
 import { useV2 } from '../store';
 
@@ -127,6 +131,135 @@ function OverlayMenu() {
   );
 }
 
+const AXIS_NORMALS: Record<'x' | 'y' | 'z', [number, number, number]> = {
+  x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1],
+};
+
+/** Offset range of the part bbox along a normal (projected corners). */
+function offsetRange(normal: [number, number, number]): [number, number] {
+  const bounds = partBounds();
+  if (!bounds) return [-100, 100];
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const x of [bounds.min[0], bounds.max[0]]) {
+    for (const y of [bounds.min[1], bounds.max[1]]) {
+      for (const z of [bounds.min[2], bounds.max[2]]) {
+        const d = x * normal[0] + y * normal[1] + z * normal[2];
+        if (d < lo) lo = d;
+        if (d > hi) hi = d;
+      }
+    }
+  }
+  return lo <= hi ? [lo, hi] : [-100, 100];
+}
+
+/** One composable section plane: axis or view-seeded normal, offset slider
+ * plus numeric value, flip and reset. Clips every render layer. */
+function SectionMenu() {
+  const section = useV2((s) => s.viewport.section);
+  const setViewport = useV2((s) => s.setViewport);
+  const patch = (p: Partial<SectionState>) =>
+    setViewport({ section: { ...section, ...p } });
+  const [lo, hi] = offsetRange(section.normal);
+  const mid = (lo + hi) / 2;
+  const span = Math.max(hi - lo, 1e-6);
+
+  const pickAxis = (axis: 'x' | 'y' | 'z') => {
+    const normal = AXIS_NORMALS[axis];
+    const [alo, ahi] = offsetRange(normal);
+    patch({
+      enabled: true, axis, normal,
+      offset: section.axis === axis ? section.offset : (alo + ahi) / 2,
+    });
+  };
+  const pickView = () => {
+    const normal = viewDirection();
+    const [alo, ahi] = offsetRange(normal);
+    patch({ enabled: true, axis: 'custom', normal, offset: (alo + ahi) / 2 });
+  };
+
+  return (
+    <Popover className="relative">
+      <PopoverButton
+        title="Section plane"
+        aria-label="Section plane"
+        className={clsx(btnCls, section.enabled ? activeCls : idleCls)}
+      >
+        <Slice className="size-4" />
+      </PopoverButton>
+      <PopoverPanel anchor="top" className={panelCls}>
+        <div className={labelCls}>Section plane</div>
+        <div className="mb-1 flex items-center gap-1 px-1">
+          {(['x', 'y', 'z'] as const).map((axis) => (
+            <button
+              key={axis}
+              type="button"
+              onClick={() => pickAxis(axis)}
+              className={clsx('flex h-7 flex-1 items-center justify-center rounded-lg text-xs font-medium uppercase transition',
+                section.enabled && section.axis === axis ? rowActiveCls : rowIdleCls)}
+            >
+              {axis}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={pickView}
+            title="Plane facing the current view"
+            className={clsx('flex h-7 flex-1 items-center justify-center rounded-lg text-xs font-medium transition',
+              section.enabled && section.axis === 'custom' ? rowActiveCls : rowIdleCls)}
+          >
+            View
+          </button>
+        </div>
+        <div className={clsx(rowCls, 'text-zinc-700 dark:text-zinc-300')}>
+          <input
+            type="range"
+            min={lo}
+            max={hi}
+            step={span / 200}
+            disabled={!section.enabled}
+            value={section.enabled ? section.offset : mid}
+            onChange={(e) => patch({ offset: parseFloat(e.target.value) })}
+            className="w-full"
+            title="Section offset"
+          />
+        </div>
+        <div className={clsx(rowCls, 'text-zinc-700 dark:text-zinc-300')}>
+          <input
+            type="number"
+            disabled={!section.enabled}
+            value={section.enabled ? Number(section.offset.toFixed(2)) : ''}
+            step={Number((span / 100).toPrecision(2))}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value);
+              if (isFinite(v)) patch({ offset: v });
+            }}
+            className="w-24 rounded-lg border border-zinc-950/10 bg-transparent px-2 py-1 text-xs tabular-nums dark:border-white/10"
+          />
+          <span className="text-xs text-zinc-400">mm</span>
+          <span className="flex-1" />
+          <button
+            type="button"
+            disabled={!section.enabled}
+            onClick={() => patch({ flip: !section.flip })}
+            className={clsx('rounded-lg px-2 py-1 text-xs transition',
+              section.flip ? rowActiveCls : rowIdleCls)}
+          >
+            Flip
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewport({ section: DEFAULT_SECTION })}
+            className={clsx('rounded-lg px-2 py-1 text-xs transition', rowIdleCls)}
+          >
+            Reset
+          </button>
+        </div>
+      </PopoverPanel>
+    </Popover>
+  );
+}
+
 /**
  * The floating viewport toolbar (bottom centre): HOW the part is rendered and
  * interacted with — render style, edges, lens overlay, section plane,
@@ -161,10 +294,7 @@ export function ViewportToolbar() {
 
       <EdgeMenu />
       <OverlayMenu />
-      <button type="button" disabled title="Section plane"
-        className={clsx(btnCls, disabledCls)}>
-        <Slice className="size-4" />
-      </button>
+      <SectionMenu />
       <Divider />
 
       <button
