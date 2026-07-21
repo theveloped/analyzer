@@ -14,8 +14,12 @@ import type { LegendFocus, ViewCtx } from '../registry/types';
 import { useStore } from '../state/store';
 import { setColorBackground, VIEWER_BG, type ViewerBackground } from './colormaps';
 import { Scene3D } from './scene';
+import { DEFAULT_VIEWPORT, type ViewportState } from './viewportState';
 
 let scene: Scene3D | null = null;
+// how the scene renders/sections, independent of the active lens. The v1 app
+// never changes it (classic look); the v2 shell pushes its store slice here.
+let viewportState: ViewportState = DEFAULT_VIEWPORT;
 let verts: Float32Array | null = null;
 let faces: Uint32Array | null = null;
 let normals: Float32Array | null = null;
@@ -36,6 +40,7 @@ async function loadOverrides(manifest: Manifest) {
 
 export function attach(container: HTMLElement) {
   scene = new Scene3D(container);
+  scene.setProjection(viewportState.projection);
   scene.onPick = (face, point) => void inspect(face, point);
   // arrow clicks (directions view): stash the selected arrow + screen position
   // so the tooltip can show its provenance / delete control, and highlight the
@@ -96,6 +101,19 @@ export function flyToFocus(focus: LegendFocus) {
 /** Snapshot the viewer (PNG + camera pose) for report evidence. */
 export function captureViewer() {
   return scene?.capture() ?? null;
+}
+
+/** Apply a new viewport state (render style, projection, section, …). Does
+ * NOT schedule a repaint — the lens data is unchanged; the scene re-composes
+ * its layers directly. */
+export function setViewportState(vs: ViewportState) {
+  viewportState = vs;
+  scene?.setProjection(vs.projection);
+}
+
+/** Fit the whole part in view, keeping the current view direction. */
+export function fitPart() {
+  scene?.fit();
 }
 
 /** Switch the viewer between light and dark: repaints the background and the

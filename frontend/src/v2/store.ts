@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { DEFAULT_VIEWPORT, type ViewportState } from '../viewer/viewportState';
 import { ANALYSES, defaultCompute } from './analyses';
 import type { BandBound } from './fieldLenses';
 
@@ -21,12 +22,16 @@ export interface V2State {
   /** Highlight-band bounds PER LENS — each lens keeps its own band; editing
    * one must never bleed into another. */
   bands: Record<string, { lo: BandBound; hi: BandBound }>;
+  /** How the viewport renders/sections the part — orthogonal to the lens and
+   * check scope: none of the lens/check switchers may touch it. */
+  viewport: ViewportState;
 
   setAdvanced: (advanced: boolean) => void;
   toggleTheme: () => void;
   setCompute: (analysisId: string, key: string, value: unknown) => void;
   setActiveCheck: (id: string | null) => void;
   setBand: (lensKey: string, band: { lo: BandBound; hi: BandBound }) => void;
+  setViewport: (patch: Partial<ViewportState>) => void;
 }
 
 const initialCompute = Object.fromEntries(
@@ -39,8 +44,11 @@ export const useV2 = create<V2State>()((set) => ({
   compute: initialCompute,
   activeCheckId: null,
   bands: {},
+  viewport: DEFAULT_VIEWPORT,
 
   setAdvanced: (advanced) => set({ advanced }),
+  setViewport: (patch) =>
+    set((s) => ({ viewport: { ...s.viewport, ...patch } })),
   setActiveCheck: (activeCheckId) => set({ activeCheckId }),
   setBand: (lensKey, band) =>
     set((s) => ({ bands: { ...s.bands, [lensKey]: band } })),

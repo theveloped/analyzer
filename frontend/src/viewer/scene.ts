@@ -3,15 +3,15 @@
 // corners — the same contract the old viewer relied on).
 
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import type { RGB } from '../registry/types';
+import { CameraRig } from './cameraRig';
+import type { Projection } from './viewportState';
 
 export class Scene3D {
   private scene = new THREE.Scene();
-  private camera: THREE.PerspectiveCamera;
+  private rig: CameraRig;
   private renderer: THREE.WebGLRenderer;
-  private controls: OrbitControls;
   private mesh: THREE.Mesh | null = null;
   private overlay = new THREE.Group();
   private colorAttr: THREE.BufferAttribute | null = null;
@@ -40,23 +40,21 @@ export class Scene3D {
   private arrowHelpers: THREE.ArrowHelper[] = [];
   onPickArrow: ((index: number, screen: [number, number]) => boolean) | null = null;
 
+  // camera handling lives in the rig (perspective/ortho switch, fits); the
+  // rest of the class only ever needs "the active camera" and the controls
+  private get camera() { return this.rig.camera; }
+  private get controls() { return this.rig.controls; }
+
   constructor(private container: HTMLElement) {
     this.scene.background = new THREE.Color(0x21262c);
-    this.camera = new THREE.PerspectiveCamera(
-      50, container.clientWidth / container.clientHeight, 0.1, 5000);
-    // Z is up for CAD parts — must be set BEFORE constructing OrbitControls,
-    // which captures its orbit basis from camera.up at construction time
-    // (setting it later leaves the controls tumbling around +Y)
-    this.camera.up.set(0, 0, 1);
-    // a default framing so the empty viewer is a real 3D view (orbitable, and
-    // the axis gizmo reads correctly) before a part loads; frame() overrides it
-    this.camera.position.set(4, -4, 3);
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     // we clear manually each frame so the ViewHelper can overlay the gizmo
     this.renderer.autoClear = false;
     container.appendChild(this.renderer.domElement);
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.rig = new CameraRig(
+      container.clientWidth / container.clientHeight,
+      this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.15;
     this.controls.zoomToCursor = true; // wheel zooms toward the cursor
@@ -68,12 +66,7 @@ export class Scene3D {
       RIGHT: THREE.MOUSE.PAN,
     };
 
-    // Axis gizmo. `center` shares the controls' orbit target (a live reference,
-    // so a double-click re-center moves the gizmo pivot too).
-    this.viewHelper = new ViewHelper(this.camera, this.renderer.domElement);
-    this.viewHelper.center = this.controls.target;
-    this.viewHelper.setLabelStyle('bold 22px system-ui, sans-serif', '#18181b', 15);
-    this.viewHelper.setLabels('X', 'Y', 'Z');
+    this.viewHelper = this.makeViewHelper();
 
     this.scene.add(this.overlay);
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.0));
@@ -112,10 +105,38 @@ export class Scene3D {
     animate();
   }
 
+  /** Axis gizmo (bottom-right). `center` shares the controls' orbit target
+   * (a live reference, so a double-click re-center moves the gizmo pivot
+   * too). Rebuilt on a projection switch — the helper closure-captures its
+   * camera. */
+  private makeViewHelper(): ViewHelper {
+    const helper = new ViewHelper(this.camera, this.renderer.domElement);
+    helper.center = this.controls.target;
+    helper.setLabelStyle('bold 22px system-ui, sans-serif', '#18181b', 15);
+    helper.setLabels('X', 'Y', 'Z');
+    return helper;
+  }
+
+  /** Switch perspective/orthographic, preserving target, orientation and
+   * apparent model size (the rig owns the math). */
+  setProjection(p: Projection) {
+    if (!this.rig.setProjection(p)) return;
+    this.viewHelper.dispose();
+    this.viewHelper = this.makeViewHelper();
+  }
+
+  /** Fit the whole part in view, keeping the current view direction. */
+  fit() {
+    if (!this.mesh) return;
+    const box = new THREE.Box3().setFromObject(this.mesh);
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = box.getSize(new THREE.Vector3()).length() / 2;
+    this.rig.fitTo(center, radius * 1.1);
+  }
+
   private onResize = () => {
     const { clientWidth, clientHeight } = this.container;
-    this.camera.aspect = clientWidth / clientHeight;
-    this.camera.updateProjectionMatrix();
+    this.rig.onResize(clientWidth / clientHeight);
     this.renderer.setSize(clientWidth, clientHeight);
   };
 
@@ -311,17 +332,17 @@ export class Scene3D {
     const box = new THREE.Box3().setFromObject(this.mesh);
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3()).length();
+    this.rig.setWorldRadius(size / 2);
     const d = direction ?? [0, 0, 1];
     const view = new THREE.Vector3(d[0], d[1], d[2]).normalize();
     const side = new THREE.Vector3(0, 1, 0);
     if (Math.abs(view.dot(side)) > 0.9) side.set(1, 0, 0);
     side.cross(view).normalize();
-    this.camera.position.copy(center)
+    const position = center.clone()
       .addScaledVector(view, size * 0.9)
       .addScaledVector(side, size * 0.45);
-    this.camera.up.set(0, 0, 1);
-    this.controls.target.copy(center);
-    this.controls.update();
+    this.rig.lookFrom(position, center,
+      this.rig.halfHeightFor(position.distanceTo(center)));
   }
 
   paintFaces(colorOf: (f: number) => RGB) {
@@ -361,9 +382,8 @@ export class Scene3D {
     const partSize = new THREE.Box3().setFromObject(this.mesh)
       .getSize(new THREE.Vector3()).length();
     const dist = Math.max(radius * 3, partSize * 0.12);
-    this.camera.position.copy(c).addScaledVector(dir, dist);
-    this.controls.target.copy(c);
-    this.controls.update();
+    this.rig.lookFrom(c.clone().addScaledVector(dir, dist), c,
+      this.rig.halfHeightFor(dist));
   }
 
   /** Overlay line segments given as flattened endpoint pairs (N*2*3).
