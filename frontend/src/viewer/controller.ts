@@ -42,10 +42,25 @@ async function loadOverrides(manifest: Manifest) {
   useStore.getState().set({ overrides: Object.fromEntries(entries) });
 }
 
+// interaction tools (e.g. Measure) claim mesh picks BEFORE plugin/mode
+// onPick handlers. Registered from the v2 shell — the controller stays
+// decoupled from the v2 store.
+let pickInterceptor:
+  ((face: number, point: [number, number, number]) => boolean) | null = null;
+
+export function setPickInterceptor(
+  fn: ((face: number, point: [number, number, number]) => boolean) | null,
+) {
+  pickInterceptor = fn;
+}
+
 export function attach(container: HTMLElement) {
   scene = new Scene3D(container);
   scene.setViewport(viewportState);
-  scene.onPick = (face, point) => void inspect(face, point);
+  scene.onPick = (face, point) => {
+    if (pickInterceptor?.(face, point)) return;
+    void inspect(face, point);
+  };
   // arrow clicks (directions view): stash the selected arrow + screen position
   // so the tooltip can show its provenance / delete control, and highlight the
   // BREP faces the direction was built from (hole / surface-normal sources).
@@ -129,6 +144,19 @@ export function partBounds() {
 /** Camera view direction — seeds the "custom" section plane normal. */
 export function viewDirection(): [number, number, number] {
   return scene?.getViewDirection() ?? [0, 0, 1];
+}
+
+/** Live surface normal at a fine face (posed when the mesh is posed). */
+export function faceNormal(face: number): [number, number, number] {
+  return scene?.faceNormalAt(face) ?? [0, 0, 1];
+}
+
+/** Push the measurement session's picks into the annotation layer. */
+export function setMeasureAnnotations(
+  a: Parameters<Scene3D['setMeasureAnnotations']>[0],
+  b: Parameters<Scene3D['setMeasureAnnotations']>[1],
+) {
+  scene?.setMeasureAnnotations(a, b);
 }
 
 /** Fit the current legend-group selection in view. */

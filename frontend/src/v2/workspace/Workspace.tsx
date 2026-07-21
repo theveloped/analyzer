@@ -8,8 +8,10 @@ import {
   useActiveFieldLens, useActiveLens, useAutoRunFieldLens, useCheckActive,
   useDirectionsActive, useSelectedPlanCheck,
 } from './hooks';
+import { useV2 } from '../store';
 import { Legend } from './Legend';
 import { LensRail } from './LensRail';
+import { MeasureRail } from './MeasureRail';
 import { PipelineRail } from './PipelineRail';
 import { PlanCheckRail } from './PlanCheckRail';
 import { PmiRail } from './PmiRail';
@@ -38,8 +40,12 @@ export function Workspace() {
   // a selected non-threshold plan check (reach study/op/route) gets its own
   // rail; field lenses get the band panel; other checks the SettingsRail
   const planCheckRail = selected && !catalogAnalysisFor(selected.check);
+  const measuring = useV2((s) => s.measure.active);
 
-  const rightRail = modeId === 'pmi' ? <PmiRail />
+  // the measure INTERACTION outranks every lens/check rail while active —
+  // the lens stays visible in the viewport, only the rail switches
+  const rightRail = measuring ? <MeasureRail />
+    : modeId === 'pmi' ? <PmiRail />
     : directionsActive ? <DirectionsRail />
     : planCheckRail ? <PlanCheckRail />
     : activeFieldLens ? <FieldLensRail />

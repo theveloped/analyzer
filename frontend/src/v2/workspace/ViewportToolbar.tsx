@@ -271,6 +271,8 @@ function SectionMenu() {
 export function ViewportToolbar() {
   const viewport = useV2((s) => s.viewport);
   const setViewport = useV2((s) => s.setViewport);
+  const measuring = useV2((s) => s.measure.active);
+  const setMeasureActive = useV2((s) => s.setMeasureActive);
   const selection = useStore((s) => s.selection);
 
   const setContext = (mode: 'ghost' | 'isolate') =>
@@ -372,8 +374,14 @@ export function ViewportToolbar() {
       )}
       <Divider />
 
-      <button type="button" disabled title="Measure"
-        className={clsx(btnCls, disabledCls)}>
+      {/* interaction tool, not a render setting: owns mesh clicks while on */}
+      <button
+        type="button"
+        onClick={() => setMeasureActive(!measuring)}
+        title={measuring ? 'Exit measure (Esc)' : 'Measure two points'}
+        aria-pressed={measuring}
+        className={clsx(btnCls, measuring ? activeCls : idleCls)}
+      >
         <Ruler className="size-4" />
       </button>
     </div>

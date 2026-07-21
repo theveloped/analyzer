@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import type { RGB } from '../registry/types';
 import { CameraRig } from './cameraRig';
+import type { MeasurePick } from './measure';
 import {
   makeBaryAttribute, makeBaseMaterial, makeDepthPrepassMaterial,
   makeEdgeUniforms, makeLensMaterial, makeLensOccludedMaterial,
@@ -961,6 +962,81 @@ export class Scene3D {
     this.meshFaces = null;
     this.originalPositions = null;
     this.originalNormals = null;
+  }
+
+  /** Rebuild the measurement annotations from the session state: A/B
+   * markers (constant screen size), the straight A→B segment, RGB
+   * model-axis component legs anchored at A, and the two normal rays.
+   * Lives in the persistent annotation layer — lens repaints never clear
+   * it — and is registered for section clipping like every other layer. */
+  setMeasureAnnotations(a: MeasurePick | null, b: MeasurePick | null) {
+    this.clearAnnotations();
+    if (!a && !b) return;
+    const bounds = this.getBounds();
+    const diag = bounds
+      ? Math.hypot(bounds.max[0] - bounds.min[0], bounds.max[1] - bounds.min[1],
+                   bounds.max[2] - bounds.min[2])
+      : 10;
+    const rayLength = diag * 0.05;
+
+    const addLine = (points: [number, number, number][], color: number,
+                     opacity = 1) => {
+      const positions = new Float32Array(points.flat());
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const material = this.registerClipping(new THREE.LineBasicMaterial({
+        color, transparent: true, opacity, depthTest: false, depthWrite: false,
+      }));
+      const line = new THREE.Line(geometry, material);
+      line.renderOrder = 5;
+      this.annotations.add(line);
+    };
+    const addMarker = (pick: MeasurePick, label: string, color: string) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 64;
+      canvas.height = 64;
+      const g = canvas.getContext('2d')!;
+      g.beginPath();
+      g.arc(32, 32, 26, 0, 2 * Math.PI);
+      g.fillStyle = color;
+      g.fill();
+      g.lineWidth = 5;
+      g.strokeStyle = '#ffffff';
+      g.stroke();
+      g.fillStyle = '#ffffff';
+      g.font = 'bold 30px system-ui, sans-serif';
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText(label, 32, 34);
+      const material = this.registerClipping(new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(canvas),
+        depthTest: false, sizeAttenuation: false, // constant screen size
+      }));
+      const sprite = new THREE.Sprite(material);
+      sprite.position.set(...pick.point);
+      sprite.scale.set(0.045, 0.045, 1);
+      sprite.renderOrder = 6;
+      this.annotations.add(sprite);
+      // the pick's surface normal, drawn from the picked point
+      const tip: [number, number, number] = [
+        pick.point[0] + pick.normal[0] * rayLength,
+        pick.point[1] + pick.normal[1] * rayLength,
+        pick.point[2] + pick.normal[2] * rayLength,
+      ];
+      addLine([pick.point, tip], 0xbfc6ce, 0.9);
+    };
+
+    if (a) addMarker(a, 'A', '#2f6fde');
+    if (b) addMarker(b, 'B', '#d97b16');
+    if (a && b) {
+      addLine([a.point, b.point], this.theme === 'dark' ? 0xf3f5f7 : 0x1c1f24);
+      // RGB axis staircase A → +dX → +dY → +dZ = B
+      const p1: [number, number, number] = [b.point[0], a.point[1], a.point[2]];
+      const p2: [number, number, number] = [b.point[0], b.point[1], a.point[2]];
+      addLine([a.point, p1], 0xe14b4b, 0.9);
+      addLine([p1, p2], 0x3fba55, 0.9);
+      addLine([p2, b.point], 0x4b86e1, 0.9);
+    }
   }
 
   /** Remove everything in the persistent annotation layer (measurement

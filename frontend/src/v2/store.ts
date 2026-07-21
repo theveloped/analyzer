@@ -1,7 +1,15 @@
 import { create } from 'zustand';
+import type { MeasurePick } from '../viewer/measure';
 import { DEFAULT_VIEWPORT, type ViewportState } from '../viewer/viewportState';
 import { ANALYSES, defaultCompute } from './analyses';
 import type { BandBound } from './fieldLenses';
+
+export interface MeasureState {
+  /** The Measure interaction tool owns mesh clicks while active. */
+  active: boolean;
+  a: MeasurePick | null;
+  b: MeasurePick | null;
+}
 
 /**
  * v2-only UI state. The 3D viewer, part manifest, jobs, legend and stats all
@@ -25,6 +33,8 @@ export interface V2State {
   /** How the viewport renders/sections the part — orthogonal to the lens and
    * check scope: none of the lens/check switchers may touch it. */
   viewport: ViewportState;
+  /** The two-point measurement session — same orthogonality rule. */
+  measure: MeasureState;
 
   setAdvanced: (advanced: boolean) => void;
   toggleTheme: () => void;
@@ -32,6 +42,11 @@ export interface V2State {
   setActiveCheck: (id: string | null) => void;
   setBand: (lensKey: string, band: { lo: BandBound; hi: BandBound }) => void;
   setViewport: (patch: Partial<ViewportState>) => void;
+  setMeasureActive: (active: boolean) => void;
+  /** FSM: empty → A; A → B; A+B → new A (third click starts over). */
+  pushMeasurePick: (pick: MeasurePick) => void;
+  /** Drop the picks but stay active. */
+  clearMeasurePicks: () => void;
 }
 
 const initialCompute = Object.fromEntries(
@@ -45,10 +60,21 @@ export const useV2 = create<V2State>()((set) => ({
   activeCheckId: null,
   bands: {},
   viewport: DEFAULT_VIEWPORT,
+  measure: { active: false, a: null, b: null },
 
   setAdvanced: (advanced) => set({ advanced }),
   setViewport: (patch) =>
     set((s) => ({ viewport: { ...s.viewport, ...patch } })),
+  setMeasureActive: (active) =>
+    set((s) => ({ measure: { ...s.measure, active } })),
+  pushMeasurePick: (pick) =>
+    set((s) => ({
+      measure: !s.measure.a || s.measure.b
+        ? { ...s.measure, a: pick, b: null }
+        : { ...s.measure, b: pick },
+    })),
+  clearMeasurePicks: () =>
+    set((s) => ({ measure: { ...s.measure, a: null, b: null } })),
   setActiveCheck: (activeCheckId) => set({ activeCheckId }),
   setBand: (lensKey, band) =>
     set((s) => ({ bands: { ...s.bands, [lensKey]: band } })),

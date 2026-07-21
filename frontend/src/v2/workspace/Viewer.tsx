@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { attach, setViewerTheme, setViewportState } from '../../viewer/controller';
+import { initMeasureTool, syncMeasureAnnotations } from '../measure/tool';
 import { useV2 } from '../store';
 
 /**
@@ -24,6 +25,10 @@ export function Viewer() {
     const unsubscribe = useV2.subscribe((s, prev) => {
       if (s.viewport !== prev.viewport) setViewportState(s.viewport);
     });
+    // measure tool: session → pick interceptor + annotation layer (and the
+    // fresh scene needs the current annotations re-pushed, like the theme)
+    initMeasureTool();
+    syncMeasureAnnotations();
     const observer = new ResizeObserver(() => {
       window.dispatchEvent(new Event('resize'));
     });
