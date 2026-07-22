@@ -3,18 +3,70 @@
 // corners — the same contract the old viewer relied on).
 
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import type { RGB } from '../registry/types';
+import { CameraRig } from './cameraRig';
+import { computeMeasurement, type MeasureFrame, type MeasurePick } from './measure';
+import {
+  makeBaryAttribute, makeBaseMaterial, makeCapMaterial,
+  makeDepthPrepassMaterial, makeEdgeUniforms, makeLensMaterial,
+  makeLensOccludedMaterial, makeLensOpacityUniforms, makeSelectionMaterial,
+  makeStencilPassMaterials, makeXrayMaterial, patchLensOpacity, THEME_COLORS,
+} from './styles';
+import { DEFAULT_VIEWPORT, type Projection, type ViewportState } from './viewportState';
+
+const GHOST_ALPHA = 0.15;
 
 export class Scene3D {
   private scene = new THREE.Scene();
-  private camera: THREE.PerspectiveCamera;
+  private rig: CameraRig;
   private renderer: THREE.WebGLRenderer;
-  private controls: OrbitControls;
+  // ---- composable render layers over ONE set of shared buffer attributes.
+  // `mesh` is the opaque base layer and the raycast/bbox anchor; the lens
+  // layer carries the vertex colours every mode paints; selection renders
+  // the legend-group selection for ghost/isolate; the prepass and occluded
+  // meshes exist for the X-ray two-pass split. All layers share position/
+  // normal attribute INSTANCES, so posing the mesh re-poses every layer.
   private mesh: THREE.Mesh | null = null;
-  private overlay = new THREE.Group();
-  private colorAttr: THREE.BufferAttribute | null = null;
+  private lensMesh: THREE.Mesh | null = null;
+  private lensOccludedMesh: THREE.Mesh | null = null;
+  private depthPrepassMesh: THREE.Mesh | null = null;
+  private selectionMesh: THREE.Mesh | null = null;
+  // section cap: stencil parity passes over the base geometry + the cap quad
+  private stencilBackMesh: THREE.Mesh | null = null;
+  private stencilFrontMesh: THREE.Mesh | null = null;
+  private capMesh: THREE.Mesh | null = null;
+  /** Stencil parity only works for watertight solids; the controller flips
+   * this off for open sheet parts (naked-edge check). */
+  private capSupported = true;
+  private edgeLines: THREE.LineSegments | null = null; // BREP boundaries (persistent)
+  private annotations = new THREE.Group(); // measurement etc. (persistent)
+  private overlay = new THREE.Group(); // per-repaint overlays (cleared)
+  private edgeUniforms = makeEdgeUniforms();
+  private lensOpacityUniforms = makeLensOpacityUniforms();
+  private baseMaterial = makeBaseMaterial(this.edgeUniforms);
+  private xrayMaterial = makeXrayMaterial();
+  private lensMaterial = makeLensMaterial(this.edgeUniforms);
+  private lensOccludedMaterial = makeLensOccludedMaterial();
+  private selectionMaterial = makeSelectionMaterial(this.edgeUniforms);
+  private depthPrepassMaterial = makeDepthPrepassMaterial();
+  private stencilMaterials = makeStencilPassMaterials();
+  private capMaterial = makeCapMaterial();
+  private viewport: ViewportState = DEFAULT_VIEWPORT;
+  private theme: 'light' | 'dark' = 'dark';
+  private lensHint = 1; // legacy setMeshOpacity: "this lens wants a see-through body"
+  private findingMask: Uint8Array | null = null;
+  private findingsVersion = 0;
+  private lensAlphaState = ''; // skip redundant full-buffer alpha rewrites
+  private selectionMask: Uint8Array | null = null;
+  private selectionColorAttr: THREE.BufferAttribute | null = null;
+  private posed = false; // vertex positions currently overridden (bend anim)
+  // ONE shared section plane in a constant-length array assigned to every
+  // material the scene creates (constant length → the clipping shader define
+  // never changes, so no program relinks). Disabled = pushed to infinity.
+  private clipPlane = new THREE.Plane(new THREE.Vector3(1, 0, 0), 1e9);
+  private clipPlanes: THREE.Plane[] = [this.clipPlane];
+  private colorAttr: THREE.BufferAttribute | null = null; // lens RGBA
   private faceCount = 0;
   private meshFaces: Uint32Array | null = null;
   private originalPositions: Float32Array | null = null;
@@ -40,23 +92,39 @@ export class Scene3D {
   private arrowHelpers: THREE.ArrowHelper[] = [];
   onPickArrow: ((index: number, screen: [number, number]) => boolean) | null = null;
 
+  // camera handling lives in the rig (perspective/ortho switch, fits); the
+  // rest of the class only ever needs "the active camera" and the controls
+  private get camera() { return this.rig.camera; }
+  private get controls() { return this.rig.controls; }
+
   constructor(private container: HTMLElement) {
     this.scene.background = new THREE.Color(0x21262c);
-    this.camera = new THREE.PerspectiveCamera(
-      50, container.clientWidth / container.clientHeight, 0.1, 5000);
-    // Z is up for CAD parts — must be set BEFORE constructing OrbitControls,
-    // which captures its orbit basis from camera.up at construction time
-    // (setting it later leaves the controls tumbling around +Y)
-    this.camera.up.set(0, 0, 1);
-    // a default framing so the empty viewer is a real 3D view (orbitable, and
-    // the axis gizmo reads correctly) before a part loads; frame() overrides it
-    this.camera.position.set(4, -4, 3);
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    // stencil defaults to FALSE in three r163+ — without it the section-cap
+    // stencil state silently no-ops
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     // we clear manually each frame so the ViewHelper can overlay the gizmo
     this.renderer.autoClear = false;
+    // per-material clipping (NOT renderer.clippingPlanes, which would also
+    // cut the axis gizmo): every material the scene creates registers the
+    // shared section plane
+    this.renderer.localClippingEnabled = true;
     container.appendChild(this.renderer.domElement);
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    for (const m of [this.baseMaterial, this.xrayMaterial, this.lensMaterial,
+      this.lensOccludedMaterial, this.selectionMaterial,
+      this.depthPrepassMaterial]) this.registerClipping(m);
+    // the stencil parity passes must be cut by the plane too (the parity
+    // counts only the KEPT half); the cap itself is deliberately unclipped —
+    // it lies exactly on the plane and would vanish on float roundoff
+    this.registerClipping(this.stencilMaterials.back);
+    this.registerClipping(this.stencilMaterials.front);
+    // the lens alpha channel is a 0/1 findings MASK; these uniforms mix the
+    // two user opacities on it in the fragment stage
+    patchLensOpacity(this.lensMaterial, this.lensOpacityUniforms);
+    patchLensOpacity(this.lensOccludedMaterial, this.lensOpacityUniforms);
+    this.rig = new CameraRig(
+      container.clientWidth / container.clientHeight,
+      this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.15;
     this.controls.zoomToCursor = true; // wheel zooms toward the cursor
@@ -68,14 +136,10 @@ export class Scene3D {
       RIGHT: THREE.MOUSE.PAN,
     };
 
-    // Axis gizmo. `center` shares the controls' orbit target (a live reference,
-    // so a double-click re-center moves the gizmo pivot too).
-    this.viewHelper = new ViewHelper(this.camera, this.renderer.domElement);
-    this.viewHelper.center = this.controls.target;
-    this.viewHelper.setLabelStyle('bold 22px system-ui, sans-serif', '#18181b', 15);
-    this.viewHelper.setLabels('X', 'Y', 'Z');
+    this.viewHelper = this.makeViewHelper();
 
     this.scene.add(this.overlay);
+    this.scene.add(this.annotations);
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.0));
     const dir1 = new THREE.DirectionalLight(0xffffff, 0.55);
     dir1.position.set(-3, 10, -10);
@@ -112,10 +176,38 @@ export class Scene3D {
     animate();
   }
 
+  /** Axis gizmo (bottom-right). `center` shares the controls' orbit target
+   * (a live reference, so a double-click re-center moves the gizmo pivot
+   * too). Rebuilt on a projection switch — the helper closure-captures its
+   * camera. */
+  private makeViewHelper(): ViewHelper {
+    const helper = new ViewHelper(this.camera, this.renderer.domElement);
+    helper.center = this.controls.target;
+    helper.setLabelStyle('bold 22px system-ui, sans-serif', '#18181b', 15);
+    helper.setLabels('X', 'Y', 'Z');
+    return helper;
+  }
+
+  /** Switch perspective/orthographic, preserving target, orientation and
+   * apparent model size (the rig owns the math). */
+  setProjection(p: Projection) {
+    if (!this.rig.setProjection(p)) return;
+    this.viewHelper.dispose();
+    this.viewHelper = this.makeViewHelper();
+  }
+
+  /** Fit the whole part in view, keeping the current view direction. */
+  fit() {
+    if (!this.mesh) return;
+    const box = new THREE.Box3().setFromObject(this.mesh);
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = box.getSize(new THREE.Vector3()).length() / 2;
+    this.rig.fitTo(center, radius * 1.1);
+  }
+
   private onResize = () => {
     const { clientWidth, clientHeight } = this.container;
-    this.camera.aspect = clientWidth / clientHeight;
-    this.camera.updateProjectionMatrix();
+    this.rig.onResize(clientWidth / clientHeight);
     this.renderer.setSize(clientWidth, clientHeight);
   };
 
@@ -182,10 +274,9 @@ export class Scene3D {
       positions[3 * i + 2] = verts[3 * v + 2];
     }
 
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('color',
-      new THREE.BufferAttribute(new Float32Array(faces.length * 3).fill(0.9), 3));
+    const positionAttr = new THREE.BufferAttribute(positions, 3);
+    const baseGeometry = new THREE.BufferGeometry();
+    baseGeometry.setAttribute('position', positionAttr);
     if (faceNormals && faceNormals.length === faces.length) {
       const normals = new Float32Array(faces.length * 3);
       for (let f = 0; f < this.faceCount; f++) {
@@ -195,21 +286,76 @@ export class Scene3D {
           normals[9 * f + 3 * corner + 2] = faceNormals[3 * f + 2];
         }
       }
-      geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+      baseGeometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
     } else {
-      geometry.computeVertexNormals();
+      baseGeometry.computeVertexNormals();
+    }
+    const normalAttr = baseGeometry.attributes.normal as THREE.BufferAttribute;
+    const baryAttr = makeBaryAttribute(this.faceCount);
+    baseGeometry.setAttribute('aBary', baryAttr);
+
+    this.mesh = new THREE.Mesh(baseGeometry, this.baseMaterial);
+    this.mesh.renderOrder = -1;
+
+    // lens layer: shares position/normal/aBary, adds RGBA vertex colours
+    // (itemSize 4 → three's USE_COLOR_ALPHA). The ALPHA channel is a static
+    // 0/1 findings mask (0 = ordinary face); the fragment stage mixes the
+    // two user opacities on it. Painted grey so an unpainted mesh looks like
+    // the classic viewer.
+    const lensColors = new Float32Array(faces.length * 4);
+    for (let i = 0; i < faces.length; i++) {
+      lensColors[4 * i] = 0.9;
+      lensColors[4 * i + 1] = 0.9;
+      lensColors[4 * i + 2] = 0.9;
+    }
+    const lensGeometry = new THREE.BufferGeometry();
+    lensGeometry.setAttribute('position', positionAttr);
+    lensGeometry.setAttribute('normal', normalAttr);
+    lensGeometry.setAttribute('aBary', baryAttr);
+    this.colorAttr = new THREE.BufferAttribute(lensColors, 4);
+    lensGeometry.setAttribute('color', this.colorAttr);
+    this.lensMesh = new THREE.Mesh(lensGeometry, this.lensMaterial);
+    this.lensMesh.renderOrder = 1;
+    this.lensOccludedMesh = new THREE.Mesh(lensGeometry, this.lensOccludedMaterial);
+    this.lensOccludedMesh.renderOrder = 0;
+    this.depthPrepassMesh = new THREE.Mesh(baseGeometry, this.depthPrepassMaterial);
+    this.depthPrepassMesh.renderOrder = -2;
+    // section-cap machinery: parity passes over the same geometry, plus the
+    // cap quad (a unit plane scaled/aimed in applySection)
+    this.stencilBackMesh = new THREE.Mesh(baseGeometry, this.stencilMaterials.back);
+    this.stencilFrontMesh = new THREE.Mesh(baseGeometry, this.stencilMaterials.front);
+    this.stencilBackMesh.renderOrder = -4;
+    this.stencilFrontMesh.renderOrder = -4;
+    this.capMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.capMaterial);
+    this.capMesh.renderOrder = -3;
+
+    // shared attributes leave the derived geometries' bounding spheres stale;
+    // only the base mesh (the raycast target) keeps a live one
+    for (const m of [this.lensMesh, this.lensOccludedMesh, this.depthPrepassMesh,
+      this.stencilBackMesh, this.stencilFrontMesh, this.capMesh]) {
+      m.frustumCulled = false;
+      this.scene.add(m);
     }
 
-    const material = new THREE.MeshPhongMaterial({
-      vertexColors: true, specular: 0x111111, shininess: 18,
-    });
-    this.mesh = new THREE.Mesh(geometry, material);
-    this.colorAttr = geometry.attributes.color as THREE.BufferAttribute;
     this.meshFaces = faces;
     this.originalPositions = positions.slice();
-    this.originalNormals = (geometry.attributes.normal.array as Float32Array)
-      .slice();
+    this.originalNormals = (normalAttr.array as Float32Array).slice();
+    this.posed = false;
+    this.selectionMask = null;
+    this.selectionColorAttr = null;
+    this.findingMask = null;
+    this.lensAlphaState = '';
     this.scene.add(this.mesh);
+    this.applySection();
+    this.applyRenderState();
+  }
+
+  /** The controller's watertightness verdict (naked-edge check) — the
+   * stencil cap misbehaves on open sheets, so it gates off. */
+  setCapSupported(supported: boolean) {
+    if (this.capSupported === supported) return;
+    this.capSupported = supported;
+    this.applyRenderState();
   }
 
   /** Re-pose the mesh from indexed per-vertex positions (V*3), expanded
@@ -218,6 +364,9 @@ export class Scene3D {
    * lighting normals — skip it during playback and recompute on pause. */
   setVertexPositions(verts: Float32Array | null, smooth = true) {
     if (!this.mesh || !this.meshFaces) return;
+    // position/normal attributes are SHARED across every render layer, so
+    // writing the base geometry's arrays re-poses base, lens, prepass and
+    // selection alike
     const geometry = this.mesh.geometry as THREE.BufferGeometry;
     const positionAttr = geometry.attributes.position as THREE.BufferAttribute;
     const positions = positionAttr.array as Float32Array;
@@ -241,6 +390,21 @@ export class Scene3D {
     }
     positionAttr.needsUpdate = true;
     geometry.computeBoundingSphere();
+    // BREP boundary polylines are built from the ORIGINAL vertex positions —
+    // hide them while posed rather than show them floating off the part
+    this.posed = verts !== null;
+    this.updateEdgeVisibility();
+    this.applySection(); // the cap quad tracks the posed bounding sphere
+  }
+
+  /** Surface normal at a face, read from the LIVE normal attribute: the
+   * exact BREP normal when unposed, the recomputed geometric normal when
+   * posed (stale during playing animation until pause recomputes). */
+  faceNormalAt(f: number): [number, number, number] {
+    if (!this.mesh) return [0, 0, 1];
+    const normals = (this.mesh.geometry as THREE.BufferGeometry)
+      .attributes.normal.array as Float32Array;
+    return [normals[9 * f], normals[9 * f + 1], normals[9 * f + 2]];
   }
 
   /** Extrude a YZ profile polygon along machine X over the given spans and
@@ -265,13 +429,13 @@ export class Scene3D {
       const geometry = new THREE.ExtrudeGeometry(shape, {
         depth: x1 - x0, bevelEnabled: false,
       });
-      const material = new THREE.MeshPhongMaterial({
+      const material = this.registerClipping(new THREE.MeshPhongMaterial({
         color: new THREE.Color(...spec.color),
         transparent: opacity < 1,
         opacity,
         depthWrite: opacity >= 1,
         side: THREE.DoubleSide,
-      });
+      }));
       const mesh = new THREE.Mesh(geometry, material);
       // shape (u,v) is machine (Y,Z); the extrusion axis is machine X
       mesh.matrixAutoUpdate = false;
@@ -282,7 +446,7 @@ export class Scene3D {
         0, 0, 0, 1,
       );
       if (spec.tag) mesh.userData.tag = spec.tag;
-      mesh.renderOrder = 1;
+      mesh.renderOrder = 2; // after the lens layer in the transparent pass
       this.overlay.add(mesh);
     }
   }
@@ -311,17 +475,17 @@ export class Scene3D {
     const box = new THREE.Box3().setFromObject(this.mesh);
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3()).length();
+    this.rig.setWorldRadius(size / 2);
     const d = direction ?? [0, 0, 1];
     const view = new THREE.Vector3(d[0], d[1], d[2]).normalize();
     const side = new THREE.Vector3(0, 1, 0);
     if (Math.abs(view.dot(side)) > 0.9) side.set(1, 0, 0);
     side.cross(view).normalize();
-    this.camera.position.copy(center)
+    const position = center.clone()
       .addScaledVector(view, size * 0.9)
       .addScaledVector(side, size * 0.45);
-    this.camera.up.set(0, 0, 1);
-    this.controls.target.copy(center);
-    this.controls.update();
+    this.rig.lookFrom(position, center,
+      this.rig.halfHeightFor(position.distanceTo(center)));
   }
 
   paintFaces(colorOf: (f: number) => RGB) {
@@ -361,9 +525,8 @@ export class Scene3D {
     const partSize = new THREE.Box3().setFromObject(this.mesh)
       .getSize(new THREE.Vector3()).length();
     const dist = Math.max(radius * 3, partSize * 0.12);
-    this.camera.position.copy(c).addScaledVector(dir, dist);
-    this.controls.target.copy(c);
-    this.controls.update();
+    this.rig.lookFrom(c.clone().addScaledVector(dir, dist), c,
+      this.rig.halfHeightFor(dist));
   }
 
   /** Overlay line segments given as flattened endpoint pairs (N*2*3).
@@ -373,11 +536,15 @@ export class Scene3D {
            depthTest = false) {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    const material = new THREE.LineBasicMaterial({
+    // transparent (even at opacity 1) so the lines sort into the transparent
+    // pass AFTER the lens layer — an opaque depth-less line would be painted
+    // over by the lens overlay
+    const material = this.registerClipping(new THREE.LineBasicMaterial({
       color: new THREE.Color(...color), depthTest, depthWrite: false,
-    });
+      transparent: true,
+    }));
     const lines = new THREE.LineSegments(geometry, material);
-    lines.renderOrder = depthTest ? 0 : 1; // through-lines draw over the mesh
+    lines.renderOrder = depthTest ? 2 : 4; // through-lines draw over the mesh
     this.overlay.add(lines);
   }
 
@@ -397,6 +564,8 @@ export class Scene3D {
       const helper = new THREE.ArrowHelper(
         d.clone().negate(), origin, length,
         new THREE.Color(...color).getHex(), 0.3 * length, 0.12 * length);
+      this.registerClipping(helper.line.material as THREE.Material);
+      this.registerClipping(helper.cone.material as THREE.Material);
       helper.userData.arrowIndex = index;
       this.overlay.add(helper);
       this.arrowHelpers.push(helper);
@@ -459,40 +628,49 @@ export class Scene3D {
     pointGeometry.setAttribute('position', positionAttr);
     pointGeometry.setAttribute('color', colorAttr);
     pointGeometry.setAttribute('size', sizeAttr);
-    const pointMaterial = new THREE.ShaderMaterial({
+    // hand-written shader: the clipping chunks must be included explicitly
+    // (and `clipping: true` set) for the section plane to apply
+    const pointMaterial = this.registerClipping(new THREE.ShaderMaterial({
       depthTest: false,
       depthWrite: false,
       transparent: true,
+      clipping: true,
       vertexShader: `
+        #include <common>
+        #include <clipping_planes_pars_vertex>
         attribute float size;
         varying vec3 vColor;
         void main() {
           vColor = color;
-          vec4 mv = modelViewMatrix * vec4(position, 1.0);
-          gl_PointSize = clamp(300.0 * size / -mv.z, 2.0, 24.0);
-          gl_Position = projectionMatrix * mv;
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = clamp(300.0 * size / -mvPosition.z, 2.0, 24.0);
+          gl_Position = projectionMatrix * mvPosition;
+          #include <clipping_planes_vertex>
         }`,
       fragmentShader: `
+        #include <common>
+        #include <clipping_planes_pars_fragment>
         varying vec3 vColor;
         void main() {
+          #include <clipping_planes_fragment>
           if (length(gl_PointCoord - 0.5) > 0.5) discard;
           gl_FragColor = vec4(vColor, 1.0);
         }`,
       vertexColors: true,
-    });
+    }));
     this.graphPoints = new THREE.Points(pointGeometry, pointMaterial);
-    this.graphPoints.renderOrder = 2;
+    this.graphPoints.renderOrder = 4; // after the lens layer (transparent pass)
 
     const lineGeometry = new THREE.BufferGeometry();
     lineGeometry.setAttribute('position', positionAttr);
     lineGeometry.setAttribute('color', colorAttr);
     lineGeometry.setIndex(new THREE.BufferAttribute(edges, 1));
-    const lineMaterial = new THREE.LineBasicMaterial({
+    const lineMaterial = this.registerClipping(new THREE.LineBasicMaterial({
       vertexColors: true, transparent: true, opacity: 0.8,
       depthTest: false, depthWrite: false,
-    });
+    }));
     this.graphLines = new THREE.LineSegments(lineGeometry, lineMaterial);
-    this.graphLines.renderOrder = 1;
+    this.graphLines.renderOrder = 3; // after the lens layer (transparent pass)
 
     this.graphColorAttr = colorAttr;
     this.scene.add(this.graphLines);
@@ -522,55 +700,488 @@ export class Scene3D {
     this.graphKey = '';
   }
 
-  /** Set the scene clear color (viewer background), e.g. for light/dark mode. */
-  setBackground(color: string | number) {
+  /** Set the scene clear color (viewer background) and restyle the neutral
+   * layers (base grey, edge colours, X-ray shell) for light/dark mode. */
+  setBackground(color: string | number, theme: 'light' | 'dark' = 'dark') {
     this.scene.background = new THREE.Color(color as THREE.ColorRepresentation);
+    this.theme = theme;
+    const colors = THEME_COLORS[theme];
+    this.baseMaterial.color.setHex(colors.base);
+    this.capMaterial.color.setHex(colors.sectionCap);
+    this.edgeUniforms.uEdgeColor.value.setHex(colors.triEdge);
+    (this.xrayMaterial.uniforms.uBase.value as THREE.Color).setHex(colors.xrayBase);
+    (this.xrayMaterial.uniforms.uRim.value as THREE.Color).setHex(colors.xrayRim);
+    if (this.edgeLines) {
+      (this.edgeLines.material as THREE.LineBasicMaterial)
+        .color.setHex(colors.brepEdge);
+    }
   }
 
-  /** One frame rendered and read back as PNG, plus the camera pose —
+  /** One frame rendered and read back as PNG, plus the full camera pose —
    * report evidence. Rendering immediately before toDataURL makes the
-   * readback valid without preserveDrawingBuffer. */
+   * readback valid without preserveDrawingBuffer. The pose is a superset of
+   * the original {position, target} shape so existing consumers keep
+   * working. */
   capture(): { image: string;
-    camera: { position: number[]; target: number[] } } {
+    camera: { position: number[]; target: number[]; up: number[];
+      projection: Projection; fov?: number; zoom?: number } } {
+    this.renderer.clear(); // deterministic stencil/depth for the readback
     this.renderer.render(this.scene, this.camera);
+    const camera = this.camera;
     return {
       image: this.renderer.domElement.toDataURL('image/png'),
       camera: {
-        position: this.camera.position.toArray(),
+        position: camera.position.toArray(),
         target: this.controls.target.toArray(),
+        up: camera.up.toArray(),
+        projection: this.rig.projection,
+        ...(camera instanceof THREE.PerspectiveCamera
+          ? { fov: camera.fov } : { zoom: camera.zoom }),
       },
     };
   }
 
-  setMeshOpacity(alpha: number) {
-    if (!this.mesh) return;
-    const material = this.mesh.material as THREE.MeshPhongMaterial;
-    material.transparent = alpha < 1;
-    material.opacity = alpha;
-    material.depthWrite = alpha >= 1;
-    material.needsUpdate = true;
+  /** Legacy `ViewCtx.setMeshOpacity`, demoted to a transient per-paint hint:
+   * "this lens wants a see-through body" (skeleton/graph/flat-pattern
+   * views). Reset to 1 by the controller on every repaint; composed with
+   * the persistent viewport state in applyRenderState. */
+  setLensDisplayHint(alpha: number) {
+    if (this.lensHint === alpha) return;
+    this.lensHint = alpha;
+    this.applyRenderState();
+  }
+
+  /** Persistent viewport state changed (render style, edges, projection,
+   * section, context). Applied directly — no repaint needed, the lens data
+   * is unchanged. */
+  setViewport(vs: ViewportState) {
+    this.viewport = vs;
+    this.setProjection(vs.projection);
+    this.applySection();
+    this.applyRenderState();
+  }
+
+  /** Register a material for the shared section plane. */
+  private registerClipping<T extends THREE.Material>(material: T): T {
+    material.clippingPlanes = this.clipPlanes;
+    return material;
+  }
+
+  /** Aim the shared clipping plane per the viewport's section state: cut
+   * away the half-space the (possibly flipped) normal points into, past
+   * `offset` along the ORIGINAL normal. Disabled = plane at infinity. */
+  private applySection() {
+    const s = this.viewport.section;
+    if (!s.enabled) {
+      this.clipPlane.constant = 1e9;
+      return;
+    }
+    const sign = s.flip ? -1 : 1;
+    const n = new THREE.Vector3(...s.normal).normalize()
+      .multiplyScalar(sign);
+    // three clips fragments with negative signed distance: keep
+    // dot(N, p) <= dot(N, p0) where p0 = normal * offset
+    this.clipPlane.normal.copy(n).negate();
+    this.clipPlane.constant = sign * s.offset;
+    // aim the cap quad: centred on the (posed) part, exactly on the plane,
+    // facing the removed half-space so orbiting into the cut sees the open
+    // solid (the quad backface-culls) instead of a floating wall
+    if (this.capMesh && this.mesh) {
+      const geometry = this.mesh.geometry as THREE.BufferGeometry;
+      if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+      const sphere = geometry.boundingSphere!;
+      this.clipPlane.projectPoint(sphere.center, this.capMesh.position);
+      const d = sphere.radius * 2.4;
+      this.capMesh.scale.set(d, d, 1);
+      this.capMesh.lookAt(new THREE.Vector3()
+        .copy(this.capMesh.position).sub(this.clipPlane.normal));
+    }
+  }
+
+  /** Part bounding box (posed), for the section offset range. */
+  getBounds(): { min: [number, number, number]; max: [number, number, number] } | null {
+    if (!this.mesh) return null;
+    const box = new THREE.Box3().setFromObject(this.mesh);
+    if (box.isEmpty()) return null;
+    return {
+      min: [box.min.x, box.min.y, box.min.z],
+      max: [box.max.x, box.max.y, box.max.z],
+    };
+  }
+
+  /** Unit direction the camera looks along (target − position). */
+  getViewDirection(): [number, number, number] {
+    const dir = this.controls.target.clone()
+      .sub(this.camera.position);
+    if (dir.lengthSq() < 1e-12) return [0, 0, 1];
+    dir.normalize();
+    return [dir.x, dir.y, dir.z];
+  }
+
+  /** Which faces the active lens counts as findings (null = no notion).
+   * Reset by the controller on every repaint; drives "findings only". */
+  setFindings(isFinding: ((f: number) => boolean) | null) {
+    if (!isFinding) {
+      this.findingMask = null;
+      return;
+    }
+    const mask = new Uint8Array(this.faceCount);
+    for (let f = 0; f < this.faceCount; f++) mask[f] = isFinding(f) ? 1 : 0;
+    this.findingMask = mask;
+    this.findingsVersion++; // a new mask invalidates the written alpha state
+  }
+
+  /** The legend-group selection (fine-face indices), rendered by the
+   * selection layer under ghost/isolate and targeted by fitSelection. */
+  setSelectionFaces(faces: number[] | null) {
+    if (!faces || !this.faceCount) {
+      this.selectionMask = null;
+    } else {
+      const mask = new Uint8Array(this.faceCount);
+      for (const f of faces) if (f < this.faceCount) mask[f] = 1;
+      this.selectionMask = mask;
+    }
+    this.applyRenderState();
+  }
+
+  /** Fit the current selection in view (posed corner positions). */
+  fitSelection() {
+    if (!this.mesh || !this.selectionMask) return;
+    const positions = (this.mesh.geometry as THREE.BufferGeometry)
+      .attributes.position.array as Float32Array;
+    const box = new THREE.Box3();
+    const v = new THREE.Vector3();
+    for (let f = 0; f < this.faceCount; f++) {
+      if (!this.selectionMask[f]) continue;
+      for (let k = 0; k < 3; k++) {
+        const i = 3 * (3 * f + k);
+        box.expandByPoint(v.set(positions[i], positions[i + 1], positions[i + 2]));
+      }
+    }
+    if (box.isEmpty()) return;
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = box.getSize(new THREE.Vector3()).length() / 2;
+    this.rig.fitTo(center, Math.max(radius * 1.2, 1e-3));
+  }
+
+  /** Persistent BREP boundary polylines (segment endpoints, N*2*3 floats);
+   * null removes them. Survives repaints — only a part switch clears it. */
+  setBrepEdges(segments: Float32Array | null) {
+    if (this.edgeLines) {
+      this.scene.remove(this.edgeLines);
+      this.edgeLines.geometry.dispose();
+      (this.edgeLines.material as THREE.Material).dispose();
+      this.edgeLines = null;
+    }
+    if (!segments || !segments.length) return;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(segments, 3));
+    const material = this.registerClipping(new THREE.LineBasicMaterial({
+      color: new THREE.Color(THEME_COLORS[this.theme].brepEdge),
+    }));
+    this.edgeLines = new THREE.LineSegments(geometry, material);
+    this.edgeLines.renderOrder = 2;
+    this.scene.add(this.edgeLines);
+    this.updateEdgeVisibility();
+  }
+
+  private updateEdgeVisibility() {
+    if (this.edgeLines) {
+      this.edgeLines.visible = this.viewport.brepEdges && !this.posed
+        && this.viewport.context !== 'isolate';
+    }
+  }
+
+  /** Rewrite the lens alpha channel with the 0/1 findings mask (skipped
+   * when the written mask is current — it touches every corner). The user
+   * opacities never touch this buffer; they live in shader uniforms. */
+  private refreshLensAlpha() {
+    if (!this.colorAttr) return;
+    const mask = this.findingMask;
+    const state = mask ? `mask:${this.findingsVersion}` : 'none';
+    if (state === this.lensAlphaState) return;
+    this.lensAlphaState = state;
+    const colors = this.colorAttr.array as Float32Array;
+    for (let f = 0; f < this.faceCount; f++) {
+      const alpha = mask && mask[f] ? 1 : 0;
+      colors[12 * f + 3] = alpha;
+      colors[12 * f + 7] = alpha;
+      colors[12 * f + 11] = alpha;
+    }
+    this.colorAttr.needsUpdate = true;
+  }
+
+  /** (Re)build the selection layer's colours: the lens RGB where selected
+   * (so ghost/isolate show the real lens data), discarded elsewhere. */
+  private refreshSelectionColors() {
+    if (!this.mesh || !this.lensMesh || !this.selectionMask || !this.colorAttr) return;
+    if (!this.selectionMesh) {
+      const geometry = new THREE.BufferGeometry();
+      const baseGeometry = this.mesh.geometry as THREE.BufferGeometry;
+      geometry.setAttribute('position', baseGeometry.attributes.position);
+      geometry.setAttribute('normal', baseGeometry.attributes.normal);
+      geometry.setAttribute('aBary', baseGeometry.attributes.aBary);
+      this.selectionColorAttr = new THREE.BufferAttribute(
+        new Float32Array(this.faceCount * 12), 4);
+      geometry.setAttribute('color', this.selectionColorAttr);
+      this.selectionMesh = new THREE.Mesh(geometry, this.selectionMaterial);
+      this.selectionMesh.renderOrder = 0;
+      this.selectionMesh.frustumCulled = false;
+      this.scene.add(this.selectionMesh);
+    }
+    const lens = this.colorAttr;
+    const sel = this.selectionColorAttr!;
+    for (let f = 0; f < this.faceCount; f++) {
+      const selected = this.selectionMask[f];
+      for (let k = 0; k < 3; k++) {
+        const i = 3 * f + k;
+        sel.setXYZW(i, lens.getX(i), lens.getY(i), lens.getZ(i), selected ? 1 : 0);
+      }
+    }
+    sel.needsUpdate = true;
+  }
+
+  /** Compose the persistent viewport state with the transient lens display
+   * hint into concrete material/visibility settings on every layer. Called
+   * after each repaint and on every viewport change. */
+  applyRenderState() {
+    if (!this.mesh || !this.lensMesh || !this.lensOccludedMesh
+      || !this.depthPrepassMesh) return;
+    const vs = this.viewport;
+    const xray = vs.style === 'xray';
+    const meshStyle = vs.style === 'mesh';
+    const hasSelection = !!this.selectionMask;
+    const ghost = vs.context === 'ghost' && hasSelection;
+    const isolate = vs.context === 'isolate' && hasSelection;
+
+    // base: opaque phong for solid/mesh, the Fresnel shell for X-ray
+    this.mesh.material = xray ? this.xrayMaterial : this.baseMaterial;
+    this.mesh.visible = !isolate;
+    this.depthPrepassMesh.visible = xray && !isolate;
+
+    // the Mesh style IS flat triangle shading + triangle edges
+    for (const m of [this.baseMaterial, this.lensMaterial,
+      this.lensOccludedMaterial, this.selectionMaterial]) {
+      if (m.flatShading !== meshStyle) {
+        m.flatShading = meshStyle;
+        m.needsUpdate = true;
+      }
+    }
+    this.edgeUniforms.uEdges.value = meshStyle ? 1 : 0;
+    this.updateEdgeVisibility();
+
+    // section cut: interior walls seen through the cut must shade instead of
+    // vanish — flip ALL depth-coupled layers together (the lens overlay
+    // relies on bit-identical depth, so side modes must match). One program
+    // compile per toggle, none while dragging the offset.
+    const side = vs.section.enabled ? THREE.DoubleSide : THREE.FrontSide;
+    for (const m of [this.baseMaterial, this.lensMaterial,
+      this.lensOccludedMaterial, this.selectionMaterial,
+      this.depthPrepassMaterial]) {
+      if (m.side !== side) {
+        m.side = side;
+        m.needsUpdate = true;
+      }
+    }
+    // the solid cap only makes sense on a watertight, fully opaque body
+    const capOn = vs.section.enabled && !xray && !isolate && !ghost
+      && this.lensHint >= 1 && this.capSupported;
+    if (this.capMesh && this.stencilBackMesh && this.stencilFrontMesh) {
+      this.capMesh.visible = capOn;
+      this.stencilBackMesh.visible = capOn;
+      this.stencilFrontMesh.visible = capOn;
+    }
+
+    // base opacity: the lens display hint × ghosting (X-ray is already
+    // see-through and ignores the hint)
+    const baseAlpha = Math.min(this.lensHint, ghost ? GHOST_ALPHA : 1);
+    if (!xray) {
+      this.baseMaterial.transparent = baseAlpha < 1;
+      this.baseMaterial.opacity = baseAlpha;
+      this.baseMaterial.depthWrite = baseAlpha >= 1;
+      this.baseMaterial.needsUpdate = true;
+    }
+
+    // lens overlay: the ghost/hint factor rides in material.opacity; the
+    // user's lens/findings opacities are uniforms mixed on the per-corner
+    // findings mask in the fragment stage
+    const factor = Math.min(this.lensHint, ghost ? GHOST_ALPHA : 1);
+    this.lensOpacityUniforms.uLensOpacity.value = vs.lensOpacity;
+    this.lensOpacityUniforms.uFindingsOpacity.value = vs.findingsOpacity;
+    const maxAlpha = this.findingMask
+      ? Math.max(vs.lensOpacity, vs.findingsOpacity) : vs.lensOpacity;
+    this.lensMesh.visible = !isolate && factor > 0 && maxAlpha > 0;
+    this.lensMaterial.opacity = factor;
+    this.lensMaterial.depthWrite = false;
+    this.lensOccludedMesh.visible = xray && this.lensMesh.visible;
+    this.lensOccludedMaterial.opacity = factor * 0.25;
+    this.refreshLensAlpha();
+
+    // selection layer: only meaningful under ghost/isolate
+    if (ghost || isolate) this.refreshSelectionColors();
+    if (this.selectionMesh) {
+      this.selectionMesh.visible = (ghost || isolate) && hasSelection;
+    }
   }
 
   clearMesh() {
     this.clearOverlays();
     this.clearGraph();
+    this.clearAnnotations();
+    this.setBrepEdges(null);
     this.animator = null;
-    if (this.mesh) {
-      this.scene.remove(this.mesh);
-      this.mesh.geometry.dispose();
-      (this.mesh.material as THREE.Material).dispose();
-      this.mesh = null;
-      this.colorAttr = null;
-      this.faceCount = 0;
-      this.meshFaces = null;
-      this.originalPositions = null;
-      this.originalNormals = null;
+    // dispose every layer geometry; the shared attributes go with them (the
+    // materials are long-lived and reused by the next part)
+    for (const m of [this.mesh, this.lensMesh, this.lensOccludedMesh,
+      this.depthPrepassMesh, this.selectionMesh, this.stencilBackMesh,
+      this.stencilFrontMesh, this.capMesh]) {
+      if (!m) continue;
+      this.scene.remove(m);
+    }
+    this.mesh?.geometry.dispose(); // shared by the stencil parity passes
+    this.lensMesh?.geometry.dispose(); // shared by lensOccludedMesh
+    this.selectionMesh?.geometry.dispose();
+    this.capMesh?.geometry.dispose();
+    this.mesh = null;
+    this.lensMesh = null;
+    this.lensOccludedMesh = null;
+    this.depthPrepassMesh = null;
+    this.selectionMesh = null;
+    this.stencilBackMesh = null;
+    this.stencilFrontMesh = null;
+    this.capMesh = null;
+    this.capSupported = true;
+    this.selectionColorAttr = null;
+    this.selectionMask = null;
+    this.findingMask = null;
+    this.lensAlphaState = '';
+    this.posed = false;
+    this.colorAttr = null;
+    this.faceCount = 0;
+    this.meshFaces = null;
+    this.originalPositions = null;
+    this.originalNormals = null;
+  }
+
+  /** Rebuild the measurement annotations from the session state: A/B
+   * markers (constant screen size), the straight A→B segment, component
+   * legs in the chosen frame (model axes, or along either pick's normal
+   * plus the in-plane rest), and the two normal rays. Lives in the
+   * persistent annotation layer — lens repaints never clear it — and is
+   * registered for section clipping like every other layer. */
+  setMeasureAnnotations(a: MeasurePick | null, b: MeasurePick | null,
+                        frame: MeasureFrame = 'xyz') {
+    this.clearAnnotations();
+    if (!a && !b) return;
+    const bounds = this.getBounds();
+    const diag = bounds
+      ? Math.hypot(bounds.max[0] - bounds.min[0], bounds.max[1] - bounds.min[1],
+                   bounds.max[2] - bounds.min[2])
+      : 10;
+    const rayLength = diag * 0.05;
+
+    const addLine = (points: [number, number, number][], color: number,
+                     opacity = 1) => {
+      const positions = new Float32Array(points.flat());
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      const material = this.registerClipping(new THREE.LineBasicMaterial({
+        color, transparent: true, opacity, depthTest: false, depthWrite: false,
+      }));
+      const line = new THREE.Line(geometry, material);
+      line.renderOrder = 5;
+      this.annotations.add(line);
+    };
+    const addMarker = (pick: MeasurePick, label: string, color: string) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 64;
+      canvas.height = 64;
+      const g = canvas.getContext('2d')!;
+      g.beginPath();
+      g.arc(32, 32, 26, 0, 2 * Math.PI);
+      g.fillStyle = color;
+      g.fill();
+      g.lineWidth = 5;
+      g.strokeStyle = '#ffffff';
+      g.stroke();
+      g.fillStyle = '#ffffff';
+      g.font = 'bold 30px system-ui, sans-serif';
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText(label, 32, 34);
+      const material = this.registerClipping(new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(canvas),
+        depthTest: false, sizeAttenuation: false, // constant screen size
+      }));
+      const sprite = new THREE.Sprite(material);
+      sprite.position.set(...pick.point);
+      sprite.scale.set(0.045, 0.045, 1);
+      sprite.renderOrder = 6;
+      this.annotations.add(sprite);
+      // the pick's surface normal, drawn from the picked point
+      const tip: [number, number, number] = [
+        pick.point[0] + pick.normal[0] * rayLength,
+        pick.point[1] + pick.normal[1] * rayLength,
+        pick.point[2] + pick.normal[2] * rayLength,
+      ];
+      addLine([pick.point, tip], 0xbfc6ce, 0.9);
+    };
+
+    if (a) addMarker(a, 'A', '#2f6fde');
+    if (b) addMarker(b, 'B', '#d97b16');
+    if (a && b) {
+      addLine([a.point, b.point], this.theme === 'dark' ? 0xf3f5f7 : 0x1c1f24);
+      if (frame === 'xyz') {
+        // RGB axis staircase A → +dX → +dY → +dZ = B
+        const p1: [number, number, number] = [b.point[0], a.point[1], a.point[2]];
+        const p2: [number, number, number] = [b.point[0], b.point[1], a.point[2]];
+        addLine([a.point, p1], 0xe14b4b, 0.9);
+        addLine([p1, p2], 0x3fba55, 0.9);
+        addLine([p2, b.point], 0x4b86e1, 0.9);
+      } else {
+        // along-normal leg (blue) + in-plane rest (green), decomposed
+        // against the chosen pick's normal
+        const r = computeMeasurement(a, b);
+        const [pick, along, sign] = frame === 'normalA'
+          ? [a, r.alongNormalA, 1] as const
+          : [b, r.alongNormalB, -1] as const;
+        const n = pick.normal;
+        const scale = Math.hypot(n[0], n[1], n[2]) || 1;
+        const foot: [number, number, number] = [
+          pick.point[0] + (n[0] / scale) * along * sign,
+          pick.point[1] + (n[1] / scale) * along * sign,
+          pick.point[2] + (n[2] / scale) * along * sign,
+        ];
+        const other = frame === 'normalA' ? b : a;
+        addLine([pick.point, foot], 0x4b86e1, 0.9); // along the normal
+        addLine([foot, other.point], 0x3fba55, 0.9); // in-plane rest
+      }
+    }
+  }
+
+  /** Remove everything in the persistent annotation layer (measurement
+   * markers). Called on part switch and by the measurement session. */
+  clearAnnotations() {
+    for (const child of [...this.annotations.children]) {
+      this.annotations.remove(child);
+      const obj = child as THREE.Mesh | THREE.Line | THREE.Sprite;
+      if ('geometry' in obj) (obj.geometry as THREE.BufferGeometry)?.dispose();
+      const material = (obj as { material?: THREE.Material }).material;
+      if (material) {
+        const map = (material as THREE.SpriteMaterial).map;
+        map?.dispose();
+        material.dispose();
+      }
     }
   }
 
   dispose() {
     this.disposed = true;
     this.clearMesh();
+    for (const m of [this.baseMaterial, this.xrayMaterial, this.lensMaterial,
+      this.lensOccludedMaterial, this.selectionMaterial,
+      this.depthPrepassMaterial, this.stencilMaterials.back,
+      this.stencilMaterials.front, this.capMaterial]) m.dispose();
     this.viewHelper.dispose();
     window.removeEventListener('resize', this.onResize);
     this.renderer.dispose();

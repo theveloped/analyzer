@@ -308,6 +308,15 @@ def create_app(root=".", preload=None):
             raise HTTPException(status_code=404, detail="no face attributes")
         return FileResponse(path, media_type="application/json")
 
+    @app.get("/api/parts/{part_id}/brep_meta")
+    def get_brep_meta(part_id: str):
+        part = part_or_404(part_id)
+        path = os.path.join(parts_api.workdir_for(root, part["id"]),
+                            pipeline.BREP_META_FILE)
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail="no BREP metadata")
+        return FileResponse(path, media_type="application/json")
+
     @app.get("/api/parts/{part_id}/pmi")
     def get_pmi(part_id: str):
         part = part_or_404(part_id)

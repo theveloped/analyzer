@@ -294,6 +294,9 @@ def build_manifest(root, part):
 
     if os.path.exists(os.path.join(workdir, "face_attrs.json")):
         manifest["face_attrs_url"] = f"{base_url}/face_attrs"
+    if os.path.exists(os.path.join(workdir, pipeline.BREP_META_FILE)):
+        # per-BREP-face surface types + analytic params (viewer section snap)
+        manifest["brep_meta_url"] = f"{base_url}/brep_meta"
     if os.path.exists(os.path.join(workdir, "pmi.json")):
         manifest["pmi_url"] = f"{base_url}/pmi"
     if os.path.exists(os.path.join(workdir, "assembly.json")):

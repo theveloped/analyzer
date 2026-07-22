@@ -1,14 +1,16 @@
 import { COL } from '../../colorizers/core';
-import type { RGB } from '../../registry/types';
+import type { LegendEntry, RGB } from '../../registry/types';
 import { useStore } from '../../state/store';
-import { flyToFocus } from '../../viewer/controller';
+import { flyToFocus, selectLegendGroup } from '../../viewer/controller';
 import { useActiveAnalysis, useActiveLens, useCheckActive, useDirectionsActive } from './hooks';
 
 const rgbCss = (c: RGB | readonly number[]) =>
   `rgb(${Math.round(c[0] * 255)} ${Math.round(c[1] * 255)} ${Math.round(c[2] * 255)})`;
 
+// bottom-left by default; on narrow viewer columns it moves top-left so the
+// bottom edge belongs to the viewport toolbar alone (no overlap allowed)
 const box =
-  'absolute bottom-3 left-3 w-60 rounded-lg border border-zinc-950/10 bg-white/90 p-2.5 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10';
+  'absolute bottom-3 left-3 w-60 rounded-lg border border-zinc-950/10 bg-white/90 p-2.5 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur @max-2xl:top-14 @max-2xl:bottom-auto dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10';
 const title = 'mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400';
 const sub = 'text-[10px] tabular-nums text-zinc-500 dark:text-zinc-400';
 
@@ -18,6 +20,15 @@ const sub = 'text-[10px] tabular-nums text-zinc-500 dark:text-zinc-400';
 export function Legend() {
   const colorbar = useStore((s) => s.colorbar);
   const legend = useStore((s) => s.legend);
+  const selection = useStore((s) => s.selection);
+  // clicking a row flies to the group AND selects it (fit-selection /
+  // isolate / ghost act on the selection); clicking again deselects
+  const pick = (entry: LegendEntry) => {
+    flyToFocus(entry.focus!);
+    if (!entry.focus?.faces?.length) return;
+    const already = selection?.label === entry.label;
+    selectLegendGroup(entry.label, already ? null : entry.focus.faces);
+  };
   const activeAnalysis = useActiveAnalysis();
   const activeLens = useActiveLens();
   const checkActive = useCheckActive();
@@ -78,9 +89,13 @@ export function Legend() {
             key={i}
             type="button"
             disabled={!entry.focus}
-            onClick={entry.focus ? () => flyToFocus(entry.focus!) : undefined}
-            className="flex items-center gap-2 text-left text-xs/5 text-zinc-950 enabled:hover:text-blue-600 disabled:cursor-default dark:text-white dark:enabled:hover:text-blue-400"
-            title={entry.focus ? 'click to view these faces' : undefined}
+            onClick={entry.focus ? () => pick(entry) : undefined}
+            className={`flex items-center gap-2 text-left text-xs/5 enabled:hover:text-blue-600 disabled:cursor-default dark:enabled:hover:text-blue-400 ${
+              selection?.label === entry.label
+                ? 'font-semibold text-blue-600 dark:text-blue-400'
+                : 'text-zinc-950 dark:text-white'
+            }`}
+            title={entry.focus ? 'click to view + select these faces' : undefined}
           >
             <span
               className="size-2.5 shrink-0 rounded-[3px] ring-1 ring-black/10"

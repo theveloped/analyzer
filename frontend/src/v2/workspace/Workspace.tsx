@@ -8,14 +8,17 @@ import {
   useActiveFieldLens, useActiveLens, useAutoRunFieldLens, useCheckActive,
   useDirectionsActive, useSelectedPlanCheck,
 } from './hooks';
+import { useV2 } from '../store';
 import { Legend } from './Legend';
 import { LensRail } from './LensRail';
+import { MeasureRail } from './MeasureRail';
 import { PipelineRail } from './PipelineRail';
 import { PlanCheckRail } from './PlanCheckRail';
 import { PmiRail } from './PmiRail';
 import { SettingsRail } from './SettingsRail';
 import { TopBar } from './TopBar';
 import { Viewer } from './Viewer';
+import { ViewportToolbar } from './ViewportToolbar';
 
 /**
  * The single-part workspace that fills the floating content card: a top bar,
@@ -37,8 +40,12 @@ export function Workspace() {
   // a selected non-threshold plan check (reach study/op/route) gets its own
   // rail; field lenses get the band panel; other checks the SettingsRail
   const planCheckRail = selected && !catalogAnalysisFor(selected.check);
+  const measuring = useV2((s) => s.measure.active);
 
-  const rightRail = modeId === 'pmi' ? <PmiRail />
+  // the measure INTERACTION outranks every lens/check rail while active —
+  // the lens stays visible in the viewport, only the rail switches
+  const rightRail = measuring ? <MeasureRail />
+    : modeId === 'pmi' ? <PmiRail />
     : directionsActive ? <DirectionsRail />
     : planCheckRail ? <PlanCheckRail />
     : activeFieldLens ? <FieldLensRail />
@@ -52,11 +59,12 @@ export function Workspace() {
       <div className="flex min-h-0 flex-1">
         <PipelineRail />
 
-        <div className="relative min-w-0 flex-1 bg-zinc-100 dark:bg-zinc-950">
+        <div className="@container relative min-w-0 flex-1 bg-zinc-100 dark:bg-zinc-950">
           <Viewer />
           <AnalysisToolbar />
           {directionsActive && <DirectionTooltip />}
           <Legend />
+          <ViewportToolbar />
           {(!partId || !meshReady) && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
               <div className="rounded-lg bg-white/90 px-3 py-2 text-sm/6 text-zinc-600 shadow-xs ring-1 ring-zinc-950/5 dark:bg-zinc-900/90 dark:text-zinc-300 dark:ring-white/10">

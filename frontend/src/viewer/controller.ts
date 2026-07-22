@@ -12,10 +12,21 @@ import { clearFieldCache, fetchBin, fetchField } from '../fields/fields';
 import { getPlugin } from '../registry';
 import type { LegendFocus, ViewCtx } from '../registry/types';
 import { useStore } from '../state/store';
+import { edgeDescriptors } from '../splits/splits';
+import { nakedEdgeSegments } from './brepEdges';
 import { setColorBackground, VIEWER_BG, type ViewerBackground } from './colormaps';
 import { Scene3D } from './scene';
+import { DEFAULT_VIEWPORT, type ViewportState } from './viewportState';
 
 let scene: Scene3D | null = null;
+// how the scene renders/sections, independent of the active lens. The v1 app
+// never changes it (classic look); the v2 shell pushes its store slice here.
+let viewportState: ViewportState = DEFAULT_VIEWPORT;
+// which (part, manifest) the scene's BREP boundary polylines were built for
+let brepEdgesKey = '';
+// naked (single-owner) mesh edges — shared by the edge display and the
+// section-cap watertightness check, computed at most once per part/manifest
+let nakedCache: { key: string; segments: Float32Array } | null = null;
 let verts: Float32Array | null = null;
 let faces: Uint32Array | null = null;
 let normals: Float32Array | null = null;
@@ -34,9 +45,25 @@ async function loadOverrides(manifest: Manifest) {
   useStore.getState().set({ overrides: Object.fromEntries(entries) });
 }
 
+// interaction tools (e.g. Measure) claim mesh picks BEFORE plugin/mode
+// onPick handlers. Registered from the v2 shell — the controller stays
+// decoupled from the v2 store.
+let pickInterceptor:
+  ((face: number, point: [number, number, number]) => boolean) | null = null;
+
+export function setPickInterceptor(
+  fn: ((face: number, point: [number, number, number]) => boolean) | null,
+) {
+  pickInterceptor = fn;
+}
+
 export function attach(container: HTMLElement) {
   scene = new Scene3D(container);
-  scene.onPick = (face, point) => void inspect(face, point);
+  scene.setViewport(viewportState);
+  scene.onPick = (face, point) => {
+    if (pickInterceptor?.(face, point)) return;
+    void inspect(face, point);
+  };
   // arrow clicks (directions view): stash the selected arrow + screen position
   // so the tooltip can show its provenance / delete control, and highlight the
   // BREP faces the direction was built from (hole / surface-normal sources).
@@ -98,11 +125,109 @@ export function captureViewer() {
   return scene?.capture() ?? null;
 }
 
+/** Apply a new viewport state (render style, projection, section, …). Does
+ * NOT schedule a repaint — the lens data is unchanged; the scene re-composes
+ * its layers directly. */
+export function setViewportState(vs: ViewportState) {
+  viewportState = vs;
+  // the solid cap needs a watertight mesh — verified by the naked-edge
+  // census, lazily on first section use for a part
+  if (vs.section.enabled) {
+    const naked = nakedSegments();
+    if (naked) scene?.setCapSupported(naked.length === 0);
+  }
+  scene?.setViewport(vs);
+  void ensureBrepEdges();
+}
+
+function nakedSegments(): Float32Array | null {
+  const { partId, manifestVersion } = useStore.getState();
+  if (!verts || !faces || !partId) return null;
+  const key = `${partId}:${manifestVersion}`;
+  if (nakedCache?.key !== key) {
+    nakedCache = { key, segments: nakedEdgeSegments(verts, faces) };
+  }
+  return nakedCache.segments;
+}
+
+/** The raw mesh arrays for viewer tools (snap anchors). */
+export function meshArrays():
+{ verts: Float32Array; faces: Uint32Array } | null {
+  return verts && faces ? { verts, faces } : null;
+}
+
+/** Fit the whole part in view, keeping the current view direction. */
+export function fitPart() {
+  scene?.fit();
+}
+
+/** Part bounding box (posed) — sizes the section offset slider. */
+export function partBounds() {
+  return scene?.getBounds() ?? null;
+}
+
+/** Camera view direction — seeds the "custom" section plane normal. */
+export function viewDirection(): [number, number, number] {
+  return scene?.getViewDirection() ?? [0, 0, 1];
+}
+
+/** Live surface normal at a fine face (posed when the mesh is posed). */
+export function faceNormal(face: number): [number, number, number] {
+  return scene?.faceNormalAt(face) ?? [0, 0, 1];
+}
+
+/** Push the measurement session's picks into the annotation layer. */
+export function setMeasureAnnotations(
+  a: Parameters<Scene3D['setMeasureAnnotations']>[0],
+  b: Parameters<Scene3D['setMeasureAnnotations']>[1],
+  frame?: Parameters<Scene3D['setMeasureAnnotations']>[2],
+) {
+  scene?.setMeasureAnnotations(a, b, frame);
+}
+
+/** Fit the current legend-group selection in view. */
+export function fitSelection() {
+  scene?.fitSelection();
+}
+
+/** Select a legend entry's face group (fit-selection/isolate/ghost act on
+ * it); null clears. Toggled from the v2 legend. */
+export function selectLegendGroup(label: string, faces: number[] | null) {
+  const selection = faces && faces.length ? { label, faces } : null;
+  useStore.getState().set({ selection });
+  scene?.setSelectionFaces(selection ? selection.faces : null);
+}
+
+/** Fetch + install the BREP boundary polylines when the edge mode wants
+ * them: the served interior segments (subface-aware) plus the naked mesh
+ * boundary edges the backend omits. STL parts have neither — no-op. */
+async function ensureBrepEdges() {
+  const { manifest, partId, manifestVersion } = useStore.getState();
+  if (!scene || !manifest || !partId || !verts || !faces) return;
+  if (!viewportState.brepEdges) return;
+  const key = `${partId}:${manifestVersion}`;
+  if (key === brepEdgesKey) return;
+  const descriptors = edgeDescriptors(manifest);
+  if (!descriptors) return;
+  brepEdgesKey = key;
+  try {
+    const interior = await fetchField(descriptors.edges) as Float32Array;
+    const naked = nakedSegments() ?? new Float32Array(0);
+    const segments = new Float32Array(interior.length + naked.length);
+    segments.set(interior);
+    segments.set(naked, interior.length);
+    scene?.setBrepEdges(segments);
+  } catch (err) {
+    brepEdgesKey = '';
+    useStore.getState().set({ error: String(err) });
+  }
+}
+
 /** Switch the viewer between light and dark: repaints the background and the
  * background-matched colour-map variants (batlowW/K, vik/berlin). */
 export function setViewerTheme(bg: ViewerBackground) {
   setColorBackground(bg);
-  scene?.setBackground(VIEWER_BG[bg]);
+  scene?.setBackground(VIEWER_BG[bg], bg);
   schedulePaint(true);
 }
 
@@ -125,9 +250,11 @@ export async function selectPart(partId: string) {
   faces = null;
   normals = null;
   lastPaintKey = '';
+  brepEdgesKey = '';
+  nakedCache = null;
   scene?.clearMesh();
   store.set({
-    partId, manifest: null, meshReady: false, highlights: null,
+    partId, manifest: null, meshReady: false, highlights: null, selection: null,
     legend: [], stats: 'loading…', pick: 'click a face to inspect', error: null,
   });
 
@@ -239,7 +366,8 @@ function buildCtx(): ViewCtx | null {
       theScene.setGraph(key, nodes, edges, radii);
     },
     paintGraph: (colorOf) => theScene.paintGraph(colorOf),
-    setMeshOpacity: (alpha) => theScene.setMeshOpacity(alpha),
+    setMeshOpacity: (alpha) => theScene.setLensDisplayHint(alpha),
+    setFindings: (isFinding) => theScene.setFindings(isFinding),
     setVertexPositions: (positions, smooth) =>
       theScene.setVertexPositions(positions, smooth),
     addOverlayMesh: (spec) => theScene.addOverlayMesh(spec),
@@ -277,7 +405,8 @@ async function repaint() {
   const mode = plugin?.modes.find((m) => m.id === store.modeId) ?? plugin?.modes[0];
   if (!plugin || !mode) return;
   graphTouched = false;
-  scene?.setMeshOpacity(1);
+  scene?.setLensDisplayHint(1);
+  scene?.setFindings(null);
   // animation state never outlives a paint: modes re-register in paint()
   scene?.setAnimator(null);
   scene?.setVertexPositions(null);
@@ -297,6 +426,10 @@ async function repaint() {
   } finally {
     // modes that showed a graph re-key it every paint; anyone else clears it
     if (!graphTouched) scene?.clearGraph();
+    // re-compose the persistent viewport state over the fresh paint (findings
+    // alpha, selection colours, lens display hint)
+    scene?.applyRenderState();
+    void ensureBrepEdges();
   }
 }
 
