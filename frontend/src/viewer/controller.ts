@@ -12,10 +12,9 @@ import { clearFieldCache, fetchBin, fetchField } from '../fields/fields';
 import { getPlugin } from '../registry';
 import type { LegendFocus, ViewCtx } from '../registry/types';
 import { useStore } from '../state/store';
-import { flowVoxelResults } from '../processes/injection/voxels';
+import { flowVoxelResults, voxelPositions } from '../processes/injection/voxels';
 import { edgeDescriptors } from '../splits/splits';
 import { nakedEdgeSegments } from './brepEdges';
-import { surfaceVoxelCenters } from './voxels';
 import { setColorBackground, VIEWER_BG, type ViewerBackground } from './colormaps';
 import { Scene3D } from './scene';
 import { DEFAULT_VIEWPORT, type ViewportState } from './viewportState';
@@ -146,8 +145,9 @@ export function setViewportState(vs: ViewportState) {
 }
 
 /** Feed the Voxel render style from the newest prep/voxels result (the v2
- * shell auto-runs the analysis when none exists — see v2/tools/voxelStyle).
- * Until data arrives the style falls back to the solid look. */
+ * shell auto-runs the analysis when none exists — see v2/tools/voxelStyle):
+ * ALL interior cells with their wall distances, like the classic voxel-field
+ * view. Until data arrives the style falls back to the solid look. */
 async function ensureVoxels() {
   const { manifest, partId } = useStore.getState();
   if (!scene || !manifest || !partId) return;
@@ -157,13 +157,23 @@ async function ensureVoxels() {
   const key = `${partId}:${result.hash}`;
   if (key === voxelsKey) return;
   const indexId = result.fields.find((f) => f.endsWith('.voxel_index'));
-  const desc = manifest.fields.find((f) => f.id === indexId);
-  if (!desc?.params.grid) return;
+  const distId = result.fields.find((f) => f.endsWith('.voxel_dist'));
+  const indexDesc = manifest.fields.find((f) => f.id === indexId);
+  const distDesc = manifest.fields.find((f) => f.id === distId);
+  const grid = indexDesc?.params.grid;
+  if (!indexDesc || !grid) return;
   voxelsKey = key;
   try {
-    const index = await fetchField(desc) as Uint32Array;
-    scene?.setVoxels(
-      surfaceVoxelCenters(index, desc.params.grid), desc.params.grid.voxel);
+    const [index, dist] = await Promise.all([
+      fetchField(indexDesc) as Promise<Uint32Array>,
+      distDesc ? fetchField(distDesc) as Promise<Float32Array>
+        : Promise.resolve(null),
+    ]);
+    const centers = voxelPositions({
+      key: result.hash, origin: grid.origin, h: grid.voxel,
+      dims: grid.dims, index, dist: dist ?? new Float32Array(0),
+    });
+    scene?.setVoxels(centers, dist, grid.voxel);
   } catch (err) {
     voxelsKey = '';
     useStore.getState().set({ error: String(err) });
@@ -258,6 +268,8 @@ async function ensureBrepEdges() {
 export function setViewerTheme(bg: ViewerBackground) {
   setColorBackground(bg);
   scene?.setBackground(VIEWER_BG[bg], bg);
+  voxelsKey = ''; // voxel colours bake the background-matched colormap
+  void ensureVoxels();
   schedulePaint(true);
 }
 

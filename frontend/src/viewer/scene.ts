@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import type { RGB } from '../registry/types';
 import { CameraRig } from './cameraRig';
+import { sequential } from './colormaps';
 import { computeMeasurement, type MeasureFrame, type MeasurePick } from './measure';
 import {
   makeBaryAttribute, makeBaseMaterial, makeCapMaterial,
@@ -39,12 +40,10 @@ export class Scene3D {
   /** Stencil parity only works for watertight solids; the controller flips
    * this off for open sheet parts (naked-edge check). */
   private capSupported = true;
-  // the Voxel render style: the part's surface voxel shell as instanced
-  // boxes (persistent; the controller feeds it from prep/voxels)
-  private voxelMesh: THREE.InstancedMesh | null = null;
-  private voxelMaterial = new THREE.MeshPhongMaterial({
-    color: THEME_COLORS.dark.base, specular: 0x111111, shininess: 18,
-  });
+  // the Voxel render style: ALL interior cells as depth-free round points
+  // (the classic voxel-field look — internal voxels stay visible), coloured
+  // by wall distance. Persistent; the controller feeds it from prep/voxels.
+  private voxelPoints: THREE.Points | null = null;
   private edgeLines: THREE.LineSegments | null = null; // BREP boundaries (persistent)
   private annotations = new THREE.Group(); // measurement etc. (persistent)
   private overlay = new THREE.Group(); // per-repaint overlays (cleared)
@@ -124,7 +123,6 @@ export class Scene3D {
     // it lies exactly on the plane and would vanish on float roundoff
     this.registerClipping(this.stencilMaterials.back);
     this.registerClipping(this.stencilMaterials.front);
-    this.registerClipping(this.voxelMaterial);
     // the lens alpha channel is a 0/1 findings MASK; these uniforms mix the
     // two user opacities on it in the fragment stage
     patchLensOpacity(this.lensMaterial, this.lensOpacityUniforms);
@@ -365,29 +363,66 @@ export class Scene3D {
     this.applyRenderState();
   }
 
-  /** Install the Voxel style's block shell (surface voxel centres, M*3) —
-   * null removes it. The base mesh stays the raycast target either way. */
-  setVoxels(centers: Float32Array | null, size: number) {
-    if (this.voxelMesh) {
-      this.scene.remove(this.voxelMesh);
-      this.voxelMesh.geometry.dispose();
-      this.voxelMesh.dispose();
-      this.voxelMesh = null;
+  /** Install the Voxel style's point cloud (ALL interior cell centres, N*3,
+   * with the per-cell wall distance for colouring) — null removes it. Depth-
+   * free round splats, so internal voxels stay visible through the ghosted
+   * body, exactly like the classic voxel-field view. */
+  setVoxels(centers: Float32Array | null, dist: Float32Array | null,
+            size: number) {
+    if (this.voxelPoints) {
+      this.scene.remove(this.voxelPoints);
+      this.voxelPoints.geometry.dispose();
+      (this.voxelPoints.material as THREE.Material).dispose();
+      this.voxelPoints = null;
     }
     if (centers && centers.length) {
       const count = centers.length / 3;
-      const mesh = new THREE.InstancedMesh(
-        new THREE.BoxGeometry(size, size, size), this.voxelMaterial, count);
-      const matrix = new THREE.Matrix4();
+      const colors = new Float32Array(count * 3);
+      let maxDist = 1e-9;
+      if (dist) for (let n = 0; n < count; n++) maxDist = Math.max(maxDist, dist[n]);
       for (let n = 0; n < count; n++) {
-        matrix.setPosition(
-          centers[3 * n], centers[3 * n + 1], centers[3 * n + 2]);
-        mesh.setMatrixAt(n, matrix);
+        const [r, g, b] = sequential(dist ? dist[n] / maxDist : 0.5);
+        colors[3 * n] = r;
+        colors[3 * n + 1] = g;
+        colors[3 * n + 2] = b;
       }
-      mesh.instanceMatrix.needsUpdate = true;
-      mesh.frustumCulled = false;
-      this.voxelMesh = mesh;
-      this.scene.add(mesh);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(centers, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      const sizes = new Float32Array(count).fill(size / 2);
+      geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+      const material = this.registerClipping(new THREE.ShaderMaterial({
+        depthTest: false,
+        depthWrite: false,
+        transparent: true,
+        clipping: true,
+        vertexShader: `
+          #include <common>
+          #include <clipping_planes_pars_vertex>
+          attribute float size;
+          varying vec3 vColor;
+          void main() {
+            vColor = color;
+            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            gl_PointSize = clamp(300.0 * size / -mvPosition.z, 1.5, 20.0);
+            gl_Position = projectionMatrix * mvPosition;
+            #include <clipping_planes_vertex>
+          }`,
+        fragmentShader: `
+          #include <common>
+          #include <clipping_planes_pars_fragment>
+          varying vec3 vColor;
+          void main() {
+            #include <clipping_planes_fragment>
+            if (length(gl_PointCoord - 0.5) > 0.5) discard;
+            gl_FragColor = vec4(vColor, 1.0);
+          }`,
+        vertexColors: true,
+      }));
+      this.voxelPoints = new THREE.Points(geometry, material);
+      this.voxelPoints.renderOrder = 3;
+      this.voxelPoints.frustumCulled = false;
+      this.scene.add(this.voxelPoints);
     }
     this.applyRenderState();
   }
@@ -741,7 +776,6 @@ export class Scene3D {
     this.theme = theme;
     const colors = THEME_COLORS[theme];
     this.baseMaterial.color.setHex(colors.base);
-    this.voxelMaterial.color.setHex(colors.base);
     this.capMaterial.color.setHex(colors.sectionCap);
     this.edgeUniforms.uEdgeColor.value.setHex(colors.triEdge);
     (this.xrayMaterial.uniforms.uBase.value as THREE.Color).setHex(colors.xrayBase);
@@ -985,19 +1019,20 @@ export class Scene3D {
     const vs = this.viewport;
     const xray = vs.style === 'xray';
     const meshStyle = vs.style === 'mesh';
-    // fall back to the solid look until the voxel shell has data (the
+    // fall back to the solid look until the voxel cloud has data (the
     // controller may still be fetching or computing prep/voxels)
-    const voxel = vs.style === 'voxel' && !!this.voxelMesh;
+    const voxel = vs.style === 'voxel' && !!this.voxelPoints;
     const hasSelection = !!this.selectionMask;
     const ghost = vs.context === 'ghost' && hasSelection;
     const isolate = vs.context === 'isolate' && hasSelection;
 
-    // base: opaque phong for solid/mesh, the Fresnel shell for X-ray, the
-    // instanced block shell for Voxel (base hidden but still the pick target)
+    // base: opaque phong for solid/mesh, the Fresnel shell for X-ray; the
+    // Voxel style GHOSTS the body (like the classic voxel view) so the
+    // depth-free voxel cloud reads inside the part outline
     this.mesh.material = xray ? this.xrayMaterial : this.baseMaterial;
-    this.mesh.visible = !isolate && !voxel;
+    this.mesh.visible = !isolate;
     this.depthPrepassMesh.visible = xray && !isolate;
-    if (this.voxelMesh) this.voxelMesh.visible = voxel && !isolate;
+    if (this.voxelPoints) this.voxelPoints.visible = voxel && !isolate;
 
     // the Mesh style IS flat triangle shading + triangle edges
     for (const m of [this.baseMaterial, this.lensMaterial,
@@ -1032,9 +1067,10 @@ export class Scene3D {
       this.stencilFrontMesh.visible = capOn;
     }
 
-    // base opacity: the lens display hint × ghosting (X-ray is already
-    // see-through and ignores the hint)
-    const baseAlpha = Math.min(this.lensHint, ghost ? GHOST_ALPHA : 1);
+    // base opacity: the lens display hint × ghosting × the voxel style's
+    // see-through body (X-ray is already see-through and ignores the hint)
+    const baseAlpha = Math.min(this.lensHint, ghost ? GHOST_ALPHA : 1,
+      voxel ? GHOST_ALPHA : 1);
     if (!xray) {
       this.baseMaterial.transparent = baseAlpha < 1;
       this.baseMaterial.opacity = baseAlpha;
@@ -1070,7 +1106,7 @@ export class Scene3D {
     this.clearGraph();
     this.clearAnnotations();
     this.setBrepEdges(null);
-    this.setVoxels(null, 1);
+    this.setVoxels(null, null, 1);
     this.animator = null;
     // dispose every layer geometry; the shared attributes go with them (the
     // materials are long-lived and reused by the next part)
@@ -1243,8 +1279,7 @@ export class Scene3D {
     for (const m of [this.baseMaterial, this.xrayMaterial, this.lensMaterial,
       this.lensOccludedMaterial, this.selectionMaterial,
       this.depthPrepassMaterial, this.stencilMaterials.back,
-      this.stencilMaterials.front, this.capMaterial,
-      this.voxelMaterial]) m.dispose();
+      this.stencilMaterials.front, this.capMaterial]) m.dispose();
     this.viewHelper.dispose();
     window.removeEventListener('resize', this.onResize);
     this.renderer.dispose();

@@ -3,7 +3,7 @@ import {
   Boxes, Circle, Cuboid, Eye, Flag, Focus, Ghost, Layers, Maximize,
   RotateCcw, Ruler, Scan, Slice, Spline, Triangle,
 } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { useStore } from '../../state/store';
 import { fitPart, fitSelection, selectLegendGroup } from '../../viewer/controller';
 import { DEFAULT_VIEWPORT, type RenderStyle } from '../../viewer/viewportState';
@@ -22,7 +22,7 @@ const STYLES: { id: RenderStyle; label: string; hint: string; Icon: typeof Circl
   { id: 'solid', label: 'Solid', hint: 'Smooth solid shading', Icon: Circle },
   { id: 'mesh', label: 'Mesh', hint: 'Flat triangle shading with tessellation edges', Icon: Triangle },
   { id: 'xray', label: 'X-ray', hint: 'See-through shell, occluded findings stay visible', Icon: Scan },
-  { id: 'voxel', label: 'Voxel', hint: 'Part as voxel blocks (computes prep/voxels on first use)', Icon: Boxes },
+  { id: 'voxel', label: 'Voxel', hint: 'Voxel field coloured by wall distance, internal cells visible (computes prep/voxels on first use)', Icon: Boxes },
 ];
 
 /** Plain toggle: show/hide the true BREP boundary polylines. */
@@ -47,16 +47,24 @@ function EdgeToggle() {
   );
 }
 
+/** How much an open opacity control widens the ribbon: the toolbar pill
+ * compensates its right margin by the same amount so the pill's LEFT edge
+ * (and the hovered icon) stay put under the centring wrapper — expansion
+ * pushes the sibling icons right, never the icon itself left. */
+export const OPACITY_FLYOUT_PX = 60;
+
 /** YouTube-volume-style opacity control: the icon alone sits in the ribbon;
  * clicking it mutes to 0% or restores the last dialled value (100% until
- * changed). Hovering — or keyboard-focusing — flows a slider out from the
- * icon for intermediate values; it stays out while dragging, even when the
- * pointer strays off the toolbar mid-drag. */
-function OpacityControl({ label, Icon, value, onChange }: {
+ * changed). Hovering — or keyboard-focusing — flows a slider out of the
+ * icon, pushing the neighbouring icons right; icon and slider share one
+ * backdrop chip in the icon's state colour (dark when on, grey when muted).
+ * It stays out while dragging, even when the pointer strays mid-drag. */
+function OpacityControl({ label, Icon, value, onChange, onOpenChange }: {
   label: string;
   Icon: typeof Layers;
   value: number;
   onChange: (value: number) => void;
+  onOpenChange: (open: boolean) => void;
 }) {
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
@@ -65,12 +73,22 @@ function OpacityControl({ label, Icon, value, onChange }: {
   const restore = useRef(1);
   if (value > 0) restore.current = value;
   const open = hovered || focused || dragging;
+  // LAYOUT effect: the pill's compensating margin must land in the same
+  // paint as the width change — one frame of mismatch shifts the pill
+  // under the pointer, breaking hover and oscillating the control
+  useLayoutEffect(() => {
+    if (!open) return;
+    onOpenChange(true);
+    return () => onOpenChange(false);
+  }, [open, onOpenChange]);
+  const on = value > 0;
 
   return (
     <div
-      // an OPEN control must rise above its sibling controls' z-30 icons —
-      // its fly-out extends over them and has to win the hit-test
-      className={clsx('relative flex items-center', open && 'z-40')}
+      // the container IS the shared backdrop: an elongated version of the
+      // icon's own chip (active = dark, muted = the grey hover tint)
+      className={clsx('flex items-center rounded-lg transition-colors duration-200',
+        open && (on ? 'bg-zinc-900 dark:bg-white' : 'bg-zinc-950/5 dark:bg-white/10'))}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
       // hold the slider out for KEYBOARD focus only — a mouse click also
@@ -78,33 +96,21 @@ function OpacityControl({ label, Icon, value, onChange }: {
       onFocus={(e) => setFocused(e.target.matches(':focus-visible'))}
       onBlur={() => setFocused(false)}
     >
-      {/* ONE shared backdrop behind icon + slider: grows rightward from
-          under the stationary icon, floating above the ribbon so covered
-          neighbours stay legible beneath it */}
-      <div
-        aria-hidden
-        className={clsx(
-          'pointer-events-none absolute left-0 top-1/2 z-10 h-8 -translate-y-1/2 rounded-lg',
-          'bg-white shadow-sm ring-1 ring-zinc-950/10 dark:bg-zinc-800 dark:ring-white/10',
-          'transition-[width,opacity] duration-200 ease-out',
-          open ? 'w-24 opacity-100' : 'w-8 opacity-0',
-        )}
-      />
       <button
         type="button"
-        onClick={() => onChange(value > 0 ? 0 : restore.current)}
+        onClick={() => onChange(on ? 0 : restore.current)}
         title={`${label} ${Math.round(value * 100)}% — click toggles, hover to dial`}
-        aria-pressed={value > 0}
-        className={clsx(btnCls, 'relative z-30', value > 0 ? activeCls : idleCls)}
+        aria-pressed={on}
+        className={clsx(btnCls,
+          on ? (open ? 'text-white dark:text-zinc-900' : activeCls) : idleCls)}
       >
         <Icon className="size-4" />
       </button>
-      {/* the slider zone rides on the shared backdrop, to the icon's right */}
+      {/* in-flow slider zone (w = OPACITY_FLYOUT_PX when open) */}
       <div
         className={clsx(
-          'absolute left-8 top-1/2 z-20 flex h-8 -translate-y-1/2 items-center',
-          'overflow-hidden transition-[width] duration-200 ease-out',
-          open ? 'w-16' : 'w-0',
+          'flex items-center overflow-hidden transition-[width] duration-200 ease-out',
+          open ? 'w-[60px]' : 'w-0',
         )}
       >
         <input
@@ -119,10 +125,13 @@ function OpacityControl({ label, Icon, value, onChange }: {
           onPointerCancel={() => setDragging(false)}
           tabIndex={open ? 0 : -1}
           title={`${label} opacity (${Math.round(value * 100)}%)`}
-          // Catalyst-style track + ball thumb (the switch's white ball look)
+          // Catalyst-style track + ball thumb, inverted to read on the
+          // state-coloured backdrop
           className={clsx(
-            'ml-1 h-1 w-12 shrink-0 cursor-pointer appearance-none rounded-full',
-            '[--fill:#18181b] [--track:#e4e4e7] dark:[--fill:#ffffff] dark:[--track:#ffffff33]',
+            'ml-1 mr-1 h-1 w-12 shrink-0 cursor-pointer appearance-none rounded-full',
+            on
+              ? '[--fill:#ffffff] [--track:#ffffff4d] dark:[--fill:#18181b] dark:[--track:#00000033]'
+              : '[--fill:#18181b] [--track:#d4d4d8] dark:[--fill:#ffffff] dark:[--track:#ffffff33]',
             '[&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none',
             '[&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white',
             '[&::-webkit-slider-thumb]:shadow [&::-webkit-slider-thumb]:ring-1',
@@ -156,6 +165,12 @@ export function ViewportToolbar() {
   const sectionRailOpen = useV2((s) => s.sectionRailOpen);
   const setSectionRailOpen = useV2((s) => s.setSectionRailOpen);
   const selection = useStore((s) => s.selection);
+  // opacity fly-outs widen the pill; a matching negative right margin keeps
+  // its layout width constant so the centring wrapper never re-centres —
+  // the hovered icon stays put and only the icons to its right shift
+  const [openFlyouts, setOpenFlyouts] = useState(0);
+  const onFlyoutChange = useCallback((open: boolean) =>
+    setOpenFlyouts((n) => n + (open ? 1 : -1)), []);
 
   const setContext = (mode: 'ghost' | 'isolate') =>
     setViewport({ context: viewport.context === mode ? 'all' : mode });
@@ -165,7 +180,17 @@ export function ViewportToolbar() {
     // the axis gizmo (bottom-right, 128px + margin); wraps upward when tight.
     // On narrow columns the legend moves top-left, freeing the left edge.
     <div className="pointer-events-none absolute bottom-3 left-[16rem] right-[8.5rem] flex justify-center @max-2xl:left-3">
-    <div className="pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-1 rounded-xl border border-zinc-950/10 bg-white/90 p-1 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10">
+    <div
+      className="pointer-events-auto flex flex-wrap items-center justify-center gap-1 rounded-xl border border-zinc-950/10 bg-white/90 p-1 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur transition-[margin] duration-200 ease-out dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10"
+      // a fly-out widens the content by OPACITY_FLYOUT_PX: the negative
+      // margin keeps the centring wrapper from re-centring (icon stays put)
+      // and the raised max-width keeps flex-wrap from RE-PACKING the rows —
+      // a re-wrap moves the hovered icon and oscillates the hover state
+      style={{
+        marginRight: -openFlyouts * OPACITY_FLYOUT_PX,
+        maxWidth: `calc(100% + ${openFlyouts * OPACITY_FLYOUT_PX}px)`,
+      }}
+    >
       {STYLES.map(({ id, label, hint, Icon }) => (
         <button
           key={id}
@@ -186,12 +211,14 @@ export function ViewportToolbar() {
         Icon={Layers}
         value={viewport.lensOpacity}
         onChange={(lensOpacity) => setViewport({ lensOpacity })}
+        onOpenChange={onFlyoutChange}
       />
       <OpacityControl
         label="Findings"
         Icon={Flag}
         value={viewport.findingsOpacity}
         onChange={(findingsOpacity) => setViewport({ findingsOpacity })}
+        onOpenChange={onFlyoutChange}
       />
       <button
         type="button"
