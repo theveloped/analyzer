@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import type { RGB } from '../registry/types';
 import { CameraRig } from './cameraRig';
+import { sequential } from './colormaps';
 import { computeMeasurement, type MeasureFrame, type MeasurePick } from './measure';
 import {
   makeBaryAttribute, makeBaseMaterial, makeCapMaterial,
@@ -39,6 +40,10 @@ export class Scene3D {
   /** Stencil parity only works for watertight solids; the controller flips
    * this off for open sheet parts (naked-edge check). */
   private capSupported = true;
+  // the Voxel render style: ALL interior cells as depth-free round points
+  // (the classic voxel-field look — internal voxels stay visible), coloured
+  // by wall distance. Persistent; the controller feeds it from prep/voxels.
+  private voxelPoints: THREE.Points | null = null;
   private edgeLines: THREE.LineSegments | null = null; // BREP boundaries (persistent)
   private annotations = new THREE.Group(); // measurement etc. (persistent)
   private overlay = new THREE.Group(); // per-repaint overlays (cleared)
@@ -355,6 +360,70 @@ export class Scene3D {
   setCapSupported(supported: boolean) {
     if (this.capSupported === supported) return;
     this.capSupported = supported;
+    this.applyRenderState();
+  }
+
+  /** Install the Voxel style's point cloud (ALL interior cell centres, N*3,
+   * with the per-cell wall distance for colouring) — null removes it. Depth-
+   * free round splats, so internal voxels stay visible through the ghosted
+   * body, exactly like the classic voxel-field view. */
+  setVoxels(centers: Float32Array | null, dist: Float32Array | null,
+            size: number) {
+    if (this.voxelPoints) {
+      this.scene.remove(this.voxelPoints);
+      this.voxelPoints.geometry.dispose();
+      (this.voxelPoints.material as THREE.Material).dispose();
+      this.voxelPoints = null;
+    }
+    if (centers && centers.length) {
+      const count = centers.length / 3;
+      const colors = new Float32Array(count * 3);
+      let maxDist = 1e-9;
+      if (dist) for (let n = 0; n < count; n++) maxDist = Math.max(maxDist, dist[n]);
+      for (let n = 0; n < count; n++) {
+        const [r, g, b] = sequential(dist ? dist[n] / maxDist : 0.5);
+        colors[3 * n] = r;
+        colors[3 * n + 1] = g;
+        colors[3 * n + 2] = b;
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(centers, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      const sizes = new Float32Array(count).fill(size / 2);
+      geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+      const material = this.registerClipping(new THREE.ShaderMaterial({
+        depthTest: false,
+        depthWrite: false,
+        transparent: true,
+        clipping: true,
+        vertexShader: `
+          #include <common>
+          #include <clipping_planes_pars_vertex>
+          attribute float size;
+          varying vec3 vColor;
+          void main() {
+            vColor = color;
+            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            gl_PointSize = clamp(300.0 * size / -mvPosition.z, 1.5, 20.0);
+            gl_Position = projectionMatrix * mvPosition;
+            #include <clipping_planes_vertex>
+          }`,
+        fragmentShader: `
+          #include <common>
+          #include <clipping_planes_pars_fragment>
+          varying vec3 vColor;
+          void main() {
+            #include <clipping_planes_fragment>
+            if (length(gl_PointCoord - 0.5) > 0.5) discard;
+            gl_FragColor = vec4(vColor, 1.0);
+          }`,
+        vertexColors: true,
+      }));
+      this.voxelPoints = new THREE.Points(geometry, material);
+      this.voxelPoints.renderOrder = 3;
+      this.voxelPoints.frustumCulled = false;
+      this.scene.add(this.voxelPoints);
+    }
     this.applyRenderState();
   }
 
@@ -950,14 +1019,20 @@ export class Scene3D {
     const vs = this.viewport;
     const xray = vs.style === 'xray';
     const meshStyle = vs.style === 'mesh';
+    // fall back to the solid look until the voxel cloud has data (the
+    // controller may still be fetching or computing prep/voxels)
+    const voxel = vs.style === 'voxel' && !!this.voxelPoints;
     const hasSelection = !!this.selectionMask;
     const ghost = vs.context === 'ghost' && hasSelection;
     const isolate = vs.context === 'isolate' && hasSelection;
 
-    // base: opaque phong for solid/mesh, the Fresnel shell for X-ray
+    // base: opaque phong for solid/mesh, the Fresnel shell for X-ray; the
+    // Voxel style GHOSTS the body (like the classic voxel view) so the
+    // depth-free voxel cloud reads inside the part outline
     this.mesh.material = xray ? this.xrayMaterial : this.baseMaterial;
     this.mesh.visible = !isolate;
     this.depthPrepassMesh.visible = xray && !isolate;
+    if (this.voxelPoints) this.voxelPoints.visible = voxel && !isolate;
 
     // the Mesh style IS flat triangle shading + triangle edges
     for (const m of [this.baseMaterial, this.lensMaterial,
@@ -984,7 +1059,7 @@ export class Scene3D {
       }
     }
     // the solid cap only makes sense on a watertight, fully opaque body
-    const capOn = vs.section.enabled && !xray && !isolate && !ghost
+    const capOn = vs.section.enabled && !xray && !voxel && !isolate && !ghost
       && this.lensHint >= 1 && this.capSupported;
     if (this.capMesh && this.stencilBackMesh && this.stencilFrontMesh) {
       this.capMesh.visible = capOn;
@@ -992,9 +1067,10 @@ export class Scene3D {
       this.stencilFrontMesh.visible = capOn;
     }
 
-    // base opacity: the lens display hint × ghosting (X-ray is already
-    // see-through and ignores the hint)
-    const baseAlpha = Math.min(this.lensHint, ghost ? GHOST_ALPHA : 1);
+    // base opacity: the lens display hint × ghosting × the voxel style's
+    // see-through body (X-ray is already see-through and ignores the hint)
+    const baseAlpha = Math.min(this.lensHint, ghost ? GHOST_ALPHA : 1,
+      voxel ? GHOST_ALPHA : 1);
     if (!xray) {
       this.baseMaterial.transparent = baseAlpha < 1;
       this.baseMaterial.opacity = baseAlpha;
@@ -1010,17 +1086,18 @@ export class Scene3D {
     this.lensOpacityUniforms.uFindingsOpacity.value = vs.findingsOpacity;
     const maxAlpha = this.findingMask
       ? Math.max(vs.lensOpacity, vs.findingsOpacity) : vs.lensOpacity;
-    this.lensMesh.visible = !isolate && factor > 0 && maxAlpha > 0;
+    this.lensMesh.visible = !isolate && !voxel && factor > 0 && maxAlpha > 0;
     this.lensMaterial.opacity = factor;
     this.lensMaterial.depthWrite = false;
     this.lensOccludedMesh.visible = xray && this.lensMesh.visible;
     this.lensOccludedMaterial.opacity = factor * 0.25;
     this.refreshLensAlpha();
 
-    // selection layer: only meaningful under ghost/isolate
+    // selection layer: only meaningful under ghost/isolate (and it paints
+    // mesh faces — meaningless over the voxel shell)
     if (ghost || isolate) this.refreshSelectionColors();
     if (this.selectionMesh) {
-      this.selectionMesh.visible = (ghost || isolate) && hasSelection;
+      this.selectionMesh.visible = (ghost || isolate) && hasSelection && !voxel;
     }
   }
 
@@ -1029,6 +1106,7 @@ export class Scene3D {
     this.clearGraph();
     this.clearAnnotations();
     this.setBrepEdges(null);
+    this.setVoxels(null, null, 1);
     this.animator = null;
     // dispose every layer geometry; the shared attributes go with them (the
     // materials are long-lived and reused by the next part)
@@ -1092,43 +1170,63 @@ export class Scene3D {
       line.renderOrder = 5;
       this.annotations.add(line);
     };
-    const addMarker = (pick: MeasurePick, label: string, color: string) => {
+    // a small arrow ALONG the pick's normal, tip exactly on the picked point
+    // — world-sized meshes/sprites so it reads identically under perspective
+    // and orthographic cameras (screen-constant sprites are invisible in
+    // ortho: without attenuation their scale is world units)
+    const addMarker = (pick: MeasurePick, label: string, color: number) => {
+      const n = pick.normal;
+      const scale = Math.hypot(n[0], n[1], n[2]) || 1;
+      const dir = new THREE.Vector3(
+        n[0] / scale, n[1] / scale, n[2] / scale);
+      const coneHeight = diag * 0.02;
+      const material = this.registerClipping(new THREE.MeshBasicMaterial({
+        color, depthTest: false,
+      }));
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(coneHeight / 3, coneHeight, 16), material);
+      // ConeGeometry's apex points +Y; aim it at the surface (apex = pick)
+      cone.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0), dir.clone().negate());
+      cone.position.set(...pick.point)
+        .addScaledVector(dir, coneHeight / 2);
+      cone.renderOrder = 6;
+      this.annotations.add(cone);
+      // shaft along the normal (also communicates the pick's normal)
+      const tail: [number, number, number] = [
+        pick.point[0] + dir.x * rayLength,
+        pick.point[1] + dir.y * rayLength,
+        pick.point[2] + dir.z * rayLength,
+      ];
+      addLine([pick.point, tail], color, 0.9);
+      // small world-scaled text label at the tail (sizeAttenuation TRUE
+      // renders in ortho too)
       const canvas = document.createElement('canvas');
       canvas.width = 64;
       canvas.height = 64;
       const g = canvas.getContext('2d')!;
-      g.beginPath();
-      g.arc(32, 32, 26, 0, 2 * Math.PI);
-      g.fillStyle = color;
-      g.fill();
-      g.lineWidth = 5;
-      g.strokeStyle = '#ffffff';
-      g.stroke();
-      g.fillStyle = '#ffffff';
-      g.font = 'bold 30px system-ui, sans-serif';
+      g.font = 'bold 44px system-ui, sans-serif';
       g.textAlign = 'center';
       g.textBaseline = 'middle';
+      g.lineWidth = 8;
+      g.strokeStyle = '#ffffff';
+      g.strokeText(label, 32, 34);
+      g.fillStyle = `#${color.toString(16).padStart(6, '0')}`;
       g.fillText(label, 32, 34);
-      const material = this.registerClipping(new THREE.SpriteMaterial({
-        map: new THREE.CanvasTexture(canvas),
-        depthTest: false, sizeAttenuation: false, // constant screen size
+      const spriteMaterial = this.registerClipping(new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(canvas), depthTest: false,
       }));
-      const sprite = new THREE.Sprite(material);
-      sprite.position.set(...pick.point);
-      sprite.scale.set(0.045, 0.045, 1);
+      const sprite = new THREE.Sprite(spriteMaterial);
+      const labelSize = diag * 0.035;
+      sprite.scale.set(labelSize, labelSize, 1);
+      sprite.position.set(tail[0], tail[1], tail[2])
+        .addScaledVector(dir, labelSize * 0.6);
       sprite.renderOrder = 6;
       this.annotations.add(sprite);
-      // the pick's surface normal, drawn from the picked point
-      const tip: [number, number, number] = [
-        pick.point[0] + pick.normal[0] * rayLength,
-        pick.point[1] + pick.normal[1] * rayLength,
-        pick.point[2] + pick.normal[2] * rayLength,
-      ];
-      addLine([pick.point, tip], 0xbfc6ce, 0.9);
     };
 
-    if (a) addMarker(a, 'A', '#2f6fde');
-    if (b) addMarker(b, 'B', '#d97b16');
+    if (a) addMarker(a, 'A', 0x2f6fde);
+    if (b) addMarker(b, 'B', 0xd97b16);
     if (a && b) {
       addLine([a.point, b.point], this.theme === 'dark' ? 0xf3f5f7 : 0x1c1f24);
       if (frame === 'xyz') {

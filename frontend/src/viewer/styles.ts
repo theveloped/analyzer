@@ -232,7 +232,7 @@ export function makeXrayMaterial(): THREE.ShaderMaterial {
     uniforms: {
       uBase: { value: new THREE.Color(THEME_COLORS.dark.xrayBase) },
       uRim: { value: new THREE.Color(THEME_COLORS.dark.xrayRim) },
-      uOpacity: { value: 0.13 },
+      uOpacity: { value: 0.09 }, // subtle shell — overlays must read through it
     },
     vertexShader: `
       #include <common>
@@ -257,7 +257,7 @@ export function makeXrayMaterial(): THREE.ShaderMaterial {
       void main() {
         #include <clipping_planes_fragment>
         float rim = pow(1.0 - abs(dot(normalize(vNormal), normalize(vViewDir))), 2.5);
-        gl_FragColor = vec4(mix(uBase, uRim, rim), uOpacity + rim * 0.5);
+        gl_FragColor = vec4(mix(uBase, uRim, rim), uOpacity + rim * 0.42);
       }`,
   });
 }

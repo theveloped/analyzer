@@ -1,28 +1,18 @@
-import { Popover, PopoverButton, PopoverPanel } from '@headlessui/react';
 import clsx from 'clsx';
 import {
-  Circle, Crosshair, Cuboid, Eye, Focus, Ghost, Layers, Maximize, RotateCcw,
-  Ruler, Scan, Slice, Spline, Triangle,
+  Boxes, Circle, Cuboid, Eye, Flag, Focus, Ghost, Layers, Maximize,
+  RotateCcw, Ruler, Scan, Slice, Spline, Triangle,
 } from 'lucide-react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { useStore } from '../../state/store';
-import {
-  fitPart, fitSelection, partBounds, selectLegendGroup, viewDirection,
-} from '../../viewer/controller';
-import {
-  DEFAULT_SECTION, DEFAULT_VIEWPORT, type RenderStyle, type SectionState,
-} from '../../viewer/viewportState';
+import { fitPart, fitSelection, selectLegendGroup } from '../../viewer/controller';
+import { DEFAULT_VIEWPORT, type RenderStyle } from '../../viewer/viewportState';
 import { edgeDescriptors } from '../../splits/splits';
-import { armSectionSnap } from '../tools/sectionSnap';
 import { useV2 } from '../store';
 
 const btnCls = 'flex size-8 items-center justify-center rounded-lg transition';
 const activeCls = 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900';
 const idleCls = 'text-zinc-500 hover:bg-zinc-950/5 hover:text-zinc-950 dark:text-zinc-400 dark:hover:bg-white/10 dark:hover:text-white';
-const panelCls = 'z-20 mb-2 w-56 rounded-xl border border-zinc-950/10 bg-white/95 p-2 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/95 dark:ring-white/10';
-const rowCls = 'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm/5 transition';
-const rowActiveCls = 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900';
-const rowIdleCls = 'text-zinc-700 hover:bg-zinc-950/5 dark:text-zinc-300 dark:hover:bg-white/10';
-const labelCls = 'px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-zinc-400';
 
 function Divider() {
   return <span className="mx-0.5 h-5 w-px bg-zinc-950/10 dark:bg-white/10" />;
@@ -32,6 +22,7 @@ const STYLES: { id: RenderStyle; label: string; hint: string; Icon: typeof Circl
   { id: 'solid', label: 'Solid', hint: 'Smooth solid shading', Icon: Circle },
   { id: 'mesh', label: 'Mesh', hint: 'Flat triangle shading with tessellation edges', Icon: Triangle },
   { id: 'xray', label: 'X-ray', hint: 'See-through shell, occluded findings stay visible', Icon: Scan },
+  { id: 'voxel', label: 'Voxel', hint: 'Voxel field coloured by wall distance, internal cells visible (computes prep/voxels on first use)', Icon: Boxes },
 ];
 
 /** Plain toggle: show/hide the true BREP boundary polylines. */
@@ -56,211 +47,130 @@ function EdgeToggle() {
   );
 }
 
-/** One opacity for the lens colours, one for the findings — independent, so
- * findings can stay fully visible while the rest fades (or the reverse). */
-function OverlayMenu() {
-  const viewport = useV2((s) => s.viewport);
-  const setViewport = useV2((s) => s.setViewport);
-  const dimmed = viewport.lensOpacity < 1 || viewport.findingsOpacity < 1;
-  const slider = (label: string, key: 'lensOpacity' | 'findingsOpacity') => (
-    <div className={clsx(rowCls, 'text-zinc-700 dark:text-zinc-300')}>
-      <span className="w-16 shrink-0 text-xs">{label}</span>
-      <input
-        type="range"
-        min={0}
-        max={1}
-        step={0.05}
-        value={viewport[key]}
-        onChange={(e) => setViewport({ [key]: parseFloat(e.target.value) })}
-        className="w-full"
-        title={`${label} opacity`}
-      />
-      <span className="w-9 shrink-0 text-right text-xs tabular-nums">
-        {Math.round(viewport[key] * 100)}%
-      </span>
+/** How much an open opacity control widens the ribbon: the toolbar pill
+ * compensates its right margin by the same amount so the pill's LEFT edge
+ * (and the hovered icon) stay put under the centring wrapper — expansion
+ * pushes the sibling icons right, never the icon itself left. */
+export const OPACITY_FLYOUT_PX = 60;
+
+/** YouTube-volume-style opacity control: the icon alone sits in the ribbon;
+ * clicking it mutes to 0% or restores the last dialled value (100% until
+ * changed). Hovering — or keyboard-focusing — flows a slider out of the
+ * icon, pushing the neighbouring icons right; icon and slider share one
+ * backdrop chip in the icon's state colour (dark when on, grey when muted).
+ * It stays out while dragging, even when the pointer strays mid-drag. */
+function OpacityControl({ label, Icon, value, onChange, onOpenChange }: {
+  label: string;
+  Icon: typeof Layers;
+  value: number;
+  onChange: (value: number) => void;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  // what "unmute" restores — the last non-zero value the user dialled
+  const restore = useRef(1);
+  if (value > 0) restore.current = value;
+  const open = hovered || focused || dragging;
+  // LAYOUT effect: the pill's compensating margin must land in the same
+  // paint as the width change — one frame of mismatch shifts the pill
+  // under the pointer, breaking hover and oscillating the control
+  useLayoutEffect(() => {
+    if (!open) return;
+    onOpenChange(true);
+    return () => onOpenChange(false);
+  }, [open, onOpenChange]);
+  const on = value > 0;
+
+  return (
+    <div
+      // the container IS the shared backdrop: an elongated version of the
+      // icon's own chip (active = dark, muted = the grey hover tint)
+      className={clsx('flex items-center rounded-lg transition-colors duration-200',
+        open && (on ? 'bg-zinc-900 dark:bg-white' : 'bg-zinc-950/5 dark:bg-white/10'))}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      // hold the slider out for KEYBOARD focus only — a mouse click also
+      // focuses the input, which must not pin the slider open after leaving
+      onFocus={(e) => setFocused(e.target.matches(':focus-visible'))}
+      onBlur={() => setFocused(false)}
+    >
+      <button
+        type="button"
+        onClick={() => onChange(on ? 0 : restore.current)}
+        title={`${label} ${Math.round(value * 100)}% — click toggles, hover to dial`}
+        aria-pressed={on}
+        className={clsx(btnCls,
+          on ? (open ? 'text-white dark:text-zinc-900' : activeCls) : idleCls)}
+      >
+        <Icon className="size-4" />
+      </button>
+      {/* in-flow slider zone (w = OPACITY_FLYOUT_PX when open) */}
+      <div
+        className={clsx(
+          'flex items-center overflow-hidden transition-[width] duration-200 ease-out',
+          open ? 'w-[60px]' : 'w-0',
+        )}
+      >
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={value}
+          onChange={(e) => onChange(parseFloat(e.target.value))}
+          onPointerDown={() => setDragging(true)}
+          onPointerUp={() => setDragging(false)}
+          onPointerCancel={() => setDragging(false)}
+          tabIndex={open ? 0 : -1}
+          title={`${label} opacity (${Math.round(value * 100)}%)`}
+          // Catalyst-style track + ball thumb, inverted to read on the
+          // state-coloured backdrop
+          className={clsx(
+            'ml-1 mr-1 h-1 w-12 shrink-0 cursor-pointer appearance-none rounded-full',
+            on
+              ? '[--fill:#ffffff] [--track:#ffffff4d] dark:[--fill:#18181b] dark:[--track:#00000033]'
+              : '[--fill:#18181b] [--track:#d4d4d8] dark:[--fill:#ffffff] dark:[--track:#ffffff33]',
+            '[&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none',
+            '[&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white',
+            '[&::-webkit-slider-thumb]:shadow [&::-webkit-slider-thumb]:ring-1',
+            '[&::-webkit-slider-thumb]:ring-zinc-950/20',
+            '[&::-moz-range-thumb]:size-3 [&::-moz-range-thumb]:rounded-full',
+            '[&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-white',
+            '[&::-moz-range-thumb]:shadow',
+          )}
+          style={{
+            background: `linear-gradient(to right, var(--fill) ${value * 100}%, var(--track) ${value * 100}%)`,
+          }}
+        />
+      </div>
     </div>
-  );
-  return (
-    <Popover className="relative">
-      <PopoverButton
-        title="Lens overlay"
-        aria-label="Lens overlay"
-        className={clsx(btnCls, dimmed ? activeCls : idleCls)}
-      >
-        <Layers className="size-4" />
-      </PopoverButton>
-      <PopoverPanel anchor="top" className={panelCls}>
-        <div className={labelCls}>Lens overlay</div>
-        {slider('Colours', 'lensOpacity')}
-        {slider('Findings', 'findingsOpacity')}
-        <p className="px-2 py-1 text-[10px] text-zinc-400">
-          Findings draw on top when both are visible.
-        </p>
-      </PopoverPanel>
-    </Popover>
-  );
-}
-
-const AXIS_NORMALS: Record<'x' | 'y' | 'z', [number, number, number]> = {
-  x: [1, 0, 0], y: [0, 1, 0], z: [0, 0, 1],
-};
-
-/** Offset range of the part bbox along a normal (projected corners). */
-function offsetRange(normal: [number, number, number]): [number, number] {
-  const bounds = partBounds();
-  if (!bounds) return [-100, 100];
-  let lo = Infinity;
-  let hi = -Infinity;
-  for (const x of [bounds.min[0], bounds.max[0]]) {
-    for (const y of [bounds.min[1], bounds.max[1]]) {
-      for (const z of [bounds.min[2], bounds.max[2]]) {
-        const d = x * normal[0] + y * normal[1] + z * normal[2];
-        if (d < lo) lo = d;
-        if (d > hi) hi = d;
-      }
-    }
-  }
-  return lo <= hi ? [lo, hi] : [-100, 100];
-}
-
-/** One composable section plane: axis or view-seeded normal, offset slider
- * plus numeric value, flip and reset. Clips every render layer. */
-function SectionMenu() {
-  const section = useV2((s) => s.viewport.section);
-  const setViewport = useV2((s) => s.setViewport);
-  const patch = (p: Partial<SectionState>) =>
-    setViewport({ section: { ...section, ...p } });
-  const [lo, hi] = offsetRange(section.normal);
-  const mid = (lo + hi) / 2;
-  const span = Math.max(hi - lo, 1e-6);
-
-  const pickAxis = (axis: 'x' | 'y' | 'z') => {
-    const normal = AXIS_NORMALS[axis];
-    const [alo, ahi] = offsetRange(normal);
-    // keep the offset only when re-picking an axis that is already cutting;
-    // a fresh enable starts centred (the default axis is 'x', so a plain
-    // axis equality check would keep the meaningless initial offset)
-    patch({
-      enabled: true, axis, normal,
-      offset: section.enabled && section.axis === axis
-        ? section.offset : (alo + ahi) / 2,
-    });
-  };
-  const pickView = () => {
-    const normal = viewDirection();
-    const [alo, ahi] = offsetRange(normal);
-    patch({ enabled: true, axis: 'custom', normal, offset: (alo + ahi) / 2 });
-  };
-
-  return (
-    <Popover className="relative">
-      <PopoverButton
-        title="Section plane"
-        aria-label="Section plane"
-        className={clsx(btnCls, section.enabled ? activeCls : idleCls)}
-      >
-        <Slice className="size-4" />
-      </PopoverButton>
-      {/* w-72 with compact rows: the previous w-56 card overflowed and grew
-          scrollbars — everything must fit without scrolling */}
-      <PopoverPanel anchor="top" className={clsx(panelCls, 'w-72')}>
-        <div className={labelCls}>Section plane</div>
-        <div className="mb-1.5 flex items-center gap-1 px-1">
-          {(['x', 'y', 'z'] as const).map((axis) => (
-            <button
-              key={axis}
-              type="button"
-              onClick={() => pickAxis(axis)}
-              className={clsx('flex h-7 flex-1 items-center justify-center rounded-lg text-xs font-medium uppercase transition',
-                section.enabled && section.axis === axis ? rowActiveCls : rowIdleCls)}
-            >
-              {axis}
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={pickView}
-            title="Plane facing the current view"
-            className={clsx('flex h-7 flex-1 items-center justify-center rounded-lg text-xs font-medium transition',
-              section.enabled && section.axis === 'custom' ? rowActiveCls : rowIdleCls)}
-          >
-            View
-          </button>
-        </div>
-        <div className="flex items-center gap-2 px-1 py-1">
-          <input
-            type="range"
-            min={lo}
-            max={hi}
-            step={span / 200}
-            disabled={!section.enabled}
-            value={section.enabled ? section.offset : mid}
-            onChange={(e) => patch({ offset: parseFloat(e.target.value) })}
-            className="min-w-0 flex-1"
-            title="Section offset"
-          />
-          <input
-            type="number"
-            disabled={!section.enabled}
-            value={section.enabled ? Number(section.offset.toFixed(2)) : ''}
-            step={Number((span / 100).toPrecision(2))}
-            onChange={(e) => {
-              const v = parseFloat(e.target.value);
-              if (isFinite(v)) patch({ offset: v });
-            }}
-            className="w-20 shrink-0 rounded-lg border border-zinc-950/10 bg-transparent px-2 py-1 text-xs tabular-nums text-zinc-700 dark:border-white/10 dark:text-zinc-300"
-          />
-          <span className="shrink-0 text-xs text-zinc-400">mm</span>
-        </div>
-        <div className="flex items-center gap-1 px-1 py-1">
-          {/* the next mesh click snaps the plane: a planar face's own plane,
-              a cylinder/cone/torus centerline plane, or through a vertex */}
-          <PopoverButton
-            as="button"
-            type="button"
-            onClick={armSectionSnap}
-            title="Click a face next: snap to its plane / centerline / vertex"
-            className={clsx('flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium transition', rowIdleCls)}
-          >
-            <Crosshair className="size-3.5" /> Pick target
-          </PopoverButton>
-          <span className="flex-1" />
-          <button
-            type="button"
-            disabled={!section.enabled}
-            onClick={() => patch({ flip: !section.flip })}
-            className={clsx('rounded-lg px-2 py-1 text-xs transition',
-              section.flip ? rowActiveCls : rowIdleCls)}
-          >
-            Flip
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewport({ section: DEFAULT_SECTION })}
-            className={clsx('rounded-lg px-2 py-1 text-xs transition', rowIdleCls)}
-          >
-            Reset
-          </button>
-        </div>
-      </PopoverPanel>
-    </Popover>
   );
 }
 
 /**
  * The floating viewport toolbar (bottom centre): HOW the part is rendered and
- * interacted with — render style, edges, lens overlay, section plane,
- * projection, fits and the measure tool. Orthogonal to the lens toolbar at
- * the top (WHAT is shown): nothing here resets the lens, and picking a lens
- * never resets these. Kept narrow so it cannot collide with the legend
- * (bottom-left) or the axis gizmo (bottom-right).
+ * interacted with — render style, edges, the lens/findings overlay opacities
+ * (inline), section rail, projection, fits and the measure tool. Orthogonal
+ * to the lens toolbar at the top (WHAT is shown): nothing here resets the
+ * lens, and picking a lens never resets these. Kept clear of the legend
+ * (bottom-left) and the axis gizmo (bottom-right); wraps upward when tight.
  */
 export function ViewportToolbar() {
   const viewport = useV2((s) => s.viewport);
   const setViewport = useV2((s) => s.setViewport);
   const measuring = useV2((s) => s.measure.active);
   const setMeasureActive = useV2((s) => s.setMeasureActive);
+  const sectionRailOpen = useV2((s) => s.sectionRailOpen);
+  const setSectionRailOpen = useV2((s) => s.setSectionRailOpen);
   const selection = useStore((s) => s.selection);
+  // opacity fly-outs widen the pill; a matching negative right margin keeps
+  // its layout width constant so the centring wrapper never re-centres —
+  // the hovered icon stays put and only the icons to its right shift
+  const [openFlyouts, setOpenFlyouts] = useState(0);
+  const onFlyoutChange = useCallback((open: boolean) =>
+    setOpenFlyouts((n) => n + (open ? 1 : -1)), []);
 
   const setContext = (mode: 'ghost' | 'isolate') =>
     setViewport({ context: viewport.context === mode ? 'all' : mode });
@@ -270,7 +180,17 @@ export function ViewportToolbar() {
     // the axis gizmo (bottom-right, 128px + margin); wraps upward when tight.
     // On narrow columns the legend moves top-left, freeing the left edge.
     <div className="pointer-events-none absolute bottom-3 left-[16rem] right-[8.5rem] flex justify-center @max-2xl:left-3">
-    <div className="pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-1 rounded-xl border border-zinc-950/10 bg-white/90 p-1 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10">
+    <div
+      className="pointer-events-auto flex flex-wrap items-center justify-center gap-1 rounded-xl border border-zinc-950/10 bg-white/90 p-1 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur transition-[margin] duration-200 ease-out dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10"
+      // a fly-out widens the content by OPACITY_FLYOUT_PX: the negative
+      // margin keeps the centring wrapper from re-centring (icon stays put)
+      // and the raised max-width keeps flex-wrap from RE-PACKING the rows —
+      // a re-wrap moves the hovered icon and oscillates the hover state
+      style={{
+        marginRight: -openFlyouts * OPACITY_FLYOUT_PX,
+        maxWidth: `calc(100% + ${openFlyouts * OPACITY_FLYOUT_PX}px)`,
+      }}
+    >
       {STYLES.map(({ id, label, hint, Icon }) => (
         <button
           key={id}
@@ -286,8 +206,30 @@ export function ViewportToolbar() {
       <Divider />
 
       <EdgeToggle />
-      <OverlayMenu />
-      <SectionMenu />
+      <OpacityControl
+        label="Lens colours"
+        Icon={Layers}
+        value={viewport.lensOpacity}
+        onChange={(lensOpacity) => setViewport({ lensOpacity })}
+        onOpenChange={onFlyoutChange}
+      />
+      <OpacityControl
+        label="Findings"
+        Icon={Flag}
+        value={viewport.findingsOpacity}
+        onChange={(findingsOpacity) => setViewport({ findingsOpacity })}
+        onOpenChange={onFlyoutChange}
+      />
+      <button
+        type="button"
+        onClick={() => setSectionRailOpen(!sectionRailOpen)}
+        title="Section plane (opens the section rail)"
+        aria-pressed={sectionRailOpen || viewport.section.enabled}
+        className={clsx(btnCls,
+          sectionRailOpen || viewport.section.enabled ? activeCls : idleCls)}
+      >
+        <Slice className="size-4" />
+      </button>
       <Divider />
 
       <button
@@ -324,6 +266,7 @@ export function ViewportToolbar() {
       >
         <RotateCcw className="size-4" />
       </button>
+
       {/* selection context — appears once a legend row selected a group */}
       {selection && (
         <>

@@ -4,7 +4,7 @@
 // setViewportState and applies it to the scene. Lens, scope, viewport and
 // interaction tool are orthogonal — switching one never resets the others.
 
-export type RenderStyle = 'solid' | 'mesh' | 'xray';
+export type RenderStyle = 'solid' | 'mesh' | 'xray' | 'voxel';
 export type Projection = 'perspective' | 'orthographic';
 export type ContextMode = 'all' | 'ghost' | 'isolate';
 
@@ -39,7 +39,7 @@ export const DEFAULT_SECTION: SectionState = {
 
 export const DEFAULT_VIEWPORT: ViewportState = {
   style: 'solid',
-  brepEdges: false,
+  brepEdges: true, // the true boundary edges ARE the part's engineering lines
   lensOpacity: 1,
   findingsOpacity: 1,
   projection: 'perspective',

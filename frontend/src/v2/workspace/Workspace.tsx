@@ -12,6 +12,7 @@ import { useV2 } from '../store';
 import { Legend } from './Legend';
 import { LensRail } from './LensRail';
 import { MeasureRail } from './MeasureRail';
+import { SectionRail } from './SectionRail';
 import { PipelineRail } from './PipelineRail';
 import { PlanCheckRail } from './PlanCheckRail';
 import { PmiRail } from './PmiRail';
@@ -41,10 +42,12 @@ export function Workspace() {
   // rail; field lenses get the band panel; other checks the SettingsRail
   const planCheckRail = selected && !catalogAnalysisFor(selected.check);
   const measuring = useV2((s) => s.measure.active);
+  const sectionRailOpen = useV2((s) => s.sectionRailOpen);
 
-  // the measure INTERACTION outranks every lens/check rail while active —
+  // the viewport INTERACTIONS outrank every lens/check rail while active —
   // the lens stays visible in the viewport, only the rail switches
   const rightRail = measuring ? <MeasureRail />
+    : sectionRailOpen ? <SectionRail />
     : modeId === 'pmi' ? <PmiRail />
     : directionsActive ? <DirectionsRail />
     : planCheckRail ? <PlanCheckRail />

@@ -12,6 +12,7 @@ import { clearFieldCache, fetchBin, fetchField } from '../fields/fields';
 import { getPlugin } from '../registry';
 import type { LegendFocus, ViewCtx } from '../registry/types';
 import { useStore } from '../state/store';
+import { flowVoxelResults, voxelPositions } from '../processes/injection/voxels';
 import { edgeDescriptors } from '../splits/splits';
 import { nakedEdgeSegments } from './brepEdges';
 import { setColorBackground, VIEWER_BG, type ViewerBackground } from './colormaps';
@@ -27,6 +28,8 @@ let brepEdgesKey = '';
 // naked (single-owner) mesh edges — shared by the edge display and the
 // section-cap watertightness check, computed at most once per part/manifest
 let nakedCache: { key: string; segments: Float32Array } | null = null;
+// which prep/voxels result the scene's voxel shell was built from
+let voxelsKey = '';
 let verts: Float32Array | null = null;
 let faces: Uint32Array | null = null;
 let normals: Float32Array | null = null;
@@ -138,6 +141,43 @@ export function setViewportState(vs: ViewportState) {
   }
   scene?.setViewport(vs);
   void ensureBrepEdges();
+  void ensureVoxels();
+}
+
+/** Feed the Voxel render style from the newest prep/voxels result (the v2
+ * shell auto-runs the analysis when none exists — see v2/tools/voxelStyle):
+ * ALL interior cells with their wall distances, like the classic voxel-field
+ * view. Until data arrives the style falls back to the solid look. */
+async function ensureVoxels() {
+  const { manifest, partId } = useStore.getState();
+  if (!scene || !manifest || !partId) return;
+  if (viewportState.style !== 'voxel') return;
+  const result = flowVoxelResults(manifest)[0];
+  if (!result) return;
+  const key = `${partId}:${result.hash}`;
+  if (key === voxelsKey) return;
+  const indexId = result.fields.find((f) => f.endsWith('.voxel_index'));
+  const distId = result.fields.find((f) => f.endsWith('.voxel_dist'));
+  const indexDesc = manifest.fields.find((f) => f.id === indexId);
+  const distDesc = manifest.fields.find((f) => f.id === distId);
+  const grid = indexDesc?.params.grid;
+  if (!indexDesc || !grid) return;
+  voxelsKey = key;
+  try {
+    const [index, dist] = await Promise.all([
+      fetchField(indexDesc) as Promise<Uint32Array>,
+      distDesc ? fetchField(distDesc) as Promise<Float32Array>
+        : Promise.resolve(null),
+    ]);
+    const centers = voxelPositions({
+      key: result.hash, origin: grid.origin, h: grid.voxel,
+      dims: grid.dims, index, dist: dist ?? new Float32Array(0),
+    });
+    scene?.setVoxels(centers, dist, grid.voxel);
+  } catch (err) {
+    voxelsKey = '';
+    useStore.getState().set({ error: String(err) });
+  }
 }
 
 function nakedSegments(): Float32Array | null {
@@ -228,6 +268,8 @@ async function ensureBrepEdges() {
 export function setViewerTheme(bg: ViewerBackground) {
   setColorBackground(bg);
   scene?.setBackground(VIEWER_BG[bg], bg);
+  voxelsKey = ''; // voxel colours bake the background-matched colormap
+  void ensureVoxels();
   schedulePaint(true);
 }
 
@@ -252,6 +294,7 @@ export async function selectPart(partId: string) {
   lastPaintKey = '';
   brepEdgesKey = '';
   nakedCache = null;
+  voxelsKey = '';
   scene?.clearMesh();
   store.set({
     partId, manifest: null, meshReady: false, highlights: null, selection: null,
@@ -430,6 +473,7 @@ async function repaint() {
     // alpha, selection colours, lens display hint)
     scene?.applyRenderState();
     void ensureBrepEdges();
+    void ensureVoxels();
   }
 }
 
