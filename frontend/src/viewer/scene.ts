@@ -8,10 +8,10 @@ import type { RGB } from '../registry/types';
 import { CameraRig } from './cameraRig';
 import type { MeasurePick } from './measure';
 import {
-  makeBaryAttribute, makeBaseMaterial, makeDepthPrepassMaterial,
-  makeEdgeUniforms, makeLensMaterial, makeLensOccludedMaterial,
-  makeLensOpacityUniforms, makeSelectionMaterial, makeXrayMaterial,
-  patchLensOpacity, THEME_COLORS,
+  makeBaryAttribute, makeBaseMaterial, makeCapMaterial,
+  makeDepthPrepassMaterial, makeEdgeUniforms, makeLensMaterial,
+  makeLensOccludedMaterial, makeLensOpacityUniforms, makeSelectionMaterial,
+  makeStencilPassMaterials, makeXrayMaterial, patchLensOpacity, THEME_COLORS,
 } from './styles';
 import { DEFAULT_VIEWPORT, type Projection, type ViewportState } from './viewportState';
 
@@ -32,6 +32,13 @@ export class Scene3D {
   private lensOccludedMesh: THREE.Mesh | null = null;
   private depthPrepassMesh: THREE.Mesh | null = null;
   private selectionMesh: THREE.Mesh | null = null;
+  // section cap: stencil parity passes over the base geometry + the cap quad
+  private stencilBackMesh: THREE.Mesh | null = null;
+  private stencilFrontMesh: THREE.Mesh | null = null;
+  private capMesh: THREE.Mesh | null = null;
+  /** Stencil parity only works for watertight solids; the controller flips
+   * this off for open sheet parts (naked-edge check). */
+  private capSupported = true;
   private edgeLines: THREE.LineSegments | null = null; // BREP boundaries (persistent)
   private annotations = new THREE.Group(); // measurement etc. (persistent)
   private overlay = new THREE.Group(); // per-repaint overlays (cleared)
@@ -43,6 +50,8 @@ export class Scene3D {
   private lensOccludedMaterial = makeLensOccludedMaterial();
   private selectionMaterial = makeSelectionMaterial(this.edgeUniforms);
   private depthPrepassMaterial = makeDepthPrepassMaterial();
+  private stencilMaterials = makeStencilPassMaterials();
+  private capMaterial = makeCapMaterial();
   private viewport: ViewportState = DEFAULT_VIEWPORT;
   private theme: 'light' | 'dark' = 'dark';
   private lensHint = 1; // legacy setMeshOpacity: "this lens wants a see-through body"
@@ -90,7 +99,9 @@ export class Scene3D {
 
   constructor(private container: HTMLElement) {
     this.scene.background = new THREE.Color(0x21262c);
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    // stencil defaults to FALSE in three r163+ — without it the section-cap
+    // stencil state silently no-ops
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
     // we clear manually each frame so the ViewHelper can overlay the gizmo
     this.renderer.autoClear = false;
@@ -102,6 +113,11 @@ export class Scene3D {
     for (const m of [this.baseMaterial, this.xrayMaterial, this.lensMaterial,
       this.lensOccludedMaterial, this.selectionMaterial,
       this.depthPrepassMaterial]) this.registerClipping(m);
+    // the stencil parity passes must be cut by the plane too (the parity
+    // counts only the KEPT half); the cap itself is deliberately unclipped —
+    // it lies exactly on the plane and would vanish on float roundoff
+    this.registerClipping(this.stencilMaterials.back);
+    this.registerClipping(this.stencilMaterials.front);
     // the lens alpha channel is a 0/1 findings MASK; these uniforms mix the
     // two user opacities on it in the fragment stage
     patchLensOpacity(this.lensMaterial, this.lensOpacityUniforms);
@@ -304,9 +320,19 @@ export class Scene3D {
     this.lensOccludedMesh.renderOrder = 0;
     this.depthPrepassMesh = new THREE.Mesh(baseGeometry, this.depthPrepassMaterial);
     this.depthPrepassMesh.renderOrder = -2;
+    // section-cap machinery: parity passes over the same geometry, plus the
+    // cap quad (a unit plane scaled/aimed in applySection)
+    this.stencilBackMesh = new THREE.Mesh(baseGeometry, this.stencilMaterials.back);
+    this.stencilFrontMesh = new THREE.Mesh(baseGeometry, this.stencilMaterials.front);
+    this.stencilBackMesh.renderOrder = -4;
+    this.stencilFrontMesh.renderOrder = -4;
+    this.capMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.capMaterial);
+    this.capMesh.renderOrder = -3;
+
     // shared attributes leave the derived geometries' bounding spheres stale;
     // only the base mesh (the raycast target) keeps a live one
-    for (const m of [this.lensMesh, this.lensOccludedMesh, this.depthPrepassMesh]) {
+    for (const m of [this.lensMesh, this.lensOccludedMesh, this.depthPrepassMesh,
+      this.stencilBackMesh, this.stencilFrontMesh, this.capMesh]) {
       m.frustumCulled = false;
       this.scene.add(m);
     }
@@ -320,6 +346,15 @@ export class Scene3D {
     this.findingMask = null;
     this.lensAlphaState = '';
     this.scene.add(this.mesh);
+    this.applySection();
+    this.applyRenderState();
+  }
+
+  /** The controller's watertightness verdict (naked-edge check) — the
+   * stencil cap misbehaves on open sheets, so it gates off. */
+  setCapSupported(supported: boolean) {
+    if (this.capSupported === supported) return;
+    this.capSupported = supported;
     this.applyRenderState();
   }
 
@@ -359,6 +394,7 @@ export class Scene3D {
     // hide them while posed rather than show them floating off the part
     this.posed = verts !== null;
     this.updateEdgeVisibility();
+    this.applySection(); // the cap quad tracks the posed bounding sphere
   }
 
   /** Surface normal at a face, read from the LIVE normal attribute: the
@@ -671,6 +707,7 @@ export class Scene3D {
     this.theme = theme;
     const colors = THEME_COLORS[theme];
     this.baseMaterial.color.setHex(colors.base);
+    this.capMaterial.color.setHex(colors.sectionCap);
     this.edgeUniforms.uEdgeColor.value.setHex(colors.triEdge);
     (this.xrayMaterial.uniforms.uBase.value as THREE.Color).setHex(colors.xrayBase);
     (this.xrayMaterial.uniforms.uRim.value as THREE.Color).setHex(colors.xrayRim);
@@ -688,6 +725,7 @@ export class Scene3D {
   capture(): { image: string;
     camera: { position: number[]; target: number[]; up: number[];
       projection: Projection; fov?: number; zoom?: number } } {
+    this.renderer.clear(); // deterministic stencil/depth for the readback
     this.renderer.render(this.scene, this.camera);
     const camera = this.camera;
     return {
@@ -745,6 +783,19 @@ export class Scene3D {
     // dot(N, p) <= dot(N, p0) where p0 = normal * offset
     this.clipPlane.normal.copy(n).negate();
     this.clipPlane.constant = sign * s.offset;
+    // aim the cap quad: centred on the (posed) part, exactly on the plane,
+    // facing the removed half-space so orbiting into the cut sees the open
+    // solid (the quad backface-culls) instead of a floating wall
+    if (this.capMesh && this.mesh) {
+      const geometry = this.mesh.geometry as THREE.BufferGeometry;
+      if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+      const sphere = geometry.boundingSphere!;
+      this.clipPlane.projectPoint(sphere.center, this.capMesh.position);
+      const d = sphere.radius * 2.4;
+      this.capMesh.scale.set(d, d, 1);
+      this.capMesh.lookAt(new THREE.Vector3()
+        .copy(this.capMesh.position).sub(this.clipPlane.normal));
+    }
   }
 
   /** Part bounding box (posed), for the section offset range. */
@@ -919,6 +970,28 @@ export class Scene3D {
     this.edgeUniforms.uEdges.value = meshStyle ? 1 : 0;
     this.updateEdgeVisibility();
 
+    // section cut: interior walls seen through the cut must shade instead of
+    // vanish — flip ALL depth-coupled layers together (the lens overlay
+    // relies on bit-identical depth, so side modes must match). One program
+    // compile per toggle, none while dragging the offset.
+    const side = vs.section.enabled ? THREE.DoubleSide : THREE.FrontSide;
+    for (const m of [this.baseMaterial, this.lensMaterial,
+      this.lensOccludedMaterial, this.selectionMaterial,
+      this.depthPrepassMaterial]) {
+      if (m.side !== side) {
+        m.side = side;
+        m.needsUpdate = true;
+      }
+    }
+    // the solid cap only makes sense on a watertight, fully opaque body
+    const capOn = vs.section.enabled && !xray && !isolate && !ghost
+      && this.lensHint >= 1 && this.capSupported;
+    if (this.capMesh && this.stencilBackMesh && this.stencilFrontMesh) {
+      this.capMesh.visible = capOn;
+      this.stencilBackMesh.visible = capOn;
+      this.stencilFrontMesh.visible = capOn;
+    }
+
     // base opacity: the lens display hint × ghosting (X-ray is already
     // see-through and ignores the hint)
     const baseAlpha = Math.min(this.lensHint, ghost ? GHOST_ALPHA : 1);
@@ -960,18 +1033,24 @@ export class Scene3D {
     // dispose every layer geometry; the shared attributes go with them (the
     // materials are long-lived and reused by the next part)
     for (const m of [this.mesh, this.lensMesh, this.lensOccludedMesh,
-      this.depthPrepassMesh, this.selectionMesh]) {
+      this.depthPrepassMesh, this.selectionMesh, this.stencilBackMesh,
+      this.stencilFrontMesh, this.capMesh]) {
       if (!m) continue;
       this.scene.remove(m);
     }
-    this.mesh?.geometry.dispose();
+    this.mesh?.geometry.dispose(); // shared by the stencil parity passes
     this.lensMesh?.geometry.dispose(); // shared by lensOccludedMesh
     this.selectionMesh?.geometry.dispose();
+    this.capMesh?.geometry.dispose();
     this.mesh = null;
     this.lensMesh = null;
     this.lensOccludedMesh = null;
     this.depthPrepassMesh = null;
     this.selectionMesh = null;
+    this.stencilBackMesh = null;
+    this.stencilFrontMesh = null;
+    this.capMesh = null;
+    this.capSupported = true;
     this.selectionColorAttr = null;
     this.selectionMask = null;
     this.findingMask = null;
@@ -1080,7 +1159,8 @@ export class Scene3D {
     this.clearMesh();
     for (const m of [this.baseMaterial, this.xrayMaterial, this.lensMaterial,
       this.lensOccludedMaterial, this.selectionMaterial,
-      this.depthPrepassMaterial]) m.dispose();
+      this.depthPrepassMaterial, this.stencilMaterials.back,
+      this.stencilMaterials.front, this.capMaterial]) m.dispose();
     this.viewHelper.dispose();
     window.removeEventListener('resize', this.onResize);
     this.renderer.dispose();

@@ -1,8 +1,8 @@
 import { Popover, PopoverButton, PopoverPanel } from '@headlessui/react';
 import clsx from 'clsx';
 import {
-  Circle, Cuboid, Eye, Focus, Ghost, Layers, Maximize, RotateCcw, Ruler,
-  Scan, Slice, Spline, Triangle,
+  Circle, Crosshair, Cuboid, Eye, Focus, Ghost, Layers, Maximize, RotateCcw,
+  Ruler, Scan, Slice, Spline, Triangle,
 } from 'lucide-react';
 import { useStore } from '../../state/store';
 import {
@@ -12,6 +12,7 @@ import {
   DEFAULT_SECTION, DEFAULT_VIEWPORT, type RenderStyle, type SectionState,
 } from '../../viewer/viewportState';
 import { edgeDescriptors } from '../../splits/splits';
+import { armSectionSnap } from '../tools/sectionSnap';
 import { useV2 } from '../store';
 
 const btnCls = 'flex size-8 items-center justify-center rounded-lg transition';
@@ -156,9 +157,11 @@ function SectionMenu() {
       >
         <Slice className="size-4" />
       </PopoverButton>
-      <PopoverPanel anchor="top" className={panelCls}>
+      {/* w-72 with compact rows: the previous w-56 card overflowed and grew
+          scrollbars — everything must fit without scrolling */}
+      <PopoverPanel anchor="top" className={clsx(panelCls, 'w-72')}>
         <div className={labelCls}>Section plane</div>
-        <div className="mb-1 flex items-center gap-1 px-1">
+        <div className="mb-1.5 flex items-center gap-1 px-1">
           {(['x', 'y', 'z'] as const).map((axis) => (
             <button
               key={axis}
@@ -180,7 +183,7 @@ function SectionMenu() {
             View
           </button>
         </div>
-        <div className={clsx(rowCls, 'text-zinc-700 dark:text-zinc-300')}>
+        <div className="flex items-center gap-2 px-1 py-1">
           <input
             type="range"
             min={lo}
@@ -189,11 +192,9 @@ function SectionMenu() {
             disabled={!section.enabled}
             value={section.enabled ? section.offset : mid}
             onChange={(e) => patch({ offset: parseFloat(e.target.value) })}
-            className="w-full"
+            className="min-w-0 flex-1"
             title="Section offset"
           />
-        </div>
-        <div className={clsx(rowCls, 'text-zinc-700 dark:text-zinc-300')}>
           <input
             type="number"
             disabled={!section.enabled}
@@ -203,9 +204,22 @@ function SectionMenu() {
               const v = parseFloat(e.target.value);
               if (isFinite(v)) patch({ offset: v });
             }}
-            className="w-24 rounded-lg border border-zinc-950/10 bg-transparent px-2 py-1 text-xs tabular-nums dark:border-white/10"
+            className="w-20 shrink-0 rounded-lg border border-zinc-950/10 bg-transparent px-2 py-1 text-xs tabular-nums text-zinc-700 dark:border-white/10 dark:text-zinc-300"
           />
-          <span className="text-xs text-zinc-400">mm</span>
+          <span className="shrink-0 text-xs text-zinc-400">mm</span>
+        </div>
+        <div className="flex items-center gap-1 px-1 py-1">
+          {/* the next mesh click snaps the plane: a planar face's own plane,
+              a cylinder/cone/torus centerline plane, or through a vertex */}
+          <PopoverButton
+            as="button"
+            type="button"
+            onClick={armSectionSnap}
+            title="Click a face next: snap to its plane / centerline / vertex"
+            className={clsx('flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium transition', rowIdleCls)}
+          >
+            <Crosshair className="size-3.5" /> Pick target
+          </PopoverButton>
           <span className="flex-1" />
           <button
             type="button"

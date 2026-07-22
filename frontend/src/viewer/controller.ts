@@ -24,6 +24,9 @@ let scene: Scene3D | null = null;
 let viewportState: ViewportState = DEFAULT_VIEWPORT;
 // which (part, manifest) the scene's BREP boundary polylines were built for
 let brepEdgesKey = '';
+// naked (single-owner) mesh edges — shared by the edge display and the
+// section-cap watertightness check, computed at most once per part/manifest
+let nakedCache: { key: string; segments: Float32Array } | null = null;
 let verts: Float32Array | null = null;
 let faces: Uint32Array | null = null;
 let normals: Float32Array | null = null;
@@ -127,8 +130,30 @@ export function captureViewer() {
  * its layers directly. */
 export function setViewportState(vs: ViewportState) {
   viewportState = vs;
+  // the solid cap needs a watertight mesh — verified by the naked-edge
+  // census, lazily on first section use for a part
+  if (vs.section.enabled) {
+    const naked = nakedSegments();
+    if (naked) scene?.setCapSupported(naked.length === 0);
+  }
   scene?.setViewport(vs);
   void ensureBrepEdges();
+}
+
+function nakedSegments(): Float32Array | null {
+  const { partId, manifestVersion } = useStore.getState();
+  if (!verts || !faces || !partId) return null;
+  const key = `${partId}:${manifestVersion}`;
+  if (nakedCache?.key !== key) {
+    nakedCache = { key, segments: nakedEdgeSegments(verts, faces) };
+  }
+  return nakedCache.segments;
+}
+
+/** The raw mesh arrays for viewer tools (snap anchors). */
+export function meshArrays():
+{ verts: Float32Array; faces: Uint32Array } | null {
+  return verts && faces ? { verts, faces } : null;
 }
 
 /** Fit the whole part in view, keeping the current view direction. */
@@ -186,7 +211,7 @@ async function ensureBrepEdges() {
   brepEdgesKey = key;
   try {
     const interior = await fetchField(descriptors.edges) as Float32Array;
-    const naked = nakedEdgeSegments(verts, faces);
+    const naked = nakedSegments() ?? new Float32Array(0);
     const segments = new Float32Array(interior.length + naked.length);
     segments.set(interior);
     segments.set(naked, interior.length);
@@ -225,6 +250,7 @@ export async function selectPart(partId: string) {
   normals = null;
   lastPaintKey = '';
   brepEdgesKey = '';
+  nakedCache = null;
   scene?.clearMesh();
   store.set({
     partId, manifest: null, meshReady: false, highlights: null, selection: null,

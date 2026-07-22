@@ -13,6 +13,8 @@ export interface ThemeColors {
   triEdge: number;
   /** BREP boundary polylines. */
   brepEdge: number;
+  /** Section-cut cap fill (the "solid material" of the cut). */
+  sectionCap: number;
   xrayBase: number;
   xrayRim: number;
 }
@@ -20,11 +22,11 @@ export interface ThemeColors {
 export const THEME_COLORS: Record<'light' | 'dark', ThemeColors> = {
   dark: {
     base: 0x969ca4, triEdge: 0x14181d, brepEdge: 0xdfe3e8,
-    xrayBase: 0x3d4654, xrayRim: 0xc2d6ea,
+    sectionCap: 0x7d838c, xrayBase: 0x3d4654, xrayRim: 0xc2d6ea,
   },
   light: {
     base: 0xc6cbd2, triEdge: 0x30353c, brepEdge: 0x33373d,
-    xrayBase: 0x93a0b0, xrayRim: 0x2a4568,
+    sectionCap: 0xaab0b8, xrayBase: 0x93a0b0, xrayRim: 0x2a4568,
   },
 };
 
@@ -174,6 +176,49 @@ export function makeSelectionMaterial(edges: EdgeUniforms): THREE.MeshPhongMater
  * Fresnel shell and the lens visible/occluded split classify correctly. */
 export function makeDepthPrepassMaterial(): THREE.MeshBasicMaterial {
   return withSurfaceOffset(new THREE.MeshBasicMaterial({ colorWrite: false }));
+}
+
+/**
+ * Section-cap stencil passes (the webgl_clipping_stencil technique): the
+ * clipped solid's back faces increment the stencil, front faces decrement —
+ * a nonzero count marks pixels INSIDE the solid at the cut, where the cap
+ * quad may draw. Neither touches colour or depth (depthTest off), so their
+ * relative order is irrelevant; they just run before the cap.
+ */
+export function makeStencilPassMaterials(): {
+  back: THREE.MeshBasicMaterial; front: THREE.MeshBasicMaterial;
+} {
+  const make = (side: THREE.Side, op: THREE.StencilOp) => {
+    const material = new THREE.MeshBasicMaterial({
+      side, colorWrite: false, depthWrite: false, depthTest: false,
+    });
+    material.stencilWrite = true;
+    material.stencilFunc = THREE.AlwaysStencilFunc;
+    material.stencilFail = op;
+    material.stencilZFail = op;
+    material.stencilZPass = op;
+    return material;
+  };
+  return {
+    back: make(THREE.BackSide, THREE.IncrementWrapStencilOp),
+    front: make(THREE.FrontSide, THREE.DecrementWrapStencilOp),
+  };
+}
+
+/** The cap quad's material: opaque "cut material" fill drawn only where the
+ * stencil count is nonzero (inside the solid), zeroing the stencil as it
+ * goes. NOT clip-registered — it lies exactly on the section plane. */
+export function makeCapMaterial(): THREE.MeshPhongMaterial {
+  const material = withSurfaceOffset(new THREE.MeshPhongMaterial({
+    color: THEME_COLORS.dark.sectionCap, specular: 0x111111, shininess: 18,
+  }));
+  material.stencilWrite = true;
+  material.stencilRef = 0;
+  material.stencilFunc = THREE.NotEqualStencilFunc;
+  material.stencilFail = THREE.ReplaceStencilOp;
+  material.stencilZFail = THREE.ReplaceStencilOp;
+  material.stencilZPass = THREE.ReplaceStencilOp;
+  return material;
 }
 
 /** The X-ray shell: a subdued transparent base with camera-normal (Fresnel)

@@ -254,6 +254,8 @@ export interface Manifest {
   highlights_url: string | null;
   /** present when the part carries STEP colors/names (face_attrs.json) */
   face_attrs_url?: string;
+  /** per-BREP-face surface types + analytic params (brep_meta.json) */
+  brep_meta_url?: string;
   /** present when the part carries semantic PMI (pmi.json) */
   pmi_url?: string;
   /** present on imported assembly records (assembly.json) */

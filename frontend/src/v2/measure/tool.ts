@@ -13,6 +13,7 @@ import {
   faceNormal, setMeasureAnnotations, setPickInterceptor,
 } from '../../viewer/controller';
 import type { MeasurePick } from '../../viewer/measure';
+import { disarmSectionSnap } from '../tools/sectionSnap';
 import { useV2 } from '../store';
 
 let initialized = false;
@@ -47,6 +48,7 @@ function interceptor(
 function sync(measure: { active: boolean; a: MeasurePick | null; b: MeasurePick | null }) {
   if (measure.active !== interceptorOn) {
     interceptorOn = measure.active;
+    if (measure.active) disarmSectionSnap(); // one pick owner at a time
     setPickInterceptor(measure.active ? interceptor : null);
     if (measure.active) window.addEventListener('keydown', onKeyDown);
     else window.removeEventListener('keydown', onKeyDown);
