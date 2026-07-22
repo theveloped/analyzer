@@ -68,7 +68,9 @@ function OpacityControl({ label, Icon, value, onChange }: {
 
   return (
     <div
-      className="flex items-center"
+      // an OPEN control must rise above its sibling controls' z-30 icons —
+      // its fly-out extends over them and has to win the hit-test
+      className={clsx('relative flex items-center', open && 'z-40')}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
       // hold the slider out for KEYBOARD focus only — a mouse click also
@@ -76,19 +78,33 @@ function OpacityControl({ label, Icon, value, onChange }: {
       onFocus={(e) => setFocused(e.target.matches(':focus-visible'))}
       onBlur={() => setFocused(false)}
     >
+      {/* ONE shared backdrop behind icon + slider: grows rightward from
+          under the stationary icon, floating above the ribbon so covered
+          neighbours stay legible beneath it */}
+      <div
+        aria-hidden
+        className={clsx(
+          'pointer-events-none absolute left-0 top-1/2 z-10 h-8 -translate-y-1/2 rounded-lg',
+          'bg-white shadow-sm ring-1 ring-zinc-950/10 dark:bg-zinc-800 dark:ring-white/10',
+          'transition-[width,opacity] duration-200 ease-out',
+          open ? 'w-24 opacity-100' : 'w-8 opacity-0',
+        )}
+      />
       <button
         type="button"
         onClick={() => onChange(value > 0 ? 0 : restore.current)}
         title={`${label} ${Math.round(value * 100)}% — click toggles, hover to dial`}
         aria-pressed={value > 0}
-        className={clsx(btnCls, value > 0 ? activeCls : idleCls)}
+        className={clsx(btnCls, 'relative z-30', value > 0 ? activeCls : idleCls)}
       >
         <Icon className="size-4" />
       </button>
+      {/* the slider zone rides on the shared backdrop, to the icon's right */}
       <div
         className={clsx(
-          'flex items-center overflow-hidden transition-[width,opacity,margin] duration-200 ease-out',
-          open ? 'ml-1 w-14 opacity-100' : 'ml-0 w-0 opacity-0',
+          'absolute left-8 top-1/2 z-20 flex h-8 -translate-y-1/2 items-center',
+          'overflow-hidden transition-[width] duration-200 ease-out',
+          open ? 'w-16' : 'w-0',
         )}
       >
         <input
@@ -103,7 +119,21 @@ function OpacityControl({ label, Icon, value, onChange }: {
           onPointerCancel={() => setDragging(false)}
           tabIndex={open ? 0 : -1}
           title={`${label} opacity (${Math.round(value * 100)}%)`}
-          className="h-1 w-12 shrink-0 cursor-pointer accent-zinc-900 dark:accent-white"
+          // Catalyst-style track + ball thumb (the switch's white ball look)
+          className={clsx(
+            'ml-1 h-1 w-12 shrink-0 cursor-pointer appearance-none rounded-full',
+            '[--fill:#18181b] [--track:#e4e4e7] dark:[--fill:#ffffff] dark:[--track:#ffffff33]',
+            '[&::-webkit-slider-thumb]:size-3 [&::-webkit-slider-thumb]:appearance-none',
+            '[&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white',
+            '[&::-webkit-slider-thumb]:shadow [&::-webkit-slider-thumb]:ring-1',
+            '[&::-webkit-slider-thumb]:ring-zinc-950/20',
+            '[&::-moz-range-thumb]:size-3 [&::-moz-range-thumb]:rounded-full',
+            '[&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-white',
+            '[&::-moz-range-thumb]:shadow',
+          )}
+          style={{
+            background: `linear-gradient(to right, var(--fill) ${value * 100}%, var(--track) ${value * 100}%)`,
+          }}
         />
       </div>
     </div>
