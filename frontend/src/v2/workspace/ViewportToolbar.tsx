@@ -3,6 +3,7 @@ import {
   Boxes, Circle, Cuboid, Eye, Flag, Focus, Ghost, Layers, Maximize,
   RotateCcw, Ruler, Scan, Slice, Spline, Triangle,
 } from 'lucide-react';
+import { useRef, useState } from 'react';
 import { useStore } from '../../state/store';
 import { fitPart, fitSelection, selectLegendGroup } from '../../viewer/controller';
 import { DEFAULT_VIEWPORT, type RenderStyle } from '../../viewer/viewportState';
@@ -46,35 +47,65 @@ function EdgeToggle() {
   );
 }
 
-/** Inline opacity control: the icon toggles 0 ↔ 100%, the slider dials any
- * value in between — no popover. */
+/** YouTube-volume-style opacity control: the icon alone sits in the ribbon;
+ * clicking it mutes to 0% or restores the last dialled value (100% until
+ * changed). Hovering — or keyboard-focusing — flows a slider out from the
+ * icon for intermediate values; it stays out while dragging, even when the
+ * pointer strays off the toolbar mid-drag. */
 function OpacityControl({ label, Icon, value, onChange }: {
   label: string;
   Icon: typeof Layers;
   value: number;
   onChange: (value: number) => void;
 }) {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  // what "unmute" restores — the last non-zero value the user dialled
+  const restore = useRef(1);
+  if (value > 0) restore.current = value;
+  const open = hovered || focused || dragging;
+
   return (
-    <div className="flex items-center gap-1">
+    <div
+      className="flex items-center"
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      // hold the slider out for KEYBOARD focus only — a mouse click also
+      // focuses the input, which must not pin the slider open after leaving
+      onFocus={(e) => setFocused(e.target.matches(':focus-visible'))}
+      onBlur={() => setFocused(false)}
+    >
       <button
         type="button"
-        onClick={() => onChange(value > 0 ? 0 : 1)}
-        title={`${label} — click toggles, slider dials (${Math.round(value * 100)}%)`}
+        onClick={() => onChange(value > 0 ? 0 : restore.current)}
+        title={`${label} ${Math.round(value * 100)}% — click toggles, hover to dial`}
         aria-pressed={value > 0}
         className={clsx(btnCls, value > 0 ? activeCls : idleCls)}
       >
         <Icon className="size-4" />
       </button>
-      <input
-        type="range"
-        min={0}
-        max={1}
-        step={0.05}
-        value={value}
-        onChange={(e) => onChange(parseFloat(e.target.value))}
-        title={`${label} opacity (${Math.round(value * 100)}%)`}
-        className="h-1 w-12 cursor-pointer accent-zinc-900 dark:accent-white"
-      />
+      <div
+        className={clsx(
+          'flex items-center overflow-hidden transition-[width,opacity,margin] duration-200 ease-out',
+          open ? 'ml-1 w-14 opacity-100' : 'ml-0 w-0 opacity-0',
+        )}
+      >
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={value}
+          onChange={(e) => onChange(parseFloat(e.target.value))}
+          onPointerDown={() => setDragging(true)}
+          onPointerUp={() => setDragging(false)}
+          onPointerCancel={() => setDragging(false)}
+          tabIndex={open ? 0 : -1}
+          title={`${label} opacity (${Math.round(value * 100)}%)`}
+          className="h-1 w-12 shrink-0 cursor-pointer accent-zinc-900 dark:accent-white"
+        />
+      </div>
     </div>
   );
 }
