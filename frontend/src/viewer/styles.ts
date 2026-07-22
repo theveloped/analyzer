@@ -73,6 +73,38 @@ export function patchEdgeShader(
   };
 }
 
+/** Uniforms carrying the independent lens/findings opacities. The lens
+ * colour attribute's ALPHA channel is a static 0/1 findings mask; the
+ * fragment stage mixes between these two opacities on it — a slider drag
+ * is two float writes, no 2.4M-corner buffer rewrite. */
+export interface LensOpacityUniforms {
+  uLensOpacity: { value: number };
+  uFindingsOpacity: { value: number };
+}
+
+export function makeLensOpacityUniforms(): LensOpacityUniforms {
+  return { uLensOpacity: { value: 1 }, uFindingsOpacity: { value: 1 } };
+}
+
+/** Chainable shader patch (after the edge patch): replace the vertex-alpha
+ * product with the lens/findings mix keyed on the mask in vColor.a. */
+export function patchLensOpacity(
+  material: THREE.Material, uniforms: LensOpacityUniforms,
+) {
+  const previous = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    previous?.(shader, renderer);
+    shader.uniforms.uLensOpacity = uniforms.uLensOpacity;
+    shader.uniforms.uFindingsOpacity = uniforms.uFindingsOpacity;
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>',
+        '#include <common>\nuniform float uLensOpacity;\nuniform float uFindingsOpacity;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        diffuseColor.a = opacity
+          * mix(uLensOpacity, uFindingsOpacity, vColor.a);`);
+  };
+}
+
 /** The repeating (1,0,0)/(0,1,0)/(0,0,1) corner pattern for `aBary`. */
 export function makeBaryAttribute(faceCount: number): THREE.BufferAttribute {
   const bary = new Float32Array(faceCount * 9);

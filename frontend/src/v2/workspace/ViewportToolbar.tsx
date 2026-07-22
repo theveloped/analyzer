@@ -1,15 +1,15 @@
 import { Popover, PopoverButton, PopoverPanel } from '@headlessui/react';
 import clsx from 'clsx';
 import {
-  Circle, Cuboid, Eye, Focus, Ghost, Layers, Maximize, Ruler, Scan, Slice,
-  Spline, Triangle,
+  Circle, Cuboid, Eye, Focus, Ghost, Layers, Maximize, RotateCcw, Ruler,
+  Scan, Slice, Spline, Triangle,
 } from 'lucide-react';
 import { useStore } from '../../state/store';
 import {
   fitPart, fitSelection, partBounds, selectLegendGroup, viewDirection,
 } from '../../viewer/controller';
 import {
-  DEFAULT_SECTION, type EdgeMode, type RenderStyle, type SectionState,
+  DEFAULT_SECTION, DEFAULT_VIEWPORT, type RenderStyle, type SectionState,
 } from '../../viewer/viewportState';
 import { edgeDescriptors } from '../../splits/splits';
 import { useV2 } from '../store';
@@ -28,59 +28,57 @@ function Divider() {
 }
 
 const STYLES: { id: RenderStyle; label: string; hint: string; Icon: typeof Circle }[] = [
-  { id: 'shaded', label: 'Shaded', hint: 'Smooth solid shading', Icon: Circle },
-  { id: 'facets', label: 'Facets', hint: 'Flat triangle shading with edges', Icon: Triangle },
+  { id: 'solid', label: 'Solid', hint: 'Smooth solid shading', Icon: Circle },
+  { id: 'mesh', label: 'Mesh', hint: 'Flat triangle shading with tessellation edges', Icon: Triangle },
   { id: 'xray', label: 'X-ray', hint: 'See-through shell, occluded findings stay visible', Icon: Scan },
 ];
 
-/** Grouped, searchable menu-style popover for the edge display mode. */
-function EdgeMenu() {
-  const viewport = useV2((s) => s.viewport);
+/** Plain toggle: show/hide the true BREP boundary polylines. */
+function EdgeToggle() {
+  const brepEdges = useV2((s) => s.viewport.brepEdges);
   const setViewport = useV2((s) => s.setViewport);
   const manifest = useStore((s) => s.manifest);
   const hasBrep = !!manifest && !!edgeDescriptors(manifest);
-  const options: { id: EdgeMode; label: string; disabled?: boolean }[] = [
-    { id: 'none', label: 'No edges' },
-    { id: 'brep', label: 'BREP boundaries', disabled: !hasBrep },
-    { id: 'tessellation', label: 'Tessellation triangles' },
-  ];
   return (
-    <Popover className="relative">
-      <PopoverButton
-        title="Edge display"
-        aria-label="Edge display"
-        className={clsx(btnCls, viewport.edgeMode !== 'none' ? activeCls : idleCls)}
-      >
-        <Spline className="size-4" />
-      </PopoverButton>
-      <PopoverPanel anchor="top" className={panelCls}>
-        <div className={labelCls}>Edges</div>
-        {options.map((option) => (
-          <PopoverButton
-            as="button"
-            key={option.id}
-            type="button"
-            disabled={option.disabled}
-            title={option.disabled ? 'no BREP boundary data for this part (STL input)' : undefined}
-            onClick={() => setViewport({ edgeMode: option.id })}
-            className={clsx(rowCls,
-              viewport.edgeMode === option.id ? rowActiveCls
-                : option.disabled ? 'text-zinc-300 dark:text-zinc-600' : rowIdleCls)}
-          >
-            {option.label}
-          </PopoverButton>
-        ))}
-      </PopoverPanel>
-    </Popover>
+    <button
+      type="button"
+      disabled={!hasBrep}
+      onClick={() => setViewport({ brepEdges: !brepEdges })}
+      title={hasBrep ? 'Show BREP boundary edges'
+        : 'BREP edges — no boundary data for this part (STL input)'}
+      aria-pressed={brepEdges}
+      className={clsx(btnCls, !hasBrep ? 'cursor-not-allowed text-zinc-300 dark:text-zinc-600'
+        : brepEdges ? activeCls : idleCls)}
+    >
+      <Spline className="size-4" />
+    </button>
   );
 }
 
-/** Lens overlay visibility, opacity and the findings-only filter. */
+/** One opacity for the lens colours, one for the findings — independent, so
+ * findings can stay fully visible while the rest fades (or the reverse). */
 function OverlayMenu() {
   const viewport = useV2((s) => s.viewport);
   const setViewport = useV2((s) => s.setViewport);
-  const dimmed = !viewport.lensVisible || viewport.lensOpacity < 1
-    || viewport.findingsOnly;
+  const dimmed = viewport.lensOpacity < 1 || viewport.findingsOpacity < 1;
+  const slider = (label: string, key: 'lensOpacity' | 'findingsOpacity') => (
+    <div className={clsx(rowCls, 'text-zinc-700 dark:text-zinc-300')}>
+      <span className="w-16 shrink-0 text-xs">{label}</span>
+      <input
+        type="range"
+        min={0}
+        max={1}
+        step={0.05}
+        value={viewport[key]}
+        onChange={(e) => setViewport({ [key]: parseFloat(e.target.value) })}
+        className="w-full"
+        title={`${label} opacity`}
+      />
+      <span className="w-9 shrink-0 text-right text-xs tabular-nums">
+        {Math.round(viewport[key] * 100)}%
+      </span>
+    </div>
+  );
   return (
     <Popover className="relative">
       <PopoverButton
@@ -92,39 +90,11 @@ function OverlayMenu() {
       </PopoverButton>
       <PopoverPanel anchor="top" className={panelCls}>
         <div className={labelCls}>Lens overlay</div>
-        <label className={clsx(rowCls, rowIdleCls, 'cursor-pointer')}>
-          <input
-            type="checkbox"
-            checked={viewport.lensVisible}
-            onChange={(e) => setViewport({ lensVisible: e.target.checked })}
-            className="size-3.5 rounded border-zinc-400"
-          />
-          Show lens colours
-        </label>
-        <label className={clsx(rowCls, rowIdleCls, 'cursor-pointer')}>
-          <input
-            type="checkbox"
-            checked={viewport.findingsOnly}
-            onChange={(e) => setViewport({ findingsOnly: e.target.checked })}
-            className="size-3.5 rounded border-zinc-400"
-          />
-          Findings only
-        </label>
-        <div className={clsx(rowCls, 'text-zinc-700 dark:text-zinc-300')}>
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.05}
-            value={viewport.lensOpacity}
-            onChange={(e) => setViewport({ lensOpacity: parseFloat(e.target.value) })}
-            className="w-full"
-            title="Lens opacity"
-          />
-          <span className="w-9 text-right text-xs tabular-nums">
-            {Math.round(viewport.lensOpacity * 100)}%
-          </span>
-        </div>
+        {slider('Colours', 'lensOpacity')}
+        {slider('Findings', 'findingsOpacity')}
+        <p className="px-2 py-1 text-[10px] text-zinc-400">
+          Findings draw on top when both are visible.
+        </p>
       </PopoverPanel>
     </Popover>
   );
@@ -297,7 +267,7 @@ export function ViewportToolbar() {
       ))}
       <Divider />
 
-      <EdgeMenu />
+      <EdgeToggle />
       <OverlayMenu />
       <SectionMenu />
       <Divider />
@@ -324,6 +294,17 @@ export function ViewportToolbar() {
         className={clsx(btnCls, idleCls)}
       >
         <Maximize className="size-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          useV2.setState({ viewport: DEFAULT_VIEWPORT });
+          selectLegendGroup('', null);
+        }}
+        title="Reset viewport (style, edges, opacities, section, projection)"
+        className={clsx(btnCls, idleCls)}
+      >
+        <RotateCcw className="size-4" />
       </button>
       {/* selection context — appears once a legend row selected a group */}
       {selection && (

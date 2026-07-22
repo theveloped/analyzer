@@ -10,7 +10,8 @@ import type { MeasurePick } from './measure';
 import {
   makeBaryAttribute, makeBaseMaterial, makeDepthPrepassMaterial,
   makeEdgeUniforms, makeLensMaterial, makeLensOccludedMaterial,
-  makeSelectionMaterial, makeXrayMaterial, THEME_COLORS,
+  makeLensOpacityUniforms, makeSelectionMaterial, makeXrayMaterial,
+  patchLensOpacity, THEME_COLORS,
 } from './styles';
 import { DEFAULT_VIEWPORT, type Projection, type ViewportState } from './viewportState';
 
@@ -35,6 +36,7 @@ export class Scene3D {
   private annotations = new THREE.Group(); // measurement etc. (persistent)
   private overlay = new THREE.Group(); // per-repaint overlays (cleared)
   private edgeUniforms = makeEdgeUniforms();
+  private lensOpacityUniforms = makeLensOpacityUniforms();
   private baseMaterial = makeBaseMaterial(this.edgeUniforms);
   private xrayMaterial = makeXrayMaterial();
   private lensMaterial = makeLensMaterial(this.edgeUniforms);
@@ -100,6 +102,10 @@ export class Scene3D {
     for (const m of [this.baseMaterial, this.xrayMaterial, this.lensMaterial,
       this.lensOccludedMaterial, this.selectionMaterial,
       this.depthPrepassMaterial]) this.registerClipping(m);
+    // the lens alpha channel is a 0/1 findings MASK; these uniforms mix the
+    // two user opacities on it in the fragment stage
+    patchLensOpacity(this.lensMaterial, this.lensOpacityUniforms);
+    patchLensOpacity(this.lensOccludedMaterial, this.lensOpacityUniforms);
     this.rig = new CameraRig(
       container.clientWidth / container.clientHeight,
       this.renderer.domElement);
@@ -276,15 +282,15 @@ export class Scene3D {
     this.mesh.renderOrder = -1;
 
     // lens layer: shares position/normal/aBary, adds RGBA vertex colours
-    // (itemSize 4 → three's USE_COLOR_ALPHA; the alpha channel implements
-    // "findings only"). Painted grey/opaque so an unpainted mesh looks like
+    // (itemSize 4 → three's USE_COLOR_ALPHA). The ALPHA channel is a static
+    // 0/1 findings mask (0 = ordinary face); the fragment stage mixes the
+    // two user opacities on it. Painted grey so an unpainted mesh looks like
     // the classic viewer.
     const lensColors = new Float32Array(faces.length * 4);
     for (let i = 0; i < faces.length; i++) {
       lensColors[4 * i] = 0.9;
       lensColors[4 * i + 1] = 0.9;
       lensColors[4 * i + 2] = 0.9;
-      lensColors[4 * i + 3] = 1;
     }
     const lensGeometry = new THREE.BufferGeometry();
     lensGeometry.setAttribute('position', positionAttr);
@@ -830,22 +836,26 @@ export class Scene3D {
 
   private updateEdgeVisibility() {
     if (this.edgeLines) {
-      this.edgeLines.visible = this.viewport.edgeMode === 'brep' && !this.posed
+      this.edgeLines.visible = this.viewport.brepEdges && !this.posed
         && this.viewport.context !== 'isolate';
     }
   }
 
-  /** Rewrite the lens alpha channel for the findings-only filter (skipped
-   * when the desired state already applies — it touches every corner). */
+  /** Rewrite the lens alpha channel with the 0/1 findings mask (skipped
+   * when the written mask is current — it touches every corner). The user
+   * opacities never touch this buffer; they live in shader uniforms. */
   private refreshLensAlpha() {
     if (!this.colorAttr) return;
-    const mask = this.viewport.findingsOnly ? this.findingMask : null;
-    const state = mask ? `mask:${this.findingsVersion}` : 'all';
+    const mask = this.findingMask;
+    const state = mask ? `mask:${this.findingsVersion}` : 'none';
     if (state === this.lensAlphaState) return;
     this.lensAlphaState = state;
+    const colors = this.colorAttr.array as Float32Array;
     for (let f = 0; f < this.faceCount; f++) {
-      const alpha = mask && !mask[f] ? 0 : 1;
-      for (let k = 0; k < 3; k++) this.colorAttr.setW(3 * f + k, alpha);
+      const alpha = mask && mask[f] ? 1 : 0;
+      colors[12 * f + 3] = alpha;
+      colors[12 * f + 7] = alpha;
+      colors[12 * f + 11] = alpha;
     }
     this.colorAttr.needsUpdate = true;
   }
@@ -888,27 +898,25 @@ export class Scene3D {
       || !this.depthPrepassMesh) return;
     const vs = this.viewport;
     const xray = vs.style === 'xray';
-    const facets = vs.style === 'facets';
+    const meshStyle = vs.style === 'mesh';
     const hasSelection = !!this.selectionMask;
     const ghost = vs.context === 'ghost' && hasSelection;
     const isolate = vs.context === 'isolate' && hasSelection;
 
-    // base: opaque phong for shaded/facets, the Fresnel shell for X-ray
+    // base: opaque phong for solid/mesh, the Fresnel shell for X-ray
     this.mesh.material = xray ? this.xrayMaterial : this.baseMaterial;
     this.mesh.visible = !isolate;
     this.depthPrepassMesh.visible = xray && !isolate;
 
-    // flat shading (facets) on every phong layer; triangle edges are part of
-    // the facets look and additive via the tessellation edge mode
+    // the Mesh style IS flat triangle shading + triangle edges
     for (const m of [this.baseMaterial, this.lensMaterial,
       this.lensOccludedMaterial, this.selectionMaterial]) {
-      if (m.flatShading !== facets) {
-        m.flatShading = facets;
+      if (m.flatShading !== meshStyle) {
+        m.flatShading = meshStyle;
         m.needsUpdate = true;
       }
     }
-    this.edgeUniforms.uEdges.value =
-      facets || vs.edgeMode === 'tessellation' ? 1 : 0;
+    this.edgeUniforms.uEdges.value = meshStyle ? 1 : 0;
     this.updateEdgeVisibility();
 
     // base opacity: the lens display hint × ghosting (X-ray is already
@@ -921,15 +929,19 @@ export class Scene3D {
       this.baseMaterial.needsUpdate = true;
     }
 
-    // lens overlay: visibility, opacity (three multiplies material opacity
-    // with the per-vertex alpha), findings-only alpha, X-ray occluded pass
-    const lensAlpha = vs.lensOpacity
-      * Math.min(this.lensHint, ghost ? GHOST_ALPHA : 1);
-    this.lensMesh.visible = vs.lensVisible && !isolate && lensAlpha > 0;
-    this.lensMaterial.opacity = lensAlpha;
+    // lens overlay: the ghost/hint factor rides in material.opacity; the
+    // user's lens/findings opacities are uniforms mixed on the per-corner
+    // findings mask in the fragment stage
+    const factor = Math.min(this.lensHint, ghost ? GHOST_ALPHA : 1);
+    this.lensOpacityUniforms.uLensOpacity.value = vs.lensOpacity;
+    this.lensOpacityUniforms.uFindingsOpacity.value = vs.findingsOpacity;
+    const maxAlpha = this.findingMask
+      ? Math.max(vs.lensOpacity, vs.findingsOpacity) : vs.lensOpacity;
+    this.lensMesh.visible = !isolate && factor > 0 && maxAlpha > 0;
+    this.lensMaterial.opacity = factor;
     this.lensMaterial.depthWrite = false;
     this.lensOccludedMesh.visible = xray && this.lensMesh.visible;
-    this.lensOccludedMaterial.opacity = lensAlpha * 0.25;
+    this.lensOccludedMaterial.opacity = factor * 0.25;
     this.refreshLensAlpha();
 
     // selection layer: only meaningful under ghost/isolate

@@ -4,8 +4,7 @@
 // setViewportState and applies it to the scene. Lens, scope, viewport and
 // interaction tool are orthogonal — switching one never resets the others.
 
-export type RenderStyle = 'shaded' | 'facets' | 'xray';
-export type EdgeMode = 'none' | 'brep' | 'tessellation';
+export type RenderStyle = 'solid' | 'mesh' | 'xray';
 export type Projection = 'perspective' | 'orthographic';
 export type ContextMode = 'all' | 'ghost' | 'isolate';
 
@@ -21,11 +20,13 @@ export interface SectionState {
 
 export interface ViewportState {
   style: RenderStyle;
-  edgeMode: EdgeMode;
-  /** Lens overlay shown at all, its opacity, and the findings-only filter. */
-  lensVisible: boolean;
+  /** Show the true BREP boundary polylines. */
+  brepEdges: boolean;
+  /** Opacity of the lens colours on non-finding faces (0 = hidden). */
   lensOpacity: number;
-  findingsOnly: boolean;
+  /** Opacity of the lens colours on FINDING faces — independent, so
+   * findings can stay fully visible while the rest fades (or vice versa). */
+  findingsOpacity: number;
   projection: Projection;
   section: SectionState;
   /** What happens to everything outside the selection. */
@@ -37,11 +38,10 @@ export const DEFAULT_SECTION: SectionState = {
 };
 
 export const DEFAULT_VIEWPORT: ViewportState = {
-  style: 'shaded',
-  edgeMode: 'none',
-  lensVisible: true,
+  style: 'solid',
+  brepEdges: false,
   lensOpacity: 1,
-  findingsOnly: false,
+  findingsOpacity: 1,
   projection: 'perspective',
   section: DEFAULT_SECTION,
   context: 'all',

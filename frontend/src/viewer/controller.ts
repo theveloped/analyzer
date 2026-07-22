@@ -178,7 +178,7 @@ export function selectLegendGroup(label: string, faces: number[] | null) {
 async function ensureBrepEdges() {
   const { manifest, partId, manifestVersion } = useStore.getState();
   if (!scene || !manifest || !partId || !verts || !faces) return;
-  if (viewportState.edgeMode !== 'brep') return;
+  if (!viewportState.brepEdges) return;
   const key = `${partId}:${manifestVersion}`;
   if (key === brepEdgesKey) return;
   const descriptors = edgeDescriptors(manifest);
