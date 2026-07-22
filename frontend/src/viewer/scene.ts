@@ -39,6 +39,12 @@ export class Scene3D {
   /** Stencil parity only works for watertight solids; the controller flips
    * this off for open sheet parts (naked-edge check). */
   private capSupported = true;
+  // the Voxel render style: the part's surface voxel shell as instanced
+  // boxes (persistent; the controller feeds it from prep/voxels)
+  private voxelMesh: THREE.InstancedMesh | null = null;
+  private voxelMaterial = new THREE.MeshPhongMaterial({
+    color: THEME_COLORS.dark.base, specular: 0x111111, shininess: 18,
+  });
   private edgeLines: THREE.LineSegments | null = null; // BREP boundaries (persistent)
   private annotations = new THREE.Group(); // measurement etc. (persistent)
   private overlay = new THREE.Group(); // per-repaint overlays (cleared)
@@ -118,6 +124,7 @@ export class Scene3D {
     // it lies exactly on the plane and would vanish on float roundoff
     this.registerClipping(this.stencilMaterials.back);
     this.registerClipping(this.stencilMaterials.front);
+    this.registerClipping(this.voxelMaterial);
     // the lens alpha channel is a 0/1 findings MASK; these uniforms mix the
     // two user opacities on it in the fragment stage
     patchLensOpacity(this.lensMaterial, this.lensOpacityUniforms);
@@ -355,6 +362,33 @@ export class Scene3D {
   setCapSupported(supported: boolean) {
     if (this.capSupported === supported) return;
     this.capSupported = supported;
+    this.applyRenderState();
+  }
+
+  /** Install the Voxel style's block shell (surface voxel centres, M*3) —
+   * null removes it. The base mesh stays the raycast target either way. */
+  setVoxels(centers: Float32Array | null, size: number) {
+    if (this.voxelMesh) {
+      this.scene.remove(this.voxelMesh);
+      this.voxelMesh.geometry.dispose();
+      this.voxelMesh.dispose();
+      this.voxelMesh = null;
+    }
+    if (centers && centers.length) {
+      const count = centers.length / 3;
+      const mesh = new THREE.InstancedMesh(
+        new THREE.BoxGeometry(size, size, size), this.voxelMaterial, count);
+      const matrix = new THREE.Matrix4();
+      for (let n = 0; n < count; n++) {
+        matrix.setPosition(
+          centers[3 * n], centers[3 * n + 1], centers[3 * n + 2]);
+        mesh.setMatrixAt(n, matrix);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.frustumCulled = false;
+      this.voxelMesh = mesh;
+      this.scene.add(mesh);
+    }
     this.applyRenderState();
   }
 
@@ -707,6 +741,7 @@ export class Scene3D {
     this.theme = theme;
     const colors = THEME_COLORS[theme];
     this.baseMaterial.color.setHex(colors.base);
+    this.voxelMaterial.color.setHex(colors.base);
     this.capMaterial.color.setHex(colors.sectionCap);
     this.edgeUniforms.uEdgeColor.value.setHex(colors.triEdge);
     (this.xrayMaterial.uniforms.uBase.value as THREE.Color).setHex(colors.xrayBase);
@@ -950,14 +985,19 @@ export class Scene3D {
     const vs = this.viewport;
     const xray = vs.style === 'xray';
     const meshStyle = vs.style === 'mesh';
+    // fall back to the solid look until the voxel shell has data (the
+    // controller may still be fetching or computing prep/voxels)
+    const voxel = vs.style === 'voxel' && !!this.voxelMesh;
     const hasSelection = !!this.selectionMask;
     const ghost = vs.context === 'ghost' && hasSelection;
     const isolate = vs.context === 'isolate' && hasSelection;
 
-    // base: opaque phong for solid/mesh, the Fresnel shell for X-ray
+    // base: opaque phong for solid/mesh, the Fresnel shell for X-ray, the
+    // instanced block shell for Voxel (base hidden but still the pick target)
     this.mesh.material = xray ? this.xrayMaterial : this.baseMaterial;
-    this.mesh.visible = !isolate;
+    this.mesh.visible = !isolate && !voxel;
     this.depthPrepassMesh.visible = xray && !isolate;
+    if (this.voxelMesh) this.voxelMesh.visible = voxel && !isolate;
 
     // the Mesh style IS flat triangle shading + triangle edges
     for (const m of [this.baseMaterial, this.lensMaterial,
@@ -984,7 +1024,7 @@ export class Scene3D {
       }
     }
     // the solid cap only makes sense on a watertight, fully opaque body
-    const capOn = vs.section.enabled && !xray && !isolate && !ghost
+    const capOn = vs.section.enabled && !xray && !voxel && !isolate && !ghost
       && this.lensHint >= 1 && this.capSupported;
     if (this.capMesh && this.stencilBackMesh && this.stencilFrontMesh) {
       this.capMesh.visible = capOn;
@@ -1010,17 +1050,18 @@ export class Scene3D {
     this.lensOpacityUniforms.uFindingsOpacity.value = vs.findingsOpacity;
     const maxAlpha = this.findingMask
       ? Math.max(vs.lensOpacity, vs.findingsOpacity) : vs.lensOpacity;
-    this.lensMesh.visible = !isolate && factor > 0 && maxAlpha > 0;
+    this.lensMesh.visible = !isolate && !voxel && factor > 0 && maxAlpha > 0;
     this.lensMaterial.opacity = factor;
     this.lensMaterial.depthWrite = false;
     this.lensOccludedMesh.visible = xray && this.lensMesh.visible;
     this.lensOccludedMaterial.opacity = factor * 0.25;
     this.refreshLensAlpha();
 
-    // selection layer: only meaningful under ghost/isolate
+    // selection layer: only meaningful under ghost/isolate (and it paints
+    // mesh faces — meaningless over the voxel shell)
     if (ghost || isolate) this.refreshSelectionColors();
     if (this.selectionMesh) {
-      this.selectionMesh.visible = (ghost || isolate) && hasSelection;
+      this.selectionMesh.visible = (ghost || isolate) && hasSelection && !voxel;
     }
   }
 
@@ -1029,6 +1070,7 @@ export class Scene3D {
     this.clearGraph();
     this.clearAnnotations();
     this.setBrepEdges(null);
+    this.setVoxels(null, 1);
     this.animator = null;
     // dispose every layer geometry; the shared attributes go with them (the
     // materials are long-lived and reused by the next part)
@@ -1092,43 +1134,63 @@ export class Scene3D {
       line.renderOrder = 5;
       this.annotations.add(line);
     };
-    const addMarker = (pick: MeasurePick, label: string, color: string) => {
+    // a small arrow ALONG the pick's normal, tip exactly on the picked point
+    // — world-sized meshes/sprites so it reads identically under perspective
+    // and orthographic cameras (screen-constant sprites are invisible in
+    // ortho: without attenuation their scale is world units)
+    const addMarker = (pick: MeasurePick, label: string, color: number) => {
+      const n = pick.normal;
+      const scale = Math.hypot(n[0], n[1], n[2]) || 1;
+      const dir = new THREE.Vector3(
+        n[0] / scale, n[1] / scale, n[2] / scale);
+      const coneHeight = diag * 0.02;
+      const material = this.registerClipping(new THREE.MeshBasicMaterial({
+        color, depthTest: false,
+      }));
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(coneHeight / 3, coneHeight, 16), material);
+      // ConeGeometry's apex points +Y; aim it at the surface (apex = pick)
+      cone.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0), dir.clone().negate());
+      cone.position.set(...pick.point)
+        .addScaledVector(dir, coneHeight / 2);
+      cone.renderOrder = 6;
+      this.annotations.add(cone);
+      // shaft along the normal (also communicates the pick's normal)
+      const tail: [number, number, number] = [
+        pick.point[0] + dir.x * rayLength,
+        pick.point[1] + dir.y * rayLength,
+        pick.point[2] + dir.z * rayLength,
+      ];
+      addLine([pick.point, tail], color, 0.9);
+      // small world-scaled text label at the tail (sizeAttenuation TRUE
+      // renders in ortho too)
       const canvas = document.createElement('canvas');
       canvas.width = 64;
       canvas.height = 64;
       const g = canvas.getContext('2d')!;
-      g.beginPath();
-      g.arc(32, 32, 26, 0, 2 * Math.PI);
-      g.fillStyle = color;
-      g.fill();
-      g.lineWidth = 5;
-      g.strokeStyle = '#ffffff';
-      g.stroke();
-      g.fillStyle = '#ffffff';
-      g.font = 'bold 30px system-ui, sans-serif';
+      g.font = 'bold 44px system-ui, sans-serif';
       g.textAlign = 'center';
       g.textBaseline = 'middle';
+      g.lineWidth = 8;
+      g.strokeStyle = '#ffffff';
+      g.strokeText(label, 32, 34);
+      g.fillStyle = `#${color.toString(16).padStart(6, '0')}`;
       g.fillText(label, 32, 34);
-      const material = this.registerClipping(new THREE.SpriteMaterial({
-        map: new THREE.CanvasTexture(canvas),
-        depthTest: false, sizeAttenuation: false, // constant screen size
+      const spriteMaterial = this.registerClipping(new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(canvas), depthTest: false,
       }));
-      const sprite = new THREE.Sprite(material);
-      sprite.position.set(...pick.point);
-      sprite.scale.set(0.045, 0.045, 1);
+      const sprite = new THREE.Sprite(spriteMaterial);
+      const labelSize = diag * 0.035;
+      sprite.scale.set(labelSize, labelSize, 1);
+      sprite.position.set(tail[0], tail[1], tail[2])
+        .addScaledVector(dir, labelSize * 0.6);
       sprite.renderOrder = 6;
       this.annotations.add(sprite);
-      // the pick's surface normal, drawn from the picked point
-      const tip: [number, number, number] = [
-        pick.point[0] + pick.normal[0] * rayLength,
-        pick.point[1] + pick.normal[1] * rayLength,
-        pick.point[2] + pick.normal[2] * rayLength,
-      ];
-      addLine([pick.point, tip], 0xbfc6ce, 0.9);
     };
 
-    if (a) addMarker(a, 'A', '#2f6fde');
-    if (b) addMarker(b, 'B', '#d97b16');
+    if (a) addMarker(a, 'A', 0x2f6fde);
+    if (b) addMarker(b, 'B', 0xd97b16);
     if (a && b) {
       addLine([a.point, b.point], this.theme === 'dark' ? 0xf3f5f7 : 0x1c1f24);
       if (frame === 'xyz') {
@@ -1181,7 +1243,8 @@ export class Scene3D {
     for (const m of [this.baseMaterial, this.xrayMaterial, this.lensMaterial,
       this.lensOccludedMaterial, this.selectionMaterial,
       this.depthPrepassMaterial, this.stencilMaterials.back,
-      this.stencilMaterials.front, this.capMaterial]) m.dispose();
+      this.stencilMaterials.front, this.capMaterial,
+      this.voxelMaterial]) m.dispose();
     this.viewHelper.dispose();
     window.removeEventListener('resize', this.onResize);
     this.renderer.dispose();

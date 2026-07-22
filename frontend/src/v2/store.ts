@@ -37,8 +37,11 @@ export interface V2State {
   viewport: ViewportState;
   /** The two-point measurement session — same orthogonality rule. */
   measure: MeasureState;
+  /** The section controls rail (right side, like the measure rail). */
+  sectionRailOpen: boolean;
 
   setAdvanced: (advanced: boolean) => void;
+  setSectionRailOpen: (open: boolean) => void;
   toggleTheme: () => void;
   setCompute: (analysisId: string, key: string, value: unknown) => void;
   setActiveCheck: (id: string | null) => void;
@@ -64,8 +67,10 @@ export const useV2 = create<V2State>()((set) => ({
   bands: {},
   viewport: DEFAULT_VIEWPORT,
   measure: { active: false, a: null, b: null, frame: 'xyz' },
+  sectionRailOpen: false,
 
   setAdvanced: (advanced) => set({ advanced }),
+  setSectionRailOpen: (sectionRailOpen) => set({ sectionRailOpen }),
   setViewport: (patch) =>
     set((s) => ({ viewport: { ...s.viewport, ...patch } })),
   setMeasureActive: (active) =>

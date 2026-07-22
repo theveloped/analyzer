@@ -126,13 +126,41 @@ for (const style of ['Mesh', 'X-ray', 'Solid']) {
   check(px && px.chroma > 50, `style ${style}: lens colours survive (${px?.chroma} px)`);
 }
 
-// the BREP edge toggle draws boundary lines without dropping the part
+// BREP edges default ON — toggling off and back on keeps the part visible
+await page.locator('button[title^="Show BREP boundary edges"]').click();
+await page.waitForTimeout(400);
 await page.locator('button[title^="Show BREP boundary edges"]').click();
 await page.waitForTimeout(600);
 const edgesPx = await capturePixels();
 check(edgesPx && edgesPx.part > 200, `BREP edges on: part visible (${edgesPx?.part} px)`);
-await page.locator('button[title^="Show BREP boundary edges"]').click();
-await page.waitForTimeout(200);
+
+// inline overlay sliders: lens colours to 0 → grey base (chroma collapses);
+// icon click toggles straight back to 100%
+await page.evaluate(() => {
+  const el = document.querySelector('input[title^="Lens colours opacity"]');
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype, 'value').set;
+  setter.call(el, '0');
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+});
+await page.waitForTimeout(400);
+const lensOffPx = await capturePixels();
+check(edgesPx && lensOffPx && lensOffPx.chroma < edgesPx.chroma * 0.2,
+  `lens slider to 0 hides the colours (${edgesPx?.chroma} → ${lensOffPx?.chroma} px)`);
+await page.locator('button[title^="Lens colours"]').click(); // toggle back to 100%
+await page.waitForTimeout(400);
+const lensOnPx = await capturePixels();
+check(lensOnPx && edgesPx && lensOnPx.chroma > edgesPx.chroma * 0.8,
+  `lens icon toggles back to 100% (${lensOnPx?.chroma} px)`);
+
+// the Voxel style computes prep/voxels on first use — until it lands the
+// solid look stays up; assert the fallback and no errors, then return
+await page.locator('button[title^="Voxel —"]').click();
+await page.waitForTimeout(1200);
+const voxelPx = await capturePixels();
+check(voxelPx && voxelPx.part > 200, `voxel style (fallback while computing): part visible (${voxelPx?.part} px)`);
+await page.locator('button[title^="Solid —"]').click();
+await page.waitForTimeout(300);
 
 // projection round-trip preserves the view
 const perspPx = await capturePixels();
@@ -146,15 +174,13 @@ check(orthoPx && perspPx && Math.abs(orthoPx.part - perspPx.part) < perspPx.part
 await page.locator('button[title="Switch to perspective projection"]').click();
 await page.waitForTimeout(300);
 
-// section plane: sweeping the offset to the low end cuts the part away
+// section: the Slice button opens the section RAIL (right side, like measure)
 const fullPx = await capturePixels();
-await page.locator('button[title="Section plane"]').click();
-const sectionPanel = page.locator('[id^="headlessui-popover-panel"]');
-await sectionPanel.waitFor({ timeout: 5000 });
-// the card must fit its content — the original layout grew scrollbars
-const fits = await sectionPanel.evaluate(
-  (el) => el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1);
-check(fits, 'section card fits without scrollbars');
+await page.locator('button[title^="Section plane"]').click();
+const sectionRail = page.locator('h2', { hasText: /^Section$/ })
+  .locator('xpath=ancestor::div[contains(@class,"w-72")]');
+await page.locator('h2', { hasText: /^Section$/ }).waitFor({ timeout: 5000 });
+check(true, 'section rail opens');
 const setOffset = (fraction) => page.evaluate((t) => {
   const el = document.querySelector('input[title="Section offset"]');
   const setter = Object.getOwnPropertyDescriptor(
@@ -164,7 +190,7 @@ const setOffset = (fraction) => page.evaluate((t) => {
   setter.call(el, String(lo + (hi - lo) * t));
   el.dispatchEvent(new Event('input', { bubbles: true }));
 }, fraction);
-await sectionPanel.locator('button', { hasText: /^x$/i }).first().click();
+await sectionRail.locator('button', { hasText: /^x$/i }).first().click();
 await page.waitForTimeout(600);
 // mid offset: half the part gone, the stencil cap fills the cut solid
 const capPx = await capturePixels();
@@ -175,7 +201,7 @@ await page.waitForTimeout(400);
 const cutPx = await capturePixels();
 check(fullPx && cutPx && capPx && cutPx.part < capPx.part && cutPx.part < fullPx.part * 0.6,
   `section sweep cuts the part (${fullPx?.part} → ${capPx?.part} → ${cutPx?.part} px)`);
-await sectionPanel.locator('button', { hasText: 'Reset' }).click();
+await sectionRail.locator('button', { hasText: 'Reset' }).click();
 await page.waitForTimeout(300);
 const resetPx = await capturePixels();
 check(resetPx && fullPx && resetPx.part > fullPx.part * 0.8,
@@ -183,18 +209,16 @@ check(resetPx && fullPx && resetPx.part > fullPx.part * 0.8,
 
 // snap: "Pick target" arms a one-shot pick; clicking a face snaps the plane
 // (needs brep_meta_url from a current server; falls back to a vertex snap)
-await sectionPanel.locator('button', { hasText: 'Pick target' }).click();
+await sectionRail.locator('button', { hasText: 'Pick target' }).click();
 await page.waitForTimeout(200);
 const cv0 = await page.locator('canvas').boundingBox();
 await page.mouse.click(cv0.x + cv0.width / 2, cv0.y + cv0.height / 2);
 await page.waitForTimeout(800);
-const snapActive = await page.locator('button[title="Section plane"]')
-  .getAttribute('aria-pressed').catch(() => null);
-const snapOn = snapActive === 'true'
-  || await page.locator('button[title="Section plane"]')
-    .evaluate((el) => el.className.includes('bg-zinc-900') || el.className.includes('dark:bg-white'));
+const snapOn = await page.locator('button[title^="Section plane"]')
+  .evaluate((el) => el.getAttribute('aria-pressed') === 'true');
 check(snapOn, 'pick-target snap enables the section on the picked face');
-// viewport reset restores the defaults for the rest of the walk
+// close the rail; viewport reset restores defaults for the rest of the walk
+await sectionRail.locator('button[title^="Close"]').click();
 await page.locator('button[title^="Reset viewport"]').click();
 await page.waitForTimeout(400);
 

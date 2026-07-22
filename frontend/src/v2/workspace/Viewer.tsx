@@ -3,6 +3,7 @@ import {
   attach, captureViewer, setViewerTheme, setViewportState,
 } from '../../viewer/controller';
 import { initMeasureTool, syncMeasureAnnotations } from '../measure/tool';
+import { initVoxelStyle } from '../tools/voxelStyle';
 import { useV2 } from '../store';
 
 /**
@@ -31,6 +32,7 @@ export function Viewer() {
     // fresh scene needs the current annotations re-pushed, like the theme)
     initMeasureTool();
     syncMeasureAnnotations();
+    initVoxelStyle();
     // the WebGL canvas has no preserveDrawingBuffer — the smoke test samples
     // pixels from this in-app capture instead of page.screenshot
     (window as { __viewerCapture?: typeof captureViewer }).__viewerCapture = captureViewer;
