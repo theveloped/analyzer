@@ -137,9 +137,13 @@ function SectionMenu() {
   const pickAxis = (axis: 'x' | 'y' | 'z') => {
     const normal = AXIS_NORMALS[axis];
     const [alo, ahi] = offsetRange(normal);
+    // keep the offset only when re-picking an axis that is already cutting;
+    // a fresh enable starts centred (the default axis is 'x', so a plain
+    // axis equality check would keep the meaningless initial offset)
     patch({
       enabled: true, axis, normal,
-      offset: section.axis === axis ? section.offset : (alo + ahi) / 2,
+      offset: section.enabled && section.axis === axis
+        ? section.offset : (alo + ahi) / 2,
     });
   };
   const pickView = () => {

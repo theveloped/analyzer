@@ -118,13 +118,21 @@ await page.locator('button[title*="BREP faces"]').first().click();
 await page.waitForTimeout(900);
 
 // every render style keeps the part visible and the lens colours saturated
-for (const style of ['Facets', 'X-ray', 'Shaded']) {
+for (const style of ['Mesh', 'X-ray', 'Solid']) {
   await page.locator(`button[title^="${style} —"]`).click();
   await page.waitForTimeout(500);
   const px = await capturePixels();
   check(px && px.part > 200, `style ${style}: part visible (${px?.part} px)`);
   check(px && px.chroma > 50, `style ${style}: lens colours survive (${px?.chroma} px)`);
 }
+
+// the BREP edge toggle draws boundary lines without dropping the part
+await page.locator('button[title^="Show BREP boundary edges"]').click();
+await page.waitForTimeout(600);
+const edgesPx = await capturePixels();
+check(edgesPx && edgesPx.part > 200, `BREP edges on: part visible (${edgesPx?.part} px)`);
+await page.locator('button[title^="Show BREP boundary edges"]').click();
+await page.waitForTimeout(200);
 
 // projection round-trip preserves the view
 const perspPx = await capturePixels();
@@ -143,26 +151,52 @@ const fullPx = await capturePixels();
 await page.locator('button[title="Section plane"]').click();
 const sectionPanel = page.locator('[id^="headlessui-popover-panel"]');
 await sectionPanel.waitFor({ timeout: 5000 });
-await sectionPanel.locator('button', { hasText: /^x$/i }).first().click();
-await page.waitForTimeout(400);
-await page.evaluate(() => {
+// the card must fit its content — the original layout grew scrollbars
+const fits = await sectionPanel.evaluate(
+  (el) => el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1);
+check(fits, 'section card fits without scrollbars');
+const setOffset = (fraction) => page.evaluate((t) => {
   const el = document.querySelector('input[title="Section offset"]');
   const setter = Object.getOwnPropertyDescriptor(
     window.HTMLInputElement.prototype, 'value').set;
-  setter.call(el, el.min);
+  const lo = parseFloat(el.min);
+  const hi = parseFloat(el.max);
+  setter.call(el, String(lo + (hi - lo) * t));
   el.dispatchEvent(new Event('input', { bubbles: true }));
-});
+}, fraction);
+await sectionPanel.locator('button', { hasText: /^x$/i }).first().click();
+await page.waitForTimeout(600);
+// mid offset: half the part gone, the stencil cap fills the cut solid
+const capPx = await capturePixels();
+check(fullPx && capPx && capPx.part > 100 && capPx.part < fullPx.part,
+  `section mid-cut with cap: part visible (${capPx?.part} px)`);
+await setOffset(0.02); // just above the low corner: (nearly) everything cut
 await page.waitForTimeout(400);
 const cutPx = await capturePixels();
-check(fullPx && cutPx && cutPx.part < fullPx.part * 0.6,
-  `section sweep cuts the part (${fullPx?.part} → ${cutPx?.part} px)`);
+check(fullPx && cutPx && capPx && cutPx.part < capPx.part && cutPx.part < fullPx.part * 0.6,
+  `section sweep cuts the part (${fullPx?.part} → ${capPx?.part} → ${cutPx?.part} px)`);
 await sectionPanel.locator('button', { hasText: 'Reset' }).click();
 await page.waitForTimeout(300);
 const resetPx = await capturePixels();
 check(resetPx && fullPx && resetPx.part > fullPx.part * 0.8,
   `section reset restores the part (${resetPx?.part} px)`);
-await page.keyboard.press('Escape'); // close the popover (measure not active yet)
+
+// snap: "Pick target" arms a one-shot pick; clicking a face snaps the plane
+// (needs brep_meta_url from a current server; falls back to a vertex snap)
+await sectionPanel.locator('button', { hasText: 'Pick target' }).click();
 await page.waitForTimeout(200);
+const cv0 = await page.locator('canvas').boundingBox();
+await page.mouse.click(cv0.x + cv0.width / 2, cv0.y + cv0.height / 2);
+await page.waitForTimeout(800);
+const snapActive = await page.locator('button[title="Section plane"]')
+  .getAttribute('aria-pressed').catch(() => null);
+const snapOn = snapActive === 'true'
+  || await page.locator('button[title="Section plane"]')
+    .evaluate((el) => el.className.includes('bg-zinc-900') || el.className.includes('dark:bg-white'));
+check(snapOn, 'pick-target snap enables the section on the picked face');
+// viewport reset restores the defaults for the rest of the walk
+await page.locator('button[title^="Reset viewport"]').click();
+await page.waitForTimeout(400);
 
 // two-point measurement: rail readout + annotations that survive a repaint
 const canvasBox = await page.locator('canvas').boundingBox();
@@ -177,6 +211,15 @@ const railText = await page.locator('h2', { hasText: 'Measure' })
   .locator('xpath=ancestor::div[contains(@class,"w-72")]').textContent();
 check(railText?.includes('picked points'), 'measure rail reports the picked-point distance');
 check(/dX/.test(railText ?? ''), 'measure rail reports signed component deltas');
+// component-frame toggle: normal-A decomposition swaps the readout rows
+await page.locator('button', { hasText: /^Normal A$/ }).first().click();
+await page.waitForTimeout(300);
+const frameText = await page.locator('h2', { hasText: 'Measure' })
+  .locator('xpath=ancestor::div[contains(@class,"w-72")]').textContent();
+check(/along A's normal/.test(frameText ?? ''),
+  'normal-A frame reports the along-normal split');
+await page.locator('button', { hasText: /^XYZ$/ }).first().click();
+await page.waitForTimeout(200);
 const measuredPx = await capturePixels();
 check(measuredPx && measuredPx.marker > 0,
   `measurement markers drawn (${measuredPx?.marker} px)`);
