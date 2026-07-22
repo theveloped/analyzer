@@ -16,6 +16,9 @@ export interface MeasurePick {
   normal: [number, number, number];
 }
 
+/** How the A→B delta is decomposed into component legs. */
+export type MeasureFrame = 'xyz' | 'normalA' | 'normalB';
+
 export interface MeasureReadout {
   /** Straight-line picked-point distance |B−A| (NOT the face minimum). */
   distance: number;
@@ -25,6 +28,10 @@ export interface MeasureReadout {
   alongNormalA: number;
   /** Remaining offset within face A's tangent plane. */
   inPlane: number;
+  /** Signed separation along face B's normal (still measured A→B). */
+  alongNormalB: number;
+  /** Remaining offset within face B's tangent plane. */
+  inPlaneB: number;
   /** Directed angle between the two normals, 0–180°. */
   normalAngleDeg: number;
   /** Orientation-independent plane angle, 0–90°. */
@@ -56,14 +63,17 @@ export function computeMeasurement(
   const nA = normalize(a.normal);
   const nB = normalize(b.normal);
   const alongNormalA = dot(delta, nA);
-  const inPlane = Math.sqrt(
-    Math.max(0, distance * distance - alongNormalA * alongNormalA));
+  const alongNormalB = dot(delta, nB);
+  const inPlaneOf = (along: number) => Math.sqrt(
+    Math.max(0, distance * distance - along * along));
   const cos = clamp(dot(nA, nB), -1, 1);
   return {
     distance,
     delta,
     alongNormalA,
-    inPlane,
+    inPlane: inPlaneOf(alongNormalA),
+    alongNormalB,
+    inPlaneB: inPlaneOf(alongNormalB),
     normalAngleDeg: Math.acos(cos) * DEG,
     planeAngleDeg: Math.acos(Math.min(1, Math.abs(cos))) * DEG,
   };

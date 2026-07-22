@@ -28,6 +28,19 @@ describe('computeMeasurement', () => {
       pick([0, 0, 0], [0, 0, 1]), pick([0, 0, 7], [0, 0, -1]));
     expect(r.alongNormalA).toBeCloseTo(7, 12);
     expect(r.inPlane).toBeCloseTo(0, 12);
+    // B's normal points back at A: the SAME A→B delta measured along it
+    // is negative (opposed faces), with the same zero in-plane rest
+    expect(r.alongNormalB).toBeCloseTo(-7, 12);
+    expect(r.inPlaneB).toBeCloseTo(0, 12);
+  });
+
+  it('decomposes independently against each pick normal', () => {
+    const r = computeMeasurement(
+      pick([0, 0, 0], [0, 0, 1]), pick([3, 0, 4], [1, 0, 0]));
+    expect(r.alongNormalA).toBeCloseTo(4, 12); // vertical part vs A's +Z
+    expect(r.inPlane).toBeCloseTo(3, 12);
+    expect(r.alongNormalB).toBeCloseTo(3, 12); // horizontal part vs B's +X
+    expect(r.inPlaneB).toBeCloseTo(4, 12);
   });
 
   it('distinguishes parallel, opposed and orthogonal normals', () => {

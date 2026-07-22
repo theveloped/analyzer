@@ -45,7 +45,7 @@ function interceptor(
   return true;
 }
 
-function sync(measure: { active: boolean; a: MeasurePick | null; b: MeasurePick | null }) {
+function sync(measure: import('../store').MeasureState) {
   if (measure.active !== interceptorOn) {
     interceptorOn = measure.active;
     if (measure.active) disarmSectionSnap(); // one pick owner at a time
@@ -53,14 +53,14 @@ function sync(measure: { active: boolean; a: MeasurePick | null; b: MeasurePick 
     if (measure.active) window.addEventListener('keydown', onKeyDown);
     else window.removeEventListener('keydown', onKeyDown);
   }
-  setMeasureAnnotations(measure.a, measure.b);
+  setMeasureAnnotations(measure.a, measure.b, measure.frame);
 }
 
 /** Re-push the session's annotations into a freshly attached scene (the
  * remount pattern the theme and viewport state also follow). */
 export function syncMeasureAnnotations() {
   const { measure } = useV2.getState();
-  setMeasureAnnotations(measure.a, measure.b);
+  setMeasureAnnotations(measure.a, measure.b, measure.frame);
 }
 
 /** Wire the tool once per app: session → interceptor/annotations, and a

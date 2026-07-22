@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import type { RGB } from '../registry/types';
 import { CameraRig } from './cameraRig';
-import type { MeasurePick } from './measure';
+import { computeMeasurement, type MeasureFrame, type MeasurePick } from './measure';
 import {
   makeBaryAttribute, makeBaseMaterial, makeCapMaterial,
   makeDepthPrepassMaterial, makeEdgeUniforms, makeLensMaterial,
@@ -1064,11 +1064,13 @@ export class Scene3D {
   }
 
   /** Rebuild the measurement annotations from the session state: A/B
-   * markers (constant screen size), the straight A→B segment, RGB
-   * model-axis component legs anchored at A, and the two normal rays.
-   * Lives in the persistent annotation layer — lens repaints never clear
-   * it — and is registered for section clipping like every other layer. */
-  setMeasureAnnotations(a: MeasurePick | null, b: MeasurePick | null) {
+   * markers (constant screen size), the straight A→B segment, component
+   * legs in the chosen frame (model axes, or along either pick's normal
+   * plus the in-plane rest), and the two normal rays. Lives in the
+   * persistent annotation layer — lens repaints never clear it — and is
+   * registered for section clipping like every other layer. */
+  setMeasureAnnotations(a: MeasurePick | null, b: MeasurePick | null,
+                        frame: MeasureFrame = 'xyz') {
     this.clearAnnotations();
     if (!a && !b) return;
     const bounds = this.getBounds();
@@ -1129,12 +1131,31 @@ export class Scene3D {
     if (b) addMarker(b, 'B', '#d97b16');
     if (a && b) {
       addLine([a.point, b.point], this.theme === 'dark' ? 0xf3f5f7 : 0x1c1f24);
-      // RGB axis staircase A → +dX → +dY → +dZ = B
-      const p1: [number, number, number] = [b.point[0], a.point[1], a.point[2]];
-      const p2: [number, number, number] = [b.point[0], b.point[1], a.point[2]];
-      addLine([a.point, p1], 0xe14b4b, 0.9);
-      addLine([p1, p2], 0x3fba55, 0.9);
-      addLine([p2, b.point], 0x4b86e1, 0.9);
+      if (frame === 'xyz') {
+        // RGB axis staircase A → +dX → +dY → +dZ = B
+        const p1: [number, number, number] = [b.point[0], a.point[1], a.point[2]];
+        const p2: [number, number, number] = [b.point[0], b.point[1], a.point[2]];
+        addLine([a.point, p1], 0xe14b4b, 0.9);
+        addLine([p1, p2], 0x3fba55, 0.9);
+        addLine([p2, b.point], 0x4b86e1, 0.9);
+      } else {
+        // along-normal leg (blue) + in-plane rest (green), decomposed
+        // against the chosen pick's normal
+        const r = computeMeasurement(a, b);
+        const [pick, along, sign] = frame === 'normalA'
+          ? [a, r.alongNormalA, 1] as const
+          : [b, r.alongNormalB, -1] as const;
+        const n = pick.normal;
+        const scale = Math.hypot(n[0], n[1], n[2]) || 1;
+        const foot: [number, number, number] = [
+          pick.point[0] + (n[0] / scale) * along * sign,
+          pick.point[1] + (n[1] / scale) * along * sign,
+          pick.point[2] + (n[2] / scale) * along * sign,
+        ];
+        const other = frame === 'normalA' ? b : a;
+        addLine([pick.point, foot], 0x4b86e1, 0.9); // along the normal
+        addLine([foot, other.point], 0x3fba55, 0.9); // in-plane rest
+      }
     }
   }
 

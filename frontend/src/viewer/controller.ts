@@ -180,8 +180,9 @@ export function faceNormal(face: number): [number, number, number] {
 export function setMeasureAnnotations(
   a: Parameters<Scene3D['setMeasureAnnotations']>[0],
   b: Parameters<Scene3D['setMeasureAnnotations']>[1],
+  frame?: Parameters<Scene3D['setMeasureAnnotations']>[2],
 ) {
-  scene?.setMeasureAnnotations(a, b);
+  scene?.setMeasureAnnotations(a, b, frame);
 }
 
 /** Fit the current legend-group selection in view. */

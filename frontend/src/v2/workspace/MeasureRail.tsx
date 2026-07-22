@@ -1,7 +1,10 @@
+import clsx from 'clsx';
 import { Ruler, X } from 'lucide-react';
 import { useStore } from '../../state/store';
 import { effectiveDescriptor, faceLabel } from '../../splits/splits';
-import { computeMeasurement, type MeasurePick } from '../../viewer/measure';
+import {
+  computeMeasurement, type MeasureFrame, type MeasurePick,
+} from '../../viewer/measure';
 import { useV2 } from '../store';
 
 const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
@@ -43,11 +46,18 @@ function PickBlock({ tag, pick }: { tag: 'A' | 'B'; pick: MeasurePick }) {
  * distance — two mesh picks do NOT establish the minimum distance between
  * the complete BREP faces.
  */
+const FRAMES: { id: MeasureFrame; label: string; hint: string }[] = [
+  { id: 'xyz', label: 'XYZ', hint: 'Component legs along the model axes' },
+  { id: 'normalA', label: 'Normal A', hint: "Along A's surface normal + in-plane rest" },
+  { id: 'normalB', label: 'Normal B', hint: "Along B's surface normal + in-plane rest" },
+];
+
 export function MeasureRail() {
   const measure = useV2((s) => s.measure);
   const setMeasureActive = useV2((s) => s.setMeasureActive);
+  const setMeasureFrame = useV2((s) => s.setMeasureFrame);
   const clearMeasurePicks = useV2((s) => s.clearMeasurePicks);
-  const { a, b } = measure;
+  const { a, b, frame } = measure;
   const readout = a && b ? computeMeasurement(a, b) : null;
 
   return (
@@ -80,25 +90,55 @@ export function MeasureRail() {
       {readout && (
         <>
           <div>
+            <div className={sectionCls}>Component frame</div>
+            <div className="mt-1 flex gap-1">
+              {FRAMES.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setMeasureFrame(f.id)}
+                  title={f.hint}
+                  className={clsx(
+                    'flex-1 rounded-lg px-1 py-1 text-xs font-medium transition',
+                    frame === f.id
+                      ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900'
+                      : 'text-zinc-600 hover:bg-zinc-950/5 dark:text-zinc-300 dark:hover:bg-white/10',
+                  )}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
             <div className={sectionCls}>Distance</div>
             <div className="mt-1 flex flex-col gap-1">
               <Row label="picked points |B−A|" value={mm(readout.distance)} />
-              <Row label="dX" value={mm(readout.delta[0])} />
-              <Row label="dY" value={mm(readout.delta[1])} />
-              <Row label="dZ" value={mm(readout.delta[2])} />
+              {frame === 'xyz' && (
+                <>
+                  <Row label="dX" value={mm(readout.delta[0])} />
+                  <Row label="dY" value={mm(readout.delta[1])} />
+                  <Row label="dZ" value={mm(readout.delta[2])} />
+                </>
+              )}
+              {frame === 'normalA' && (
+                <>
+                  <Row label="along A's normal (signed)" value={mm(readout.alongNormalA)} />
+                  <Row label="in A's plane" value={mm(readout.inPlane)} />
+                </>
+              )}
+              {frame === 'normalB' && (
+                <>
+                  <Row label="along B's normal (signed)" value={mm(readout.alongNormalB)} />
+                  <Row label="in B's plane" value={mm(readout.inPlaneB)} />
+                </>
+              )}
             </div>
             <p className={`mt-1.5 ${hintCls}`}>
               Straight-line distance between the picked points — not the
               minimum distance between the faces.
             </p>
-          </div>
-
-          <div>
-            <div className={sectionCls}>Relative to A's normal</div>
-            <div className="mt-1 flex flex-col gap-1">
-              <Row label="along normal (signed)" value={mm(readout.alongNormalA)} />
-              <Row label="in-plane offset" value={mm(readout.inPlane)} />
-            </div>
           </div>
 
           <div>

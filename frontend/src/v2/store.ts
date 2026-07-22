@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { MeasurePick } from '../viewer/measure';
+import type { MeasureFrame, MeasurePick } from '../viewer/measure';
 import { DEFAULT_VIEWPORT, type ViewportState } from '../viewer/viewportState';
 import { ANALYSES, defaultCompute } from './analyses';
 import type { BandBound } from './fieldLenses';
@@ -9,6 +9,8 @@ export interface MeasureState {
   active: boolean;
   a: MeasurePick | null;
   b: MeasurePick | null;
+  /** How the A→B delta decomposes into component legs. */
+  frame: MeasureFrame;
 }
 
 /**
@@ -43,6 +45,7 @@ export interface V2State {
   setBand: (lensKey: string, band: { lo: BandBound; hi: BandBound }) => void;
   setViewport: (patch: Partial<ViewportState>) => void;
   setMeasureActive: (active: boolean) => void;
+  setMeasureFrame: (frame: MeasureFrame) => void;
   /** FSM: empty → A; A → B; A+B → new A (third click starts over). */
   pushMeasurePick: (pick: MeasurePick) => void;
   /** Drop the picks but stay active. */
@@ -60,13 +63,15 @@ export const useV2 = create<V2State>()((set) => ({
   activeCheckId: null,
   bands: {},
   viewport: DEFAULT_VIEWPORT,
-  measure: { active: false, a: null, b: null },
+  measure: { active: false, a: null, b: null, frame: 'xyz' },
 
   setAdvanced: (advanced) => set({ advanced }),
   setViewport: (patch) =>
     set((s) => ({ viewport: { ...s.viewport, ...patch } })),
   setMeasureActive: (active) =>
     set((s) => ({ measure: { ...s.measure, active } })),
+  setMeasureFrame: (frame) =>
+    set((s) => ({ measure: { ...s.measure, frame } })),
   pushMeasurePick: (pick) =>
     set((s) => ({
       measure: !s.measure.a || s.measure.b
