@@ -297,8 +297,26 @@ def build_manifest(root, part):
     if os.path.exists(os.path.join(workdir, pipeline.BREP_META_FILE)):
         # per-BREP-face surface types + analytic params (viewer section snap)
         manifest["brep_meta_url"] = f"{base_url}/brep_meta"
-    if os.path.exists(os.path.join(workdir, "pmi.json")):
+    pmi_path = os.path.join(workdir, "pmi.json")
+    if os.path.exists(pmi_path):
         manifest["pmi_url"] = f"{base_url}/pmi"
+        # surface degraded flag / round-trip warnings + counts to the viewer so
+        # PmiRail can distinguish "no PMI" from "PMI import degraded" and show
+        # what an AP242 export would drop
+        try:
+            with open(pmi_path) as f:
+                pmi = json.load(f)
+            manifest["pmi"] = {
+                "url": f"{base_url}/pmi",
+                "degraded": bool(pmi.get("degraded")),
+                "warnings": pmi.get("warnings", []),
+                "counts": {kind: len(pmi.get(kind, []))
+                           for kind in ("dimensions", "tolerances", "datums")},
+                "export_url": f"{base_url}/export/step",
+                "export_report_url": f"{base_url}/export/step/report",
+            }
+        except (OSError, ValueError):
+            pass
     if os.path.exists(os.path.join(workdir, "assembly.json")):
         manifest["assembly_url"] = f"{base_url}/assembly"
     aag_meta_path = os.path.join(workdir, pipeline.AAG_META_FILE)

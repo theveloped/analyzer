@@ -34,9 +34,12 @@ from dataclasses import dataclass, field
 import numpy as np
 from loguru import logger
 
+import pmi_support
+
 FACE_ATTRS_FILE = "face_attrs.json"
 PMI_FILE = "pmi.json"
-PMI_SCHEMA = 3  # bump when pmi.json entry fields change (frontend PmiData mirrors)
+# 4: added top-level "warnings" (round-trip losses) + degraded-PMI stub.
+PMI_SCHEMA = 4  # bump when pmi.json entry fields change (frontend PmiData mirrors)
 ASSEMBLY_FILE = "assembly.json"
 
 
@@ -754,13 +757,24 @@ def _match_signatures(source, target, scale):
 # ---------------------------------------------------------------------------
 # artifact writing
 
-def write_part_artifacts(workdir, proto, source_shape=None):
+def _write_degraded_pmi(workdir):
+    """Stub pmi.json marking that OCCT's GD&T transfer crashed and PMI was
+    skipped — so the UI can say so instead of showing a bare "no PMI"."""
+    with open(os.path.join(workdir, PMI_FILE), "w") as f:
+        json.dump({"schema": PMI_SCHEMA, "degraded": True,
+                   "warnings": ["PMI import degraded — OpenCASCADE's GD&T "
+                                "transfer failed; re-export will omit PMI"],
+                   "dimensions": [], "tolerances": [], "datums": []}, f)
+
+
+def write_part_artifacts(workdir, proto, source_shape=None, *, pmi_degraded=False):
     """Write face_attrs.json (+ pmi.json) into a part workdir, remapping the
     prototype's 1-based map ids onto the workdir's own 0-based BREP ids.
 
     ``source_shape`` is the shape re-read from the workdir's source.stp
     (loaded on demand when omitted). Faces whose identity cannot be bridged
-    are dropped with a warning — never guessed.
+    are dropped with a warning — never guessed. When ``pmi_degraded`` and the
+    prototype carries no PMI, a stub pmi.json records the degradation.
     """
     import brep
     import pipeline
@@ -771,6 +785,8 @@ def write_part_artifacts(workdir, proto, source_shape=None):
 
     has_attrs = bool(proto.face_attrs) or proto.part_color is not None
     has_pmi = proto.pmi is not None
+    if pmi_degraded and not has_pmi:
+        _write_degraded_pmi(workdir)
     if not (has_attrs or has_pmi):
         return {"faces": 0, "pmi": 0}
 
@@ -835,6 +851,8 @@ def write_part_artifacts(workdir, proto, source_shape=None):
                 entity["edge_ids"] = remap_edges(entity.get("edge_ids", []))
                 pmi[kind].append(entity)
                 pmi_count += 1
+        # flag constructs that won't survive an AP242 round-trip (non-blocking)
+        pmi["warnings"] = pmi_support.roundtrip_warnings(pmi)
         with open(os.path.join(workdir, PMI_FILE), "w") as f:
             json.dump(pmi, f)
 
@@ -955,7 +973,8 @@ def import_step(path, root=".", *, progress=None):
                 os.path.join(workdir, "source.stp"))
 
         counts = write_part_artifacts(workdir, proto,
-                                      source_shape=source_shape)
+                                      source_shape=source_shape,
+                                      pmi_degraded=idoc.pmi_degraded)
         children.append({
             "name": proto.name,
             "part": part_info["id"],

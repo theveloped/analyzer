@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import { Frame } from 'lucide-react';
+import { Download, Frame } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { PmiData, PmiDatum, PmiDimension, PmiTolerance } from '../../api/types';
 import { useStore } from '../../state/store';
@@ -24,6 +24,7 @@ const rowCls = (active: boolean) => clsx(
 export function PmiRail() {
   const partId = useStore((s) => s.partId);
   const pmiUrl = useStore((s) => s.manifest?.pmi_url);
+  const pmiMeta = useStore((s) => s.manifest?.pmi);
   const setParam = useStore((s) => s.setViewerParam);
 
   const [pmi, setPmi] = useState<PmiData | null>(null);
@@ -93,6 +94,39 @@ export function PmiRail() {
 
   const container = 'flex h-full w-72 shrink-0 flex-col gap-4 overflow-auto border-l border-zinc-950/5 bg-white p-4 dark:border-white/10 dark:bg-zinc-900';
 
+  // AP242 export button + degraded/round-trip warnings surfaced from the manifest
+  const degraded = !!(pmi?.degraded || pmiMeta?.degraded);
+  const warnings = (pmi?.warnings ?? pmiMeta?.warnings ?? []);
+  const statusBlock = (
+    <>
+      {pmiMeta?.export_url && (
+        <a
+          href={pmiMeta.export_url}
+          download
+          className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-blue-500/40 bg-blue-500/5 px-2 py-1.5 text-xs/5 font-medium text-blue-700 transition hover:bg-blue-500/10 dark:text-blue-300"
+        >
+          <Download className="size-3.5" /> Export AP242 STEP
+        </a>
+      )}
+      {degraded && (
+        <p className={clsx(hintCls, 'rounded-md bg-amber-500/10 p-2 text-amber-700 dark:text-amber-400')}>
+          ⚠ PMI import degraded — OpenCASCADE’s GD&T transfer failed for this STEP,
+          so no semantic entities were extracted.
+        </p>
+      )}
+      {warnings.length > 0 && (
+        <details className="rounded-md bg-amber-500/5 p-2">
+          <summary className={clsx(hintCls, 'cursor-pointer text-amber-700 dark:text-amber-500')}>
+            {warnings.length} round-trip caveat{warnings.length > 1 ? 's' : ''} (AP242 export)
+          </summary>
+          <ul className={clsx('mt-1 list-disc pl-4', hintCls)}>
+            {warnings.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </details>
+      )}
+    </>
+  );
+
   if (!pmiUrl) {
     return (
       <div className={container}>
@@ -124,8 +158,9 @@ export function PmiRail() {
   return (
     <div className={container}>
       {header}
+      {statusBlock}
 
-      {empty && <p className={hintCls}>No semantic PMI entities found in this part.</p>}
+      {empty && !degraded && <p className={hintCls}>No semantic PMI entities found in this part.</p>}
 
       {datumLetters.length > 0 && (
         <div>

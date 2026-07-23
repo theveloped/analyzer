@@ -98,6 +98,10 @@ export interface PmiData {
   dimensions: PmiDimension[];
   tolerances: PmiTolerance[];
   datums: PmiDatum[];
+  /** constructs that won't survive an AP242 round-trip (informational) */
+  warnings?: string[];
+  /** OCCT's GD&T transfer crashed at import; entities are empty */
+  degraded?: boolean;
 }
 
 /** the fine mesh: raw typed-array URLs the viewer fetches directly */
@@ -258,6 +262,16 @@ export interface Manifest {
   brep_meta_url?: string;
   /** present when the part carries semantic PMI (pmi.json) */
   pmi_url?: string;
+  /** PMI summary for the viewer: degraded flag, round-trip warnings, counts,
+   * and the AP242 export endpoints */
+  pmi?: {
+    url: string;
+    degraded: boolean;
+    warnings: string[];
+    counts: { dimensions: number; tolerances: number; datums: number };
+    export_url: string;
+    export_report_url: string;
+  };
   /** present on imported assembly records (assembly.json) */
   assembly_url?: string;
   /** AAG stage summary (prep/aag): stats + mesh staleness */
