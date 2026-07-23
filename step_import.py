@@ -38,8 +38,10 @@ import pmi_support
 
 FACE_ATTRS_FILE = "face_attrs.json"
 PMI_FILE = "pmi.json"
-# 4: added top-level "warnings" (round-trip losses) + degraded-PMI stub.
-PMI_SCHEMA = 4  # bump when pmi.json entry fields change (frontend PmiData mirrors)
+# pmi.json schema version lives in pmi_support (the framework-free single
+# source shared with the exporter and the editor write-path). Re-exported here
+# so existing step_import.PMI_SCHEMA references keep working.
+PMI_SCHEMA = pmi_support.PMI_SCHEMA
 ASSEMBLY_FILE = "assembly.json"
 
 

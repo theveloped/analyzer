@@ -21,6 +21,13 @@ exporter reports what it actually dropped).
 # behaviour is documented in one place.
 METRE_MM_FACTOR = 1000.0
 
+# --- pmi.json schema version (single source; the frontend PmiData type + the
+# reader/exporter/editor all key off this) ----------------------------------
+# 4: added top-level "warnings" (round-trip losses) + degraded-PMI stub.
+# Bump when pmi.json entry fields change — then also update the frontend
+# PmiData mirror (frontend/src/api/types.ts). AGENTS.md hard rule 4.
+PMI_SCHEMA = 4
+
 # --- what OCCT's writer never emits ----------------------------------------
 # The base tolerance still exports; only these decorations are lost, so an entity
 # carrying one is exported best-effort (everything supported, minus the note).
