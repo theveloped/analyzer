@@ -49,6 +49,34 @@ Gap to the `3a` mockup and to item 19:
    render every frame at once (the full `3a` "print" look is a follow-up).
 3. Plan is written down (this file); implementation proceeds on
    `claude/pmi-viewer-editor-plan-6bo0mx`.
+4. **The editable unit is a tolerance *feature* (entity), never a B-rep face.**
+   A review flagged that a face-centric model becomes brittle on production PMI
+   (position controls a derived axis/median/pattern; a datum may be a feature of
+   size; profile spans a surface set; etc.). Our data model and exporter are
+   already entity-centric — `pmi.json` tolerances/datums carry the full FCF
+   semantics, and `step_export.SetGeomTolerance` / `_datum` associate an entity
+   with a *set* of faces — so this is a UX/mental-model rule, not a schema change:
+   the editor authors entities and treats `face_ids` as "the feature's geometry"
+   (a set), datums as first-class features referenced by letter, and authoring is
+   bounded to the `pmi_support` round-trip subset (composite FCF, common datum
+   A-B, projected-zone length, envelope/local size, thread functional axis are
+   out of scope precisely because they are lossy on OCCT export). An explicit
+   intermediate feature/Shape_Aspect layer (grouping, derived elements) remains a
+   future option gated behind a `PMI_SCHEMA` bump + exporter work.
+
+## Progress (this branch)
+
+- Phase 0 + 1 (viewer `3a` rail) — **landed** (`c5612d8`): scope chips, grouped
+  sections, pattern collapse (`pmiGroups.ts` + tests), dimensions layer.
+- Phase 3 (editor backend) — **landed** (`578ddf8`): `PUT /pmi`, OCP-free
+  `pmi_edit.py` (validate + warnings + atomic write), `test_pmi_edit.py`.
+- Phase 4 (editor frontend) — **landed**: `pmiVocab.ts` (authorable vocabulary,
+  lossy flags), `pmiModel.ts` (+ tests, entity reducers), `pmiEditStore.ts`,
+  `pmiPickTool.ts` (viewer face-pick → BREP id), `PmiEditor.tsx`, an Edit toggle
+  in `PmiRail`. tsc + 32 vitest + prod build green. The interactive pick/save UX
+  still wants a live-viewer pass (no runnable viewer in the authoring env).
+- Phase 2 (3D floating callout) — deferred (net-new projection overlay; wants a
+  live viewer to iterate).
 
 ## Phase 0 — foundations (do first, tiny)
 

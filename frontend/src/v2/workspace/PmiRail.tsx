@@ -1,10 +1,12 @@
 import clsx from 'clsx';
-import { Download, Frame } from 'lucide-react';
+import { Download, Frame, Pencil } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { PmiData, PmiDatum, PmiDimension, PmiTolerance } from '../../api/types';
 import { useStore } from '../../state/store';
 import { lensByMode } from '../lenses';
 import { DimensionCallout, ToleranceFrame } from './ControlFrame';
+import { PmiEditor } from './PmiEditor';
+import { usePmiEdit } from './pmiEditStore';
 import { groupPmi, isDatumReferenced, type PmiGroups, type PmiPattern } from './pmiGroups';
 
 const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
@@ -33,7 +35,9 @@ export function PmiRail() {
   const partId = useStore((s) => s.partId);
   const pmiUrl = useStore((s) => s.manifest?.pmi_url);
   const pmiMeta = useStore((s) => s.manifest?.pmi);
+  const manifestVersion = useStore((s) => s.manifestVersion);
   const setParam = useStore((s) => s.setViewerParam);
+  const editing = usePmiEdit((s) => s.active);
 
   const [pmi, setPmi] = useState<PmiData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -132,8 +136,9 @@ export function PmiRail() {
       })
       .catch(() => live && setError('could not load PMI'));
     return () => { live = false; };
+    // manifestVersion bumps after a save (refreshManifest) → re-read pmi.json
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [partId, pmiUrl]);
+  }, [partId, pmiUrl, manifestVersion]);
 
   // the dimensions layer is an independent toggle (blue faces on the model)
   function toggleDims() {
@@ -150,6 +155,14 @@ export function PmiRail() {
       <div className="flex items-center gap-2">
         <Frame className="size-4 text-blue-600 dark:text-blue-400" />
         <h2 className="text-sm/6 font-semibold text-zinc-950 dark:text-white">PMI / GD&T</h2>
+        <button
+          type="button"
+          onClick={() => usePmiEdit.getState().open(pmi)}
+          className="ml-auto inline-flex items-center gap-1 rounded-md border border-zinc-500/40 px-2 py-1 text-xs font-medium text-zinc-600 transition hover:bg-zinc-950/5 dark:text-zinc-300 dark:hover:bg-white/5"
+          title="Add, edit or remove semantic GD&T on this part"
+        >
+          <Pencil className="size-3.5" /> Edit
+        </button>
       </div>
       <p className={clsx('mt-1', hintCls)}>
         Semantic frames exactly as authored. Scope the view, or click one frame to
@@ -194,11 +207,16 @@ export function PmiRail() {
     </>
   );
 
+  if (editing) return <PmiEditor onDone={() => usePmiEdit.getState().close()} />;
+
   if (!pmiUrl) {
     return (
       <div className={container}>
         {header}
-        <p className={hintCls}>No PMI in this part — import a STEP (AP242) that carries semantic GD&T.</p>
+        <p className={hintCls}>
+          No PMI in this part yet. Use <b>Edit</b> to author semantic GD&T — even on an
+          AP203/AP214 import — then Export AP242.
+        </p>
       </div>
     );
   }
