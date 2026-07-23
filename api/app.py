@@ -377,6 +377,31 @@ def create_app(root=".", preload=None):
             dxf_path, media_type="application/dxf",
             filename=f"{part['name']}_{analysis_id}.dxf")
 
+    def _export_step(part):
+        """Re-author the part's geometry + PMI as AP242 (generated on request,
+        cached beside source). Synchronous — OCP only, no meshlib."""
+        import step_export
+
+        workdir = parts_api.workdir_for(root, part["id"])
+        out_path = os.path.join(workdir, "export", "part.ap242.stp")
+        try:
+            return step_export.export_step(workdir, out_path, schema="AP242")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.get("/api/parts/{part_id}/export/step")
+    def get_export_step(part_id: str):
+        part = part_or_404(part_id)
+        report = _export_step(part)
+        return FileResponse(report.out_path, media_type="model/step",
+                            filename=f"{part['name']}.stp")
+
+    @app.get("/api/parts/{part_id}/export/step/report")
+    def get_export_step_report(part_id: str):
+        """The exporter's warnings/counts (what a round-trip drops)."""
+        part = part_or_404(part_id)
+        return _export_step(part).to_dict()
+
     @app.get("/api/parts/{part_id}/highlights")
     def get_highlights(part_id: str):
         part = part_or_404(part_id)

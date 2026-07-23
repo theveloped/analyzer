@@ -16,6 +16,8 @@ and this document disagree, the code wins — update this file in the same commi
 | `splits.py` | User face splits: cuts along mesh edges relabel a BREP face's triangles into sub-face ids (no remeshing, framework-free numpy/scipy) | `add_cut`, `undo_last`, `clear`, `state`, `replay`, `cut_path`, `effective_face_ids`, `sanitize_retired` |
 | `aag.py` | Attributed adjacency graph over BREP faces (instapart port): face convexity, edge tangency continuity + signed dihedrals, persisted stage artifact with **deterministic face/edge ids** (face = `brep.iter_faces` order, edge/vertex = `TopExp.MapShapes` order) | `build_aag`, `save_aag`, `load_aag`, `get_sheet_base`, `get_connected_subgraph`, `axial_span` |
 | `step_import.py` | XCAF STEP front-end (instapart port): assembly tree + per-instance placements, face colors/names, semantic PMI; explodes assemblies into content-addressed child part workdirs, ids bridged geometrically (area+centroid signatures) | `import_step`, `extract_part_attributes`, `read_document`, `build_tree` |
+| `step_export.py` | inverse of `step_import`: re-reads `source.stp`, re-authors `pmi.json` GD&T onto its BREP via XCAF, writes AP242 (`SetDimTolMode`, schema 5) with GD&T. Self-calibrates the OCCT metre/mm tolerance-unit quirk; best-effort (unsupported constructs warn, never block) | `export_step`, `ExportReport` |
+| `pmi_support.py` | framework-free GD&T round-trip support matrix (which constructs survive an OCCT AP242 round-trip) + `roundtrip_warnings`; shared by reader, exporter, CLI, API | `roundtrip_warnings` |
 | `sheet.py` | Sheet-metal recognition + flat pattern orchestration over the AAG | `detect_sheet`, `flat_pattern` |
 | `unfold.py` | K-factor unfold onto the Z=0 plane: pcurve re-hosting with allowance scaling, BFS transform chains, topological outline loops, bend lines | `Unfolder`, `bend_allowance` |
 | `tube.py` | Straight constant-section profile classification (round/rect/square) + outer-shell unroll | `analyse_profile`, `grouped_graph`, `cluster_directions` |
@@ -66,7 +68,7 @@ folder and re-uploads dedupe; the human name stays in `part.json`.
 | `source.stp` / `source.step` | upload / `mesh_part` (STEP input) | the retained source STEP; BREP-level stages (`prep/aag`, sheet unfold, import attributes) reload it — face/edge ids re-derive deterministically from the same bytes |
 | `aag.npz` / `aag.json` | `prep/aag` (`pipeline.compute_aag`) | AAG stage artifact: per-face convexity/curvature/area/normal + C1/C2 group labels, per-edge face pairs/continuity/signed dihedral/polylines over **canonical edge ids**; json header carries schema, `source_sha`, mesh fingerprint and stats — consumers salt `aag_fingerprint` into cache keys |
 | `face_attrs.json` | `step_import` | STEP face colors/names + PMI back-refs, keyed by 0-based BREP face id |
-| `pmi.json` | `step_import` | semantic PMI (`schema` 3): dimensions (value, ±tol, qualifier, modifiers) / geometric tolerances (name, value, type, modifiers, material+zone modifiers, ordered `datum_refs` with precedence) / datums, all with 0-based face ids + canonical edge ids. Tolerance magnitudes OCCT leaves at 0 are backfilled from the STEP text by name (`_read_step_gdt_magnitudes`). Bump `step_import.PMI_SCHEMA` when entry fields change |
+| `pmi.json` | `step_import` | semantic PMI (`schema` 4): dimensions (value, ±tol, qualifier, modifiers) / geometric tolerances (name, value, type, modifiers, material+zone modifiers, ordered `datum_refs` with precedence) / datums, all with 0-based face ids + canonical edge ids; top-level `warnings` list constructs that won't survive an AP242 round-trip (`pmi_support.roundtrip_warnings`), and a `degraded` stub is written when OCCT's GD&T transfer crashes. Tolerance magnitudes OCCT leaves at 0 are backfilled from the STEP text by name (`_read_step_gdt_magnitudes`). Bump `step_import.PMI_SCHEMA` when entry fields change |
 | `assembly.json` | `step_import` (assembly source workdir) | instance tree (translation + quaternion per instance) linking child part ids, quantities per unique part |
 | `results/<p>/<a>/<hash>.dxf` | DXF export route / CLI `sheet --dxf` | cached DXF render of a stored flat-pattern result |
 
@@ -156,6 +158,8 @@ GET/PUT .../results/{proc}/{an}/{hash}/overrides  mold face-assignment overrides
 GET  .../results/{proc}/{an}/{hash}/export/dxf    flat pattern as DXF (generated + cached)
 GET  /api/parts/{id}/face_attrs                   face_attrs.json (STEP colors/names)
 GET  /api/parts/{id}/pmi                          pmi.json (semantic PMI)
+GET  /api/parts/{id}/export/step                  AP242 STEP re-authored with GD&T (generated + cached)
+GET  /api/parts/{id}/export/step/report           exporter counts + round-trip warnings
 GET  /api/parts/{id}/assembly                     assembly.json (imported assembly record)
 POST /api/parts/{id}/explode                      split an uploaded assembly into child parts
 GET  /api/parts/{id}/splits          user face-split state (cuts, sub-face parents, polylines)

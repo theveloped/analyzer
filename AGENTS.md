@@ -75,9 +75,11 @@ cd frontend && npm install && npm run build && cd ..   # one-time viewer build (
 ```
 
 - CLI entry point: `python main.py <command>` — commands: `mesh`, `explode`,
-  `aag`, `directions`, `options`, `thickness`, `sheet`, `bendplan`, `tube`,
-  `features`, `setups`, `verdict`, `precompute`, `compose`, `serve`, `view`.
-  `python main.py <command> -h` for flags; TESTING.md for workflows.
+  `export`, `aag`, `directions`, `options`, `thickness`, `sheet`, `bendplan`,
+  `tube`, `features`, `setups`, `verdict`, `precompute`, `compose`, `serve`,
+  `view`. `python main.py <command> -h` for flags; TESTING.md for workflows.
+  (`export` re-authors a part's `pmi.json` GD&T onto its source BREP and writes
+  AP242 — the inverse of `explode`; unsupported constructs warn, never block.)
 - Typical smoke workflow (fast, small part):
   ```bash
   python main.py mesh tests/testpart_42.stp -o testpart_42 --subdivide 1.0
@@ -105,6 +107,7 @@ python test_nesting.py       # 2D contour nesting sandbox (NFP nesting + tiling 
 python test_aag.py           # BREP adjacency graph: convexity, dihedrals, determinism
 python test_import.py        # XCAF import: assemblies, colors/names, id bridging
 python test_pmi.py           # semantic PMI/GD&T extraction on NIST AP242 fixtures
+python test_pmi_roundtrip.py # AP242 GD&T export -> re-import round-trip (step_export)
 python test_features.py      # CNC feature recognition (holes family)
 python test_sheet.py         # sheet detect + K-factor unfold + DXF round-trip
 python test_tube.py          # tube/profile classification + unroll

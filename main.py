@@ -94,6 +94,12 @@ if __name__ == "__main__":
     parser_explode.add_argument("input", help="path of the input .stp/.step file", type=PathType(type='file', dash_ok=True, exists=True))
     parser_explode.add_argument("-r", "--root", help="parts root directory (default: current directory, matching the API server)", type=PathType(type='dir', dash_ok=True, exists=True), default=".")
 
+    # Create the parser for the "export" command
+    parser_export = subparsers.add_parser("export", help="export a part's geometry + semantic GD&T back out as an AP242 STEP file (re-authors pmi.json onto the source BREP)")
+    parser_export.add_argument("directory", help="part working directory (holds source.stp + pmi.json)", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_export.add_argument("-o", "--output", help="output STEP path (default: <directory>/export/part.ap242.stp)", default=None)
+    parser_export.add_argument("--schema", help="STEP schema to write (default: AP242 — the only one that carries semantic PMI)", default="AP242")
+
     # Create the parser for the "aag" command
     parser_aag = subparsers.add_parser("aag", help="build the BREP face adjacency graph (convexity, tangency, dihedrals) shared by sheet metal / tube / feature recognition")
     parser_aag.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
@@ -377,6 +383,18 @@ if __name__ == "__main__":
             logger.info(f"  {part['quantity']}x {part['name']} -> "
                         f"parts/{part['part']} ({part['face_attrs']} face "
                         f"attrs, {part['pmi']} PMI)")
+
+    elif args.command == "export":
+        import step_export
+
+        report = step_export.export_step(args.directory, args.output,
+                                         schema=args.schema)
+        c = report.counts
+        logger.info(f"Exported {report.schema} -> {report.out_path} "
+                    f"({c['dimensions']} dims, {c['tolerances']} tols, "
+                    f"{c['datums']} datums)")
+        for warning in report.warnings:
+            logger.warning(warning)
 
     elif args.command == "aag":
         import processes
