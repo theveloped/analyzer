@@ -654,6 +654,7 @@ export const faceAttrsMode: ViewMode = {
  * directions plugin uses for `highlightBrep`. */
 export const PMI_ANNO_COL: RGB = [0.95, 0.61, 0.16];   // amber — toleranced faces
 export const PMI_DATUM_COL: RGB = [0.20, 0.68, 0.66];  // teal — referenced datums
+export const PMI_DIM_COL: RGB = [0.30, 0.52, 0.90];    // blue — dimensioned faces
 
 export const pmiMode: ViewMode = {
   id: 'pmi',
@@ -662,16 +663,20 @@ export const pmiMode: ViewMode = {
     const { ids } = await loadBrepFaceIds(ctx);
     const anno = new Set<number>((ctx.params.pmiFaces ?? []) as number[]);
     const datum = new Set<number>((ctx.params.pmiDatumFaces ?? []) as number[]);
+    // dimensions are a separate toggleable layer (the rail's "Show on model")
+    const dim = new Set<number>((ctx.params.pmiDimFaces ?? []) as number[]);
     const base = fade(COL.ok);
     ctx.paintFaces((f) => {
       const b = ids[f];
       if (datum.has(b)) return PMI_DATUM_COL;
       if (anno.has(b)) return PMI_ANNO_COL;
+      if (dim.has(b)) return PMI_DIM_COL;
       return base;
     });
     const legend: LegendEntry[] = [];
     if (anno.size) legend.push({ color: PMI_ANNO_COL, label: 'toleranced faces' });
     if (datum.size) legend.push({ color: PMI_DATUM_COL, label: 'referenced datums' });
+    if (dim.size) legend.push({ color: PMI_DIM_COL, label: 'dimensioned faces' });
     const counts = ctx.params.pmiCounts as
       { tolerances: number; dimensions: number; datums: number } | undefined;
     const stats = counts

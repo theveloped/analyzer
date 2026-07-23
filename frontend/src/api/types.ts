@@ -47,7 +47,7 @@ export interface FaceAttrs {
   }>;
 }
 
-/** Semantic PMI / GD&T (pmi.json, schema 2). Face ids are 0-based BREP ids
+/** Semantic PMI / GD&T (pmi.json, PMI_SCHEMA = 4). Face ids are 0-based BREP ids
  * (same space as brep_faces). Ids that could not be bridged to the workdir
  * geometry are dropped upstream, so datum_refs may name datums absent here. */
 export interface PmiDatumRef {
