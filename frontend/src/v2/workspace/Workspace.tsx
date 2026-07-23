@@ -15,6 +15,7 @@ import { MeasureRail } from './MeasureRail';
 import { SectionRail } from './SectionRail';
 import { PipelineRail } from './PipelineRail';
 import { PlanCheckRail } from './PlanCheckRail';
+import { PmiCallout } from './PmiCallout';
 import { PmiRail } from './PmiRail';
 import { SettingsRail } from './SettingsRail';
 import { TopBar } from './TopBar';
@@ -64,6 +65,7 @@ export function Workspace() {
 
         <div className="@container relative min-w-0 flex-1 bg-zinc-100 dark:bg-zinc-950">
           <Viewer />
+          {modeId === 'pmi' && <PmiCallout />}
           <AnalysisToolbar />
           {directionsActive && <DirectionTooltip />}
           <Legend />

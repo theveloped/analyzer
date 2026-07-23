@@ -5,6 +5,7 @@ import type { PmiData, PmiDatum, PmiDimension, PmiTolerance } from '../../api/ty
 import { useStore } from '../../state/store';
 import { lensByMode } from '../lenses';
 import { DimensionCallout, ToleranceFrame } from './ControlFrame';
+import type { PmiCalloutData } from './PmiCallout';
 import { PmiEditor } from './PmiEditor';
 import { usePmiEdit } from './pmiEditStore';
 import { groupPmi, isDatumReferenced, type PmiGroups, type PmiPattern } from './pmiGroups';
@@ -97,14 +98,19 @@ export function PmiRail() {
     const { anno, datum } = scopeFaces(s);
     setParam(PROCESS, 'pmiFaces', anno);
     setParam(PROCESS, 'pmiDatumFaces', datum);
+    setParam(PROCESS, 'pmiCallout', null); // scope shows many — no single callout
   }
 
-  // clicking one entry isolates it; clicking it again drops back to the scope
-  function highlight(id: number, faces: number[], datumFaces: number[]) {
+  // clicking one entry isolates it (and floats its callout); clicking it again
+  // drops back to the scope
+  function highlight(
+    id: number, faces: number[], datumFaces: number[], callout?: PmiCalloutData,
+  ) {
     if (selected === id) { applyScope(scope); return; }
     setSelected(id);
     setParam(PROCESS, 'pmiFaces', faces);
     setParam(PROCESS, 'pmiDatumFaces', datumFaces);
+    setParam(PROCESS, 'pmiCallout', callout ?? null);
   }
 
   // fetch pmi.json per part; reset selection + params on every part change
@@ -117,6 +123,7 @@ export function PmiRail() {
     setParam(PROCESS, 'pmiFaces', []);
     setParam(PROCESS, 'pmiDatumFaces', []);
     setParam(PROCESS, 'pmiDimFaces', []);
+    setParam(PROCESS, 'pmiCallout', null);
     setParam(PROCESS, 'pmiCounts', undefined);
     if (!pmiUrl) return;
     let live = true;
@@ -267,7 +274,8 @@ export function PmiRail() {
               <button
                 key={t.id}
                 type="button"
-                onClick={() => highlight(t.id, t.face_ids, datumFacesFor(t))}
+                onClick={() => highlight(t.id, t.face_ids, datumFacesFor(t),
+                  { kind: 'tolerance', entity: t, faces: t.face_ids })}
                 className={rowCls(selected === t.id, !inScope(t))}
               >
                 <ToleranceFrame t={t} />
@@ -288,7 +296,8 @@ export function PmiRail() {
               <button
                 key={p.key}
                 type="button"
-                onClick={() => highlight(-1 - p.sample.id, p.faceIds, datumFacesFor(p.sample))}
+                onClick={() => highlight(-1 - p.sample.id, p.faceIds, datumFacesFor(p.sample),
+                  { kind: 'tolerance', entity: p.sample, faces: p.faceIds })}
                 className={clsx(rowCls(selected === -1 - p.sample.id, !patternInScope(p)),
                   'flex items-center gap-2')}
               >
@@ -313,7 +322,8 @@ export function PmiRail() {
               <button
                 key={t.id}
                 type="button"
-                onClick={() => highlight(t.id, t.face_ids, [])}
+                onClick={() => highlight(t.id, t.face_ids, [],
+                  { kind: 'tolerance', entity: t, faces: t.face_ids })}
                 className={clsx(rowCls(selected === t.id, !inScope(t)),
                   'border-l-[3px] border-l-slate-400/70 dark:border-l-slate-500/70')}
               >
@@ -352,7 +362,8 @@ export function PmiRail() {
                   key={d.id}
                   type="button"
                   onClick={() => highlight(d.id,
-                    [...d.face_ids, ...(d.secondary_face_ids ?? [])], [])}
+                    [...d.face_ids, ...(d.secondary_face_ids ?? [])], [],
+                    { kind: 'dimension', entity: d, faces: [...d.face_ids, ...(d.secondary_face_ids ?? [])] })}
                   className={rowCls(selected === d.id, false)}
                 >
                   <DimensionCallout d={d} />
@@ -380,7 +391,8 @@ export function PmiRail() {
                   key={d.id}
                   type="button"
                   onClick={() => highlight(d.id,
-                    [...d.face_ids, ...(d.secondary_face_ids ?? [])], [])}
+                    [...d.face_ids, ...(d.secondary_face_ids ?? [])], [],
+                    { kind: 'dimension', entity: d, faces: [...d.face_ids, ...(d.secondary_face_ids ?? [])] })}
                   className={rowCls(selected === d.id, false)}
                   title="Basic/reference location — controlled by a tolerance, no independent value"
                 >

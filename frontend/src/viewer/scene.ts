@@ -887,6 +887,17 @@ export class Scene3D {
     return [dir.x, dir.y, dir.z];
   }
 
+  /** Project a world point to CSS pixels within the canvas container, or null
+   * if it is behind the camera. Lets DOM overlays (PMI callouts) track a 3D
+   * anchor as the camera orbits/zooms. */
+  worldToScreen(p: [number, number, number]): [number, number] | null {
+    const v = new THREE.Vector3(p[0], p[1], p[2]).project(this.camera);
+    if (v.z > 1) return null; // behind the camera / beyond the far plane
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    return [(v.x * 0.5 + 0.5) * w, (-v.y * 0.5 + 0.5) * h];
+  }
+
   /** Which faces the active lens counts as findings (null = no notion).
    * Reset by the controller on every repaint; drives "findings only". */
   setFindings(isFinding: ((f: number) => boolean) | null) {
