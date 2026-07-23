@@ -395,6 +395,77 @@ cross-validation + analytic-vs-shapely equivalence checks) +
 C:/temp/claude/corpus/parts/f488820d15c3` (delete
 `results/sheet_metal/bend_plan` first — results are cached).
 
+### 19. PMI / GD&T editor in the viewer
+
+**Goal.** Let users *add / remove / edit* semantic GD&T in the viewer and
+export it — turning the analyzer into a lightweight PMI authoring tool.
+Because the exact BREP is retained and the exporter re-authors from
+`pmi.json`, this works even on a part that arrived as AP214 with no PMI:
+import → add a Position tol ⌀0.2 |A|B|C on picked faces → export AP242
+that now carries semantic PMI. The read and export halves already exist;
+the only missing piece is *editing*.
+
+**Where things stand (built in the AP242-export change).**
+- Read: `step_import.py` → `pmi.json` (`PMI_SCHEMA = 4`, top-level
+  `warnings`, `degraded` stub), displayed read-only by
+  `frontend/src/v2/workspace/PmiRail.tsx` (item 11's inspect panel — done:
+  lists dimensions/tolerances/datums, click-to-highlight faces, datum
+  chips, an Export AP242 button and round-trip caveats).
+- Export/author: `step_export.py::export_step(workdir)` already authors
+  `pmi.json` → AP242 through XCAF (best-effort; unsupported constructs
+  warn, never block) and self-calibrates the metre/mm unit quirk.
+  `pmi_support.py` is the single-source support matrix + `roundtrip_warnings`.
+  API `GET /api/parts/{id}/export/step` (+ `/report`).
+- Missing: any *mutation* path. `GET /api/parts/{id}/pmi` is read-only;
+  there is no editable store and no write-back.
+
+**Where to start.**
+- Backend write endpoint: `PUT /api/parts/{id}/pmi` that validates the
+  payload (add a jsonschema for `pmi.json` like other artifacts) and
+  writes it, re-deriving `pmi["warnings"] = pmi_support.roundtrip_warnings`
+  on save. Synchronous, OCP-free — no jobs queue, same as the export
+  route. The manifest already surfaces `pmi` (counts/warnings/degraded).
+- Face/edge ids are the contract: editor-authored `face_ids` are 0-based
+  `brep.iter_faces` indices into `source.stp` (the exact space `PmiRail`
+  already highlights and `step_export._LabelResolver` inverts) — the user
+  picks faces on the *current* geometry, so no import-time signature
+  bridging is involved. Reuse the viewer's existing face selection
+  (`ctx.paintFaces` / the face-pick used by `faceAttrsMode`) to capture
+  the id set; datum features attach the same way into `pmi.datums`.
+- Constrain the UI to what survives: build type/modifier pickers from
+  `pmi_support` (the 14 characteristic symbols, Ø zone, MMC/LMC,
+  free-state/tangent-plane, ± dimensions) and grey out / inline-warn the
+  known-lossy ones (projected zone, all-around, max-value, coaxiality,
+  dimension qualifier) using the same warning strings.
+
+**Suggested approach (phased).**
+- A. `PUT /pmi` + validation + warning re-derive; unit `test_pmi_edit.py`
+  hitting the endpoint.
+- B. Frontend: a `PmiEditor` (extend `PmiRail`, or a sibling rail) with
+  add/edit/delete forms per entity type, writing an editable zustand
+  slice that PUTs on save; datum-letter management (A/B/C…).
+- C. Face/edge picking wired into the forms (pick target faces, pick datum
+  feature faces) from the live viewer selection.
+- D. Export is already wired — the loop closes: edit → save → Export AP242.
+
+**Watch out for.**
+- Bump `PMI_SCHEMA` (and the frontend `PmiData` mirror + `pmi_support`) if
+  you add editor-only fields (e.g. an `authored` provenance flag) — hard
+  rule 4, both sides of the seam.
+- Keep `pmi_support` the single source of truth so the editor can't author
+  constructs the exporter would silently drop; surface the warning inline
+  when the user picks a lossy one.
+- Semantic names the user types are *not* preserved by OCCT on AP242
+  export (datum identifiers are) — say so at author time, or add a sidecar
+  if names must persist across the round-trip.
+
+**Verify.** `test_pmi_edit.py` (author via the endpoint → export →
+re-import → assert it round-trips), `test_pmi_roundtrip.py` stays green,
+`cd frontend && npx tsc -b` + `npm test`. Manual: import
+`tests/nist/nist_ctc_01_asme1_ap203.stp` (no PMI), add a toleranced
+feature on picked faces, Export AP242, re-import, confirm `pmi.json`
+carries it.
+
 ## Meta
 
 - The port branch `claude/instapart-port` (10 commits) may still be
