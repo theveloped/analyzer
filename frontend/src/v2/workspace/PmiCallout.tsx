@@ -46,11 +46,12 @@ export function PmiCallout() {
     return () => { live = false; };
   }, [callout, partId, manifestVersion]);
 
-  // project + position every frame while mounted; occlusion is throttled (a
-  // raycast is far dearer than a projection) so it doesn't run every frame
+  // project + position every frame (cheap); the occlusion raycast (dear on big
+  // meshes) runs only once the view SETTLES, detected from the projected point
+  // going still — so orbiting/idle never raycasts, only the moment you stop
   useEffect(() => {
     let raf = 0;
-    let frame = 0;
+    let lastX = NaN; let lastY = NaN; let still = 0; let checked = false;
     let hidden = false;
     const tick = () => {
       raf = requestAnimationFrame(tick);
@@ -59,8 +60,14 @@ export function PmiCallout() {
       const dot = dotRef.current;
       if (!box || !line || !dot) return;
       const a = anchor.current;
-      if (a && (frame++ % 8 === 0)) hidden = isOccluded(a); // ~7Hz occlusion test
-      const s = a && !hidden ? worldToScreen(a) : null;
+      const p = a ? worldToScreen(a) : null;
+      if (a && p) {
+        const moved = !(Math.abs(p[0] - lastX) < 0.5 && Math.abs(p[1] - lastY) < 0.5);
+        lastX = p[0]; lastY = p[1];
+        if (moved) { still = 0; checked = false; }
+        else if (!checked && ++still > 3) { hidden = isOccluded(a); checked = true; }
+      }
+      const s = a && !hidden ? p : null;
       if (!s) { box.style.display = 'none'; line.style.display = 'none'; dot.style.display = 'none'; return; }
       box.style.display = '';
       line.style.display = '';

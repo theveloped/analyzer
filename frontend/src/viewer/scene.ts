@@ -62,6 +62,10 @@ export class Scene3D {
   private lensHint = 1; // legacy setMeshOpacity: "this lens wants a see-through body"
   private findingMask: Uint8Array | null = null;
   private findingsVersion = 0;
+  // which faces the lens actually coloured this paint (null return = unpainted →
+  // the face keeps the native viewport material instead of a lens tint)
+  private paintedMask: Uint8Array | null = null;
+  private paintVersion = 0;
   private lensAlphaState = ''; // skip redundant full-buffer alpha rewrites
   private selectionMask: Uint8Array | null = null;
   private selectionColorAttr: THREE.BufferAttribute | null = null;
@@ -557,19 +561,26 @@ export class Scene3D {
       this.rig.halfHeightFor(position.distanceTo(center)));
   }
 
-  paintFaces(colorOf: (f: number) => RGB) {
+  /** Colour the mesh. Returning null for a face leaves it UNPAINTED — it keeps
+   * the native viewport material (solid shading / xray shell) instead of a lens
+   * tint, so a highlight lens can colour only the faces it means to. */
+  paintFaces(colorOf: (f: number) => RGB | null) {
     if (!this.colorAttr) return;
+    const painted = this.ensurePaintedMask();
     for (let f = 0; f < this.faceCount; f++) {
-      const [r, g, b] = colorOf(f);
-      for (let k = 0; k < 3; k++) this.colorAttr.setXYZ(3 * f + k, r, g, b);
+      const c = colorOf(f);
+      painted[f] = c ? 1 : 0;
+      if (c) for (let k = 0; k < 3; k++) this.colorAttr.setXYZ(3 * f + k, c[0], c[1], c[2]);
     }
     this.colorAttr.needsUpdate = true;
+    this.paintVersion++;
   }
 
   /** Per-corner colors: the GPU interpolates them across each face, so a
-   * per-vertex scalar field renders as a smooth gradient. */
+   * per-vertex scalar field renders as a smooth gradient. Paints every face. */
   paintCorners(colorOf: (f: number, k: number) => RGB) {
     if (!this.colorAttr) return;
+    this.ensurePaintedMask().fill(1);
     for (let f = 0; f < this.faceCount; f++) {
       for (let k = 0; k < 3; k++) {
         const [r, g, b] = colorOf(f, k);
@@ -577,6 +588,14 @@ export class Scene3D {
       }
     }
     this.colorAttr.needsUpdate = true;
+    this.paintVersion++;
+  }
+
+  private ensurePaintedMask(): Uint8Array {
+    if (!this.paintedMask || this.paintedMask.length !== this.faceCount) {
+      this.paintedMask = new Uint8Array(this.faceCount);
+    }
+    return this.paintedMask;
   }
 
   /** Fly the camera to look at a region from along `direction`, at a
@@ -995,12 +1014,15 @@ export class Scene3D {
   private refreshLensAlpha() {
     if (!this.colorAttr) return;
     const mask = this.findingMask;
-    const state = mask ? `mask:${this.findingsVersion}` : 'none';
+    const painted = this.paintedMask;
+    const state = `p${this.paintVersion}:${mask ? `m${this.findingsVersion}` : 'none'}`;
     if (state === this.lensAlphaState) return;
     this.lensAlphaState = state;
     const colors = this.colorAttr.array as Float32Array;
     for (let f = 0; f < this.faceCount; f++) {
-      const alpha = mask && mask[f] ? 1 : 0;
+      // 0.0 = unpainted (native base) · 0.5 = painted non-finding (uLensOpacity)
+      // · 1.0 = finding (uFindingsOpacity). See patchLensOpacity.
+      const alpha = painted && !painted[f] ? 0 : (mask && mask[f] ? 1 : 0.5);
       colors[12 * f + 3] = alpha;
       colors[12 * f + 7] = alpha;
       colors[12 * f + 11] = alpha;

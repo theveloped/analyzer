@@ -52,7 +52,10 @@ export interface ViewCtx {
   params: Record<string, any>; // viewer params of the active process
   highlights: number[] | null;
   getField(desc: FieldDescriptor): Promise<Float32Array | Uint8Array | Uint32Array>;
-  paintFaces(colorOf: (f: number) => RGB): void;
+  /** Colour the mesh. Return null for a face to leave it UNPAINTED — it keeps
+   * the native viewport style (solid/xray) so a lens can colour only its own
+   * faces without tinting the rest. */
+  paintFaces(colorOf: (f: number) => RGB | null): void;
   /** Per-corner colors (k in 0..2) — smooth vertex-interpolated fields. */
   paintCorners(colorOf: (f: number, k: number) => RGB): void;
   /** Overlay line segments (flattened endpoint pairs, N*2*3 floats).

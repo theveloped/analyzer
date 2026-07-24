@@ -48,13 +48,14 @@ export function Workspace() {
   const sectionRailOpen = useV2((s) => s.sectionRailOpen);
   const setViewport = useV2((s) => s.setViewport);
 
-  // PMI reads best as an xray shell with the BREP edges and only the annotated
-  // faces coloured (findings); restore the prior viewport when the lens closes.
+  // PMI reads best as an xray shell with the BREP edges; only the annotated
+  // faces are painted (the lens returns null elsewhere), so no opacity tricks
+  // are needed. Restore the prior viewport when the lens closes.
   const savedViewport = useRef<ViewportState | null>(null);
   useEffect(() => {
     if (modeId !== 'pmi') return;
     savedViewport.current = useV2.getState().viewport;
-    setViewport({ style: 'xray', brepEdges: true, lensOpacity: 0, findingsOpacity: 1 });
+    setViewport({ style: 'xray', brepEdges: true });
     return () => { if (savedViewport.current) setViewport(savedViewport.current); };
   }, [modeId, setViewport]);
 

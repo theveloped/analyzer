@@ -665,16 +665,15 @@ export const pmiMode: ViewMode = {
     const datum = new Set<number>((ctx.params.pmiDatumFaces ?? []) as number[]);
     // dimensions are a separate toggleable layer (the rail's "Show on model")
     const dim = new Set<number>((ctx.params.pmiDimFaces ?? []) as number[]);
-    const base = fade(COL.ok);
     ctx.paintFaces((f) => {
       const b = ids[f];
       if (datum.has(b)) return PMI_DATUM_COL;
       if (anno.has(b)) return PMI_ANNO_COL;
       if (dim.has(b)) return PMI_DIM_COL;
-      return base;
+      return null; // un-annotated faces keep the native viewport style
     });
-    // only the coloured (annotated) faces are findings — in the xray viewport
-    // the rest drop to the native see-through shell (lensOpacity 0)
+    // the coloured faces are the findings, so they stay full while the "lens
+    // colours" slider can dial everything else (there is nothing else to dial)
     ctx.setFindings((f) => {
       const b = ids[f];
       return datum.has(b) || anno.has(b) || dim.has(b);
