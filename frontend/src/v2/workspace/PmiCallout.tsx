@@ -67,11 +67,14 @@ export function PmiCallout() {
         if (moved) { still = 0; checked = false; }
         else if (!checked && ++still > 3) { hidden = isOccluded(a); checked = true; }
       }
-      const s = a && !hidden ? p : null;
-      if (!s) { box.style.display = 'none'; line.style.display = 'none'; dot.style.display = 'none'; return; }
+      if (!a || !p) { box.style.display = 'none'; line.style.display = 'none'; dot.style.display = 'none'; return; }
       box.style.display = '';
       line.style.display = '';
       dot.style.display = '';
+      // occluded → dim (kept faintly visible), like the manu.ninja annotations
+      const op = hidden ? '0.3' : '1';
+      box.style.opacity = op; line.style.opacity = op; dot.style.opacity = op;
+      const s = p;
       const bx = s[0] + BOX_DX;
       const by = s[1] + BOX_DY;
       box.style.transform = `translate(${bx}px, ${by}px)`;
