@@ -79,7 +79,18 @@ export function ToleranceFrame({ t }: { t: PmiTolerance }) {
   );
 }
 
-/** A feature-of-size callout, e.g. ⌀12 ±0.05 or 60° Max */
+/** Fit class → its shop label, e.g. { H, 7, hole } → "H7", { N, 6, shaft } → "n6". */
+export function fitLabel(fit: { deviation: string; grade: number; hole: boolean }): string {
+  const letter = fit.hole ? fit.deviation.toUpperCase() : fit.deviation.toLowerCase();
+  return `${letter}${fit.grade}`;
+}
+
+/** Thread → its callout, e.g. { M6x1, 6H } → "M6x1 – 6H". */
+export function threadLabel(t: { designation: string; class: string | null }): string {
+  return t.class ? `${t.designation} – ${t.class}` : t.designation;
+}
+
+/** A feature-of-size callout, e.g. ⌀12 ±0.05, ⌀10 H7, or M6x1 – 6H */
 export function DimensionCallout({ d }: { d: PmiDimension }) {
   const dia = d.type && d.type.includes('Diameter') ? DIAMETER : '';
   const unit = d.angular ? '°' : '';
@@ -88,7 +99,15 @@ export function DimensionCallout({ d }: { d: PmiDimension }) {
     : null;
   return (
     <div className="flex flex-wrap items-baseline gap-1.5 text-sm text-zinc-800 dark:text-zinc-100">
+      {d.thread && (
+        <span className="rounded bg-zinc-800 px-1 font-mono text-xs font-semibold text-white dark:bg-zinc-200 dark:text-zinc-900">
+          {threadLabel(d.thread)}
+        </span>
+      )}
       <span className="font-medium">{dia}{formatNum(d.value)}{unit}</span>
+      {d.fit_class && (
+        <span className="font-mono font-semibold text-blue-700 dark:text-blue-300">{fitLabel(d.fit_class)}</span>
+      )}
       {tol && <span className="text-zinc-500 dark:text-zinc-400">{tol}</span>}
       {d.qualifier && <span className="text-[10px] uppercase tracking-wide text-zinc-400">{d.qualifier}</span>}
     </div>

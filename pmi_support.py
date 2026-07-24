@@ -24,9 +24,11 @@ METRE_MM_FACTOR = 1000.0
 # --- pmi.json schema version (single source; the frontend PmiData type + the
 # reader/exporter/editor all key off this) ----------------------------------
 # 4: added top-level "warnings" (round-trip losses) + degraded-PMI stub.
+# 5: dimensions gained fit_class (ISO tolerance class, e.g. H7/n6) and thread
+#    (e.g. M6x1-6H).
 # Bump when pmi.json entry fields change — then also update the frontend
 # PmiData mirror (frontend/src/api/types.ts). AGENTS.md hard rule 4.
-PMI_SCHEMA = 4
+PMI_SCHEMA = 5
 
 # --- what OCCT's writer never emits ----------------------------------------
 # The base tolerance still exports; only these decorations are lost, so an entity
@@ -79,6 +81,12 @@ def dimension_dropped_features(dim):
         dropped.append(("qualifier",
                         "dimension qualifier is written to the file but dropped "
                         "by OpenCASCADE's own reader on re-import"))
+    if dim.get("thread"):
+        dropped.append(("thread", "thread specification has no AP242 semantic "
+                        "entity — it is kept in the analyzer but not exported"))
+    if dim.get("fit_class"):
+        dropped.append(("fit_class", "ISO tolerance class (fit) is written to the "
+                        "file but dropped by OpenCASCADE's own reader on re-import"))
     # a location is inherently between two features; OCCT will not serialise a
     # single-sided one (no secondary reference), so it is lost on export
     if ((dim.get("type") or "").startswith("Location")

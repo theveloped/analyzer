@@ -14,7 +14,8 @@ import {
 } from './pmiModel';
 import {
   CHARACTERISTIC_BY_TYPE, CHARACTERISTICS, DIMENSION_KINDS,
-  DIMENSION_KIND_BY_TYPE, MATERIAL_MODIFIERS, TOLERANCE_MODIFIERS, ZONE_MODIFIERS,
+  DIMENSION_KIND_BY_TYPE, FIT_DEVIATIONS, IT_GRADES, MATERIAL_MODIFIERS,
+  TOLERANCE_MODIFIERS, ZONE_MODIFIERS,
 } from './pmiVocab';
 
 const PROCESS = lensByMode('pmi')!.processId;
@@ -321,6 +322,57 @@ function DimensionRow({ dim, pickActive, pickField, onChange, onPick, onDelete }
           onChange={(e) => onChange({ lower_tolerance: num(e.target.value) })}
           className={clsx(field, 'w-16')} aria-label="lower tolerance" />
       </div>
+      {/* ISO tolerance class (fit), e.g. H7 / n6 */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <label className="flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-300">
+          <input type="checkbox" checked={!!dim.fit_class}
+            onChange={(e) => onChange({ fit_class: e.target.checked ? { deviation: 'H', grade: 7, hole: true } : null })} />
+          Fit
+        </label>
+        {dim.fit_class && (
+          <>
+            <select value={dim.fit_class.hole ? 'hole' : 'shaft'}
+              onChange={(e) => onChange({ fit_class: { ...dim.fit_class!, hole: e.target.value === 'hole' } })}
+              className={clsx(field, 'w-20')} aria-label="hole or shaft">
+              <option value="hole">hole</option>
+              <option value="shaft">shaft</option>
+            </select>
+            <select value={dim.fit_class.deviation}
+              onChange={(e) => onChange({ fit_class: { ...dim.fit_class!, deviation: e.target.value } })}
+              className={clsx(field, 'w-16')} aria-label="deviation">
+              {FIT_DEVIATIONS.map((d) => <option key={d} value={d}>{d}</option>)}
+            </select>
+            <select value={dim.fit_class.grade}
+              onChange={(e) => onChange({ fit_class: { ...dim.fit_class!, grade: Number(e.target.value) } })}
+              className={clsx(field, 'w-16')} aria-label="grade">
+              {IT_GRADES.map((g) => <option key={g} value={g}>IT{g}</option>)}
+            </select>
+            <span className="font-mono text-xs font-semibold text-blue-700 dark:text-blue-300">
+              {dim.fit_class.hole ? dim.fit_class.deviation.toUpperCase() : dim.fit_class.deviation.toLowerCase()}{dim.fit_class.grade}
+            </span>
+          </>
+        )}
+      </div>
+
+      {/* thread spec (stored + shown; not carried by AP242 export) */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        <label className="flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-300">
+          <input type="checkbox" checked={!!dim.thread}
+            onChange={(e) => onChange({ thread: e.target.checked ? { designation: 'M6', class: null } : null })} />
+          Thread
+        </label>
+        {dim.thread && (
+          <>
+            <input value={dim.thread.designation} placeholder="M6x1"
+              onChange={(e) => onChange({ thread: { ...dim.thread!, designation: e.target.value } })}
+              className={clsx(field, 'w-24')} aria-label="thread designation" />
+            <input value={dim.thread.class ?? ''} placeholder="6H"
+              onChange={(e) => onChange({ thread: { ...dim.thread!, class: e.target.value || null } })}
+              className={clsx(field, 'w-16')} aria-label="thread class" />
+          </>
+        )}
+      </div>
+
       <div className="flex items-center gap-1.5">
         <PickButton active={pickActive && pickField === 'face_ids'} count={dim.face_ids.length}
           onClick={() => onPick('face_ids')} />

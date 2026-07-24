@@ -35,6 +35,11 @@ TOLERANCE_TYPES = frozenset({
     "CircularRunout", "TotalRunout",
 })
 MATERIAL_MODIFIERS = frozenset({"M", "L", "S"})
+# ISO 286 fundamental deviation letters (fit class, e.g. H7 / n6)
+FIT_DEVIATIONS = frozenset({
+    "A", "B", "C", "CD", "D", "E", "EF", "F", "FG", "G", "H", "J", "JS", "K",
+    "M", "N", "P", "R", "S", "T", "U", "V", "X", "Y", "Z", "ZA", "ZB", "ZC",
+})
 
 # --- jsonschema for a pmi.json payload -------------------------------------
 _STR = {"type": ["string", "null"]}
@@ -69,6 +74,12 @@ _DIMENSION = {
         "modifiers": _STR_LIST, "angular": {"type": "boolean"},
         "face_ids": _INT_LIST, "secondary_face_ids": _INT_LIST,
         "edge_ids": _INT_LIST,
+        "fit_class": {"type": ["object", "null"], "properties": {
+            "deviation": {"type": "string"}, "grade": {"type": "integer"},
+            "hole": {"type": "boolean"}}, "required": ["deviation", "grade"]},
+        "thread": {"type": ["object", "null"], "properties": {
+            "designation": {"type": "string"}, "class": _STR},
+            "required": ["designation"]},
     },
     "required": ["id", "face_ids"],
 }
@@ -129,6 +140,16 @@ def validate_pmi(payload):
         if mat is not None and mat not in MATERIAL_MODIFIERS:
             raise ValueError(
                 f"unknown material modifier {mat!r} — must be one of M, L, S")
+
+    for dim in pmi["dimensions"]:
+        fit = dim.get("fit_class")
+        if fit is not None:
+            dev = str(fit.get("deviation", "")).upper()
+            if dev not in FIT_DEVIATIONS:
+                raise ValueError(f"unknown fit deviation {fit.get('deviation')!r}")
+            grade = fit.get("grade")
+            if not isinstance(grade, int) or not (0 <= grade <= 18):
+                raise ValueError("fit grade must be an integer IT0..IT18")
     return pmi
 
 

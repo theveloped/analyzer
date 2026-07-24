@@ -130,6 +130,8 @@ class _Author:
         self.DIM_TYPE = _enum_map("DimensionType_")
         self.DIM_QUAL = _enum_map("DimensionQualifier_")
         self.DIM_MODIF = _enum_map("DimensionModif_")
+        self.DIM_FORMVAR = _enum_map("DimensionFormVariance_")  # ISO fit letter
+        self.DIM_GRADE = _enum_map("DimensionGrade_")           # IT grade
         self.DAT_MODIF = _enum_map("DatumSingleModif_")
 
     def dimension(self, dim):
@@ -153,6 +155,13 @@ class _Author:
         q = self.DIM_QUAL.get(dim.get("qualifier"))
         if q is not None:
             o.SetQualifier(q)
+        # ISO tolerance class (fit), e.g. H7 / n6 — deviation letter + IT grade
+        fit = dim.get("fit_class")
+        if fit and fit.get("deviation") and fit.get("grade") is not None:
+            variance = self.DIM_FORMVAR.get(str(fit["deviation"]).upper())
+            grade = self.DIM_GRADE.get(f"IT{int(fit['grade'])}")
+            if variance is not None and grade is not None:
+                o.SetClassOfTolerance(bool(fit.get("hole", True)), variance, grade)
         for m in dim.get("modifiers", []):
             if m in self.DIM_MODIF:
                 o.AddModifier(self.DIM_MODIF[m])

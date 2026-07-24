@@ -75,6 +75,17 @@ export const ZONE_MODIFIERS = [
   { value: 'Projected', glyph: 'Ⓟ', label: 'Projected zone', lossy: 'projected tolerance-zone modifier is not carried by AP242 export' },
 ];
 
+/** ISO 286 fundamental-deviation letters for a fit class (H7, n6, …). */
+export const FIT_DEVIATIONS = [
+  'A', 'B', 'C', 'CD', 'D', 'E', 'EF', 'F', 'FG', 'G', 'H', 'J', 'JS', 'K',
+  'M', 'N', 'P', 'R', 'S', 'T', 'U', 'V', 'X', 'Y', 'Z', 'ZA', 'ZB', 'ZC',
+];
+/** IT grades (IT0…IT18). */
+export const IT_GRADES = Array.from({ length: 19 }, (_, i) => i);
+
+/** Common thread designation prefixes (free text — the field accepts any). */
+export const THREAD_HINTS = ['M', 'MF', 'UNC', 'UNF', 'G', 'R', 'NPT'];
+
 /** Feature-of-size / location dimension kinds the exporter round-trips. */
 export const DIMENSION_KINDS = [
   { type: 'Size_Diameter', label: 'Diameter (Ø)', angular: false, diameter: true },

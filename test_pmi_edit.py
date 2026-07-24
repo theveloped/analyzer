@@ -134,6 +134,24 @@ def fixture_validate(check):
                                             datum_refs=[{"name": "A", "position": 1,
                                                          "modifiers": []}])]}))
 
+    # fit class (H7 / n6) and thread specs
+    check("accepts a dimension fit class (H7)",
+          not _rejects({"dimensions": [_dim(id=1, type="Size_Diameter", value=10,
+                        face_ids=[0], fit_class={"deviation": "H", "grade": 7, "hole": True})],
+                        "tolerances": [], "datums": []}))
+    check("accepts a thread spec",
+          not _rejects({"dimensions": [_dim(id=1, type="Size_Diameter", value=6,
+                        face_ids=[0], thread={"designation": "M6x1", "class": "6H"})],
+                        "tolerances": [], "datums": []}))
+    check("rejects an unknown fit deviation",
+          _rejects({"dimensions": [_dim(id=1, face_ids=[0],
+                    fit_class={"deviation": "Q", "grade": 7, "hole": True})],
+                    "tolerances": [], "datums": []}))
+    check("rejects an out-of-range fit grade",
+          _rejects({"dimensions": [_dim(id=1, face_ids=[0],
+                    fit_class={"deviation": "H", "grade": 99, "hole": True})],
+                    "tolerances": [], "datums": []}))
+
 
 def fixture_save(check):
     wd = tempfile.mkdtemp(prefix="pmiedit_")
