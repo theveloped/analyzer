@@ -673,6 +673,12 @@ export const pmiMode: ViewMode = {
       if (dim.has(b)) return PMI_DIM_COL;
       return base;
     });
+    // only the coloured (annotated) faces are findings — in the xray viewport
+    // the rest drop to the native see-through shell (lensOpacity 0)
+    ctx.setFindings((f) => {
+      const b = ids[f];
+      return datum.has(b) || anno.has(b) || dim.has(b);
+    });
     const legend: LegendEntry[] = [];
     if (anno.size) legend.push({ color: PMI_ANNO_COL, label: 'toleranced faces' });
     if (datum.size) legend.push({ color: PMI_DATUM_COL, label: 'referenced datums' });

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { PmiDatum, PmiDimension, PmiTolerance } from '../../api/types';
 import { useStore } from '../../state/store';
-import { pmiFaceCentroid, worldToScreen } from '../../viewer/controller';
+import { isOccluded, pmiFaceCentroid, worldToScreen } from '../../viewer/controller';
 import { lensByMode } from '../lenses';
 import { DimensionCallout, ToleranceFrame } from './ControlFrame';
 
@@ -46,9 +46,12 @@ export function PmiCallout() {
     return () => { live = false; };
   }, [callout, partId, manifestVersion]);
 
-  // project + position every frame while mounted
+  // project + position every frame while mounted; occlusion is throttled (a
+  // raycast is far dearer than a projection) so it doesn't run every frame
   useEffect(() => {
     let raf = 0;
+    let frame = 0;
+    let hidden = false;
     const tick = () => {
       raf = requestAnimationFrame(tick);
       const box = boxRef.current;
@@ -56,7 +59,8 @@ export function PmiCallout() {
       const dot = dotRef.current;
       if (!box || !line || !dot) return;
       const a = anchor.current;
-      const s = a ? worldToScreen(a) : null;
+      if (a && (frame++ % 8 === 0)) hidden = isOccluded(a); // ~7Hz occlusion test
+      const s = a && !hidden ? worldToScreen(a) : null;
       if (!s) { box.style.display = 'none'; line.style.display = 'none'; dot.style.display = 'none'; return; }
       box.style.display = '';
       line.style.display = '';

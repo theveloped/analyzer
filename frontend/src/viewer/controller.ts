@@ -202,6 +202,11 @@ export function worldToScreen(p: [number, number, number]): [number, number] | n
   return scene?.worldToScreen(p) ?? null;
 }
 
+/** Is a world anchor hidden behind the part right now? Occludes DOM overlays. */
+export function isOccluded(p: [number, number, number]): boolean {
+  return scene?.isOccluded(p) ?? false;
+}
+
 /** BREP face ids aligned to the CURRENTLY loaded mesh — the fine field when the
  * fine mesh is up, else the coarse preview's ids (mirrors loadBrepFaceIds). */
 async function currentBrepIds(): Promise<Uint32Array | null> {
@@ -234,7 +239,21 @@ export async function pmiFaceCentroid(
       x += verts[vi]; y += verts[vi + 1]; z += verts[vi + 2]; n++;
     }
   }
-  return n ? [x / n, y / n, z / n] : null;
+  if (!n) return null;
+  // snap the anchor to the nearest actual surface vertex — the raw centroid of a
+  // hole/boss sits on its axis (inside the solid) and would always read occluded
+  const cx = x / n; const cy = y / n; const cz = z / n;
+  let best = -1; let bestD = Infinity;
+  for (let f = 0; f < ids.length && 3 * f + 2 < faces.length; f++) {
+    if (!want.has(ids[f])) continue;
+    for (let k = 0; k < 3; k++) {
+      const vi = faces[3 * f + k] * 3;
+      const dx = verts[vi] - cx; const dy = verts[vi + 1] - cy; const dz = verts[vi + 2] - cz;
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < bestD) { bestD = d; best = vi; }
+    }
+  }
+  return best >= 0 ? [verts[best], verts[best + 1], verts[best + 2]] : [cx, cy, cz];
 }
 
 /** Fit the whole part in view, keeping the current view direction. */

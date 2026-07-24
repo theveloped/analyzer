@@ -898,6 +898,23 @@ export class Scene3D {
     return [(v.x * 0.5 + 0.5) * w, (-v.y * 0.5 + 0.5) * h];
   }
 
+  /** Is a world point hidden behind the mesh from the current camera? Lets a
+   * DOM overlay be occluded by the model like a real in-scene annotation.
+   * (Raycast against the part; a hit closer than the anchor means it's behind.) */
+  isOccluded(p: [number, number, number]): boolean {
+    if (!this.mesh) return false;
+    const origin = this.camera.position;
+    const dir = new THREE.Vector3(p[0], p[1], p[2]).sub(origin);
+    const dist = dir.length();
+    if (dist < 1e-6) return false;
+    this.raycaster.set(origin, dir.multiplyScalar(1 / dist));
+    const far = this.raycaster.far;
+    this.raycaster.far = dist * 0.997; // ignore the anchor's own surface
+    const hit = this.raycaster.intersectObject(this.mesh).length > 0;
+    this.raycaster.far = far;
+    return hit;
+  }
+
   /** Which faces the active lens counts as findings (null = no notion).
    * Reset by the controller on every repaint; drives "findings only". */
   setFindings(isFinding: ((f: number) => boolean) | null) {

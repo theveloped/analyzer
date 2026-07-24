@@ -1,4 +1,6 @@
+import { useEffect, useRef } from 'react';
 import { useStore } from '../../state/store';
+import type { ViewportState } from '../../viewer/viewportState';
 import { catalogAnalysisFor } from '../checks/catalog';
 import { AnalysisToolbar } from './AnalysisToolbar';
 import { DirectionsRail } from './DirectionsRail';
@@ -44,6 +46,17 @@ export function Workspace() {
   const planCheckRail = selected && !catalogAnalysisFor(selected.check);
   const measuring = useV2((s) => s.measure.active);
   const sectionRailOpen = useV2((s) => s.sectionRailOpen);
+  const setViewport = useV2((s) => s.setViewport);
+
+  // PMI reads best as an xray shell with the BREP edges and only the annotated
+  // faces coloured (findings); restore the prior viewport when the lens closes.
+  const savedViewport = useRef<ViewportState | null>(null);
+  useEffect(() => {
+    if (modeId !== 'pmi') return;
+    savedViewport.current = useV2.getState().viewport;
+    setViewport({ style: 'xray', brepEdges: true, lensOpacity: 0, findingsOpacity: 1 });
+    return () => { if (savedViewport.current) setViewport(savedViewport.current); };
+  }, [modeId, setViewport]);
 
   // the viewport INTERACTIONS outrank every lens/check rail while active —
   // the lens stays visible in the viewport, only the rail switches
