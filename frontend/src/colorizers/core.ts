@@ -652,8 +652,12 @@ export const faceAttrsMode: ViewMode = {
  * one distinct hue per datum). The rail pushes a full [brepFaceId, RGB] colour
  * map plus a matching legend through `viewerParams`; every other face is left
  * unpainted (null) so it keeps the native viewport style. */
-export const PMI_ANNO_COL: RGB = [0.95, 0.61, 0.16];   // amber — toleranced faces
-export const PMI_DIM_COL: RGB = [0.30, 0.52, 0.90];    // blue — dimensioned faces
+// PMI reuses the same golden-ratio segmentation palette as the BREP-faces lens
+// (segmentIdColor). Slots 0 and 1 are reserved for toleranced / dimensioned
+// features; datums take slots 2+ (datumColors.ts), so a control-frame's
+// referenced features never share a colour with a datum.
+export const PMI_ANNO_COL: RGB = segmentIdColor(0);   // toleranced faces
+export const PMI_DIM_COL: RGB = segmentIdColor(1);    // dimensioned faces
 
 export const pmiMode: ViewMode = {
   id: 'pmi',
