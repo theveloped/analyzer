@@ -196,6 +196,66 @@ export function meshArrays():
   return verts && faces ? { verts, faces } : null;
 }
 
+/** Project a world point to viewport pixels (for DOM overlays like PMI
+ * callouts); null when the anchor is behind the camera. */
+export function worldToScreen(p: [number, number, number]): [number, number] | null {
+  return scene?.worldToScreen(p) ?? null;
+}
+
+/** Is a world anchor hidden behind the part right now? Occludes DOM overlays. */
+export function isOccluded(p: [number, number, number]): boolean {
+  return scene?.isOccluded(p) ?? false;
+}
+
+/** BREP face ids aligned to the CURRENTLY loaded mesh — the fine field when the
+ * fine mesh is up, else the coarse preview's ids (mirrors loadBrepFaceIds). */
+async function currentBrepIds(): Promise<Uint32Array | null> {
+  const { manifest } = useStore.getState();
+  if (!manifest || !faces) return null;
+  const desc = manifest.fields.find((f) => f.id === 'subfaces')
+    ?? manifest.fields.find((f) => f.id === 'brep_faces') ?? null;
+  if (desc) {
+    const ids = await fetchField(desc) as Uint32Array;
+    if (ids.length === faces.length / 3) return ids; // aligned to loaded mesh
+  }
+  const url = manifest.coarse_mesh?.brep_faces_url;
+  return url ? fetchBin(url, Uint32Array) : null;
+}
+
+/** World-space centroid of the mesh triangles belonging to a set of BREP faces
+ * — the anchor a PMI callout leader points at. Null when nothing matches. */
+export async function pmiFaceCentroid(
+  brepIds: number[],
+): Promise<[number, number, number] | null> {
+  if (!verts || !faces || brepIds.length === 0) return null;
+  const ids = await currentBrepIds();
+  if (!ids) return null;
+  const want = new Set(brepIds);
+  let x = 0; let y = 0; let z = 0; let n = 0;
+  for (let f = 0; f < ids.length && 3 * f + 2 < faces.length; f++) {
+    if (!want.has(ids[f])) continue;
+    for (let k = 0; k < 3; k++) {
+      const vi = faces[3 * f + k] * 3;
+      x += verts[vi]; y += verts[vi + 1]; z += verts[vi + 2]; n++;
+    }
+  }
+  if (!n) return null;
+  // snap the anchor to the nearest actual surface vertex — the raw centroid of a
+  // hole/boss sits on its axis (inside the solid) and would always read occluded
+  const cx = x / n; const cy = y / n; const cz = z / n;
+  let best = -1; let bestD = Infinity;
+  for (let f = 0; f < ids.length && 3 * f + 2 < faces.length; f++) {
+    if (!want.has(ids[f])) continue;
+    for (let k = 0; k < 3; k++) {
+      const vi = faces[3 * f + k] * 3;
+      const dx = verts[vi] - cx; const dy = verts[vi + 1] - cy; const dz = verts[vi + 2] - cz;
+      const d = dx * dx + dy * dy + dz * dz;
+      if (d < bestD) { bestD = d; best = vi; }
+    }
+  }
+  return best >= 0 ? [verts[best], verts[best + 1], verts[best + 2]] : [cx, cy, cz];
+}
+
 /** Fit the whole part in view, keeping the current view direction. */
 export function fitPart() {
   scene?.fit();

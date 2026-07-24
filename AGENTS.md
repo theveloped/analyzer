@@ -108,6 +108,7 @@ python test_aag.py           # BREP adjacency graph: convexity, dihedrals, deter
 python test_import.py        # XCAF import: assemblies, colors/names, id bridging
 python test_pmi.py           # semantic PMI/GD&T extraction on NIST AP242 fixtures
 python test_pmi_roundtrip.py # AP242 GD&T export -> re-import round-trip (step_export)
+python test_pmi_edit.py      # PMI editor write-path: validate/save + PUT /pmi endpoint
 python test_features.py      # CNC feature recognition (holes family)
 python test_sheet.py         # sheet detect + K-factor unfold + DXF round-trip
 python test_tube.py          # tube/profile classification + unroll

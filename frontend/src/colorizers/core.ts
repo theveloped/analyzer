@@ -647,31 +647,30 @@ export const faceAttrsMode: ViewMode = {
   },
 };
 
-/** PMI / GD&T view: paints the BREP faces referenced by the annotation the
- * user selected in the PmiRail — the toleranced/dimensioned faces in one
- * color, its referenced datum faces in another. The selection is pushed
- * through `viewerParams` (`pmiFaces` / `pmiDatumFaces`), same channel the
- * directions plugin uses for `highlightBrep`. */
-export const PMI_ANNO_COL: RGB = [0.95, 0.61, 0.16];   // amber — toleranced faces
-export const PMI_DATUM_COL: RGB = [0.20, 0.68, 0.66];  // teal — referenced datums
+/** PMI / GD&T view: paints exactly the BREP faces the PmiRail selection asks
+ * for, each in a caller-chosen colour (toleranced amber, dimensions blue, and
+ * one distinct hue per datum). The rail pushes a full [brepFaceId, RGB] colour
+ * map plus a matching legend through `viewerParams`; every other face is left
+ * unpainted (null) so it keeps the native viewport style. */
+// PMI reuses the same golden-ratio segmentation palette as the BREP-faces lens
+// (segmentIdColor). Slots 0 and 1 are reserved for toleranced / dimensioned
+// features; datums take slots 2+ (datumColors.ts), so a control-frame's
+// referenced features never share a colour with a datum.
+export const PMI_ANNO_COL: RGB = segmentIdColor(0);   // toleranced faces
+export const PMI_DIM_COL: RGB = segmentIdColor(1);    // dimensioned faces
 
 export const pmiMode: ViewMode = {
   id: 'pmi',
   label: 'PMI / GD&T',
   async paint(ctx) {
     const { ids } = await loadBrepFaceIds(ctx);
-    const anno = new Set<number>((ctx.params.pmiFaces ?? []) as number[]);
-    const datum = new Set<number>((ctx.params.pmiDatumFaces ?? []) as number[]);
-    const base = fade(COL.ok);
-    ctx.paintFaces((f) => {
-      const b = ids[f];
-      if (datum.has(b)) return PMI_DATUM_COL;
-      if (anno.has(b)) return PMI_ANNO_COL;
-      return base;
-    });
-    const legend: LegendEntry[] = [];
-    if (anno.size) legend.push({ color: PMI_ANNO_COL, label: 'toleranced faces' });
-    if (datum.size) legend.push({ color: PMI_DATUM_COL, label: 'referenced datums' });
+    const colorMap = new Map<number, RGB>(
+      (ctx.params.pmiColorMap ?? []) as Array<[number, RGB]>);
+    ctx.paintFaces((f) => colorMap.get(ids[f]) ?? null);
+    // the coloured faces are the findings (stay full); the rest is native shell
+    ctx.setFindings((f) => colorMap.has(ids[f]));
+    const legend = ((ctx.params.pmiLegend ?? []) as Array<{ color: RGB; label: string }>)
+      .map((e) => ({ color: e.color, label: e.label }));
     const counts = ctx.params.pmiCounts as
       { tolerances: number; dimensions: number; datums: number } | undefined;
     const stats = counts
@@ -691,13 +690,12 @@ export const highlightsMode: ViewMode = {
     const tracker = new FocusTracker(ctx); // legend click -> fly to the group
     ctx.paintFaces((f) => {
       if (flagged.has(f)) { tracker.add('flagged', f); return COL.tip; }
-      tracker.add('ok', f); return COL.ok;
+      return null; // un-flagged faces keep the native viewport style
     });
     ctx.setFindings((f) => flagged.has(f));
     return {
       legend: [
         { color: COL.tip, label: `flagged by last CLI run (${ctx.highlights.length} faces)`, focus: tracker.focus('flagged') },
-        { color: COL.ok, label: 'not flagged', focus: tracker.focus('ok') },
       ],
     };
   },

@@ -4,7 +4,25 @@
 
 import * as THREE from 'three';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
+import {
+  acceleratedRaycast, computeBoundsTree, disposeBoundsTree, type MeshBVH,
+} from 'three-mesh-bvh';
 import type { RGB } from '../registry/types';
+
+// BVH-accelerate mesh raycasts (used by the occlusion test for the PMI callouts,
+// which runs per camera change — a linear raycast is O(faces) and stutters on
+// dense meshes; the bounds tree makes it O(log faces)).
+declare module 'three' {
+  interface BufferGeometry {
+    boundsTree?: MeshBVH;
+    computeBoundsTree: typeof computeBoundsTree;
+    disposeBoundsTree: typeof disposeBoundsTree;
+  }
+  interface Raycaster { firstHitOnly?: boolean; }
+}
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
 import { CameraRig } from './cameraRig';
 import { sequential } from './colormaps';
 import { computeMeasurement, type MeasureFrame, type MeasurePick } from './measure';
@@ -62,6 +80,10 @@ export class Scene3D {
   private lensHint = 1; // legacy setMeshOpacity: "this lens wants a see-through body"
   private findingMask: Uint8Array | null = null;
   private findingsVersion = 0;
+  // which faces the lens actually coloured this paint (null return = unpainted →
+  // the face keeps the native viewport material instead of a lens tint)
+  private paintedMask: Uint8Array | null = null;
+  private paintVersion = 0;
   private lensAlphaState = ''; // skip redundant full-buffer alpha rewrites
   private selectionMask: Uint8Array | null = null;
   private selectionColorAttr: THREE.BufferAttribute | null = null;
@@ -557,19 +579,26 @@ export class Scene3D {
       this.rig.halfHeightFor(position.distanceTo(center)));
   }
 
-  paintFaces(colorOf: (f: number) => RGB) {
+  /** Colour the mesh. Returning null for a face leaves it UNPAINTED — it keeps
+   * the native viewport material (solid shading / xray shell) instead of a lens
+   * tint, so a highlight lens can colour only the faces it means to. */
+  paintFaces(colorOf: (f: number) => RGB | null) {
     if (!this.colorAttr) return;
+    const painted = this.ensurePaintedMask();
     for (let f = 0; f < this.faceCount; f++) {
-      const [r, g, b] = colorOf(f);
-      for (let k = 0; k < 3; k++) this.colorAttr.setXYZ(3 * f + k, r, g, b);
+      const c = colorOf(f);
+      painted[f] = c ? 1 : 0;
+      if (c) for (let k = 0; k < 3; k++) this.colorAttr.setXYZ(3 * f + k, c[0], c[1], c[2]);
     }
     this.colorAttr.needsUpdate = true;
+    this.paintVersion++;
   }
 
   /** Per-corner colors: the GPU interpolates them across each face, so a
-   * per-vertex scalar field renders as a smooth gradient. */
+   * per-vertex scalar field renders as a smooth gradient. Paints every face. */
   paintCorners(colorOf: (f: number, k: number) => RGB) {
     if (!this.colorAttr) return;
+    this.ensurePaintedMask().fill(1);
     for (let f = 0; f < this.faceCount; f++) {
       for (let k = 0; k < 3; k++) {
         const [r, g, b] = colorOf(f, k);
@@ -577,6 +606,14 @@ export class Scene3D {
       }
     }
     this.colorAttr.needsUpdate = true;
+    this.paintVersion++;
+  }
+
+  private ensurePaintedMask(): Uint8Array {
+    if (!this.paintedMask || this.paintedMask.length !== this.faceCount) {
+      this.paintedMask = new Uint8Array(this.faceCount);
+    }
+    return this.paintedMask;
   }
 
   /** Fly the camera to look at a region from along `direction`, at a
@@ -887,6 +924,37 @@ export class Scene3D {
     return [dir.x, dir.y, dir.z];
   }
 
+  /** Project a world point to CSS pixels within the canvas container, or null
+   * if it is behind the camera. Lets DOM overlays (PMI callouts) track a 3D
+   * anchor as the camera orbits/zooms. */
+  worldToScreen(p: [number, number, number]): [number, number] | null {
+    const v = new THREE.Vector3(p[0], p[1], p[2]).project(this.camera);
+    if (v.z > 1) return null; // behind the camera / beyond the far plane
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    return [(v.x * 0.5 + 0.5) * w, (-v.y * 0.5 + 0.5) * h];
+  }
+
+  /** Is a world point hidden behind the mesh from the current camera? Lets a
+   * DOM overlay be occluded by the model like a real in-scene annotation.
+   * (Raycast against the part; a hit closer than the anchor means it's behind.) */
+  isOccluded(p: [number, number, number]): boolean {
+    if (!this.mesh) return false;
+    const geom = this.mesh.geometry as THREE.BufferGeometry;
+    if (!geom.boundsTree) geom.computeBoundsTree(); // lazy BVH, first query only
+    const origin = this.camera.position;
+    const dir = new THREE.Vector3(p[0], p[1], p[2]).sub(origin);
+    const dist = dir.length();
+    if (dist < 1e-6) return false;
+    this.raycaster.set(origin, dir.multiplyScalar(1 / dist));
+    const far = this.raycaster.far;
+    this.raycaster.firstHitOnly = true; // BVH: stop at the nearest hit
+    this.raycaster.far = dist * 0.997;  // ignore the anchor's own surface
+    const hit = this.raycaster.intersectObject(this.mesh).length > 0;
+    this.raycaster.far = far;
+    return hit;
+  }
+
   /** Which faces the active lens counts as findings (null = no notion).
    * Reset by the controller on every repaint; drives "findings only". */
   setFindings(isFinding: ((f: number) => boolean) | null) {
@@ -967,12 +1035,15 @@ export class Scene3D {
   private refreshLensAlpha() {
     if (!this.colorAttr) return;
     const mask = this.findingMask;
-    const state = mask ? `mask:${this.findingsVersion}` : 'none';
+    const painted = this.paintedMask;
+    const state = `p${this.paintVersion}:${mask ? `m${this.findingsVersion}` : 'none'}`;
     if (state === this.lensAlphaState) return;
     this.lensAlphaState = state;
     const colors = this.colorAttr.array as Float32Array;
     for (let f = 0; f < this.faceCount; f++) {
-      const alpha = mask && mask[f] ? 1 : 0;
+      // 0.0 = unpainted (native base) · 0.5 = painted non-finding (uLensOpacity)
+      // · 1.0 = finding (uFindingsOpacity). See patchLensOpacity.
+      const alpha = painted && !painted[f] ? 0 : (mask && mask[f] ? 1 : 0.5);
       colors[12 * f + 3] = alpha;
       colors[12 * f + 7] = alpha;
       colors[12 * f + 11] = alpha;

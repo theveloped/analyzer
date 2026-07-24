@@ -1,44 +1,99 @@
 import clsx from 'clsx';
-import { Download, Frame } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { Download, Frame, Pencil } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import type { PmiData, PmiDatum, PmiDimension, PmiTolerance } from '../../api/types';
 import { useStore } from '../../state/store';
 import { lensByMode } from '../lenses';
 import { DimensionCallout, ToleranceFrame } from './ControlFrame';
+import { datumColorCss } from './datumColors';
+import { PmiEditor } from './PmiEditor';
+import { usePmiEdit } from './pmiEditStore';
+import { groupPmi, isDatumReferenced, type PmiGroups, type PmiPattern } from './pmiGroups';
+import { buildPmiView, type PmiSelection } from './pmiView';
 
 const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 const sectionCls = 'mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400';
 const PROCESS = lensByMode('pmi')!.processId;
 
-const rowCls = (active: boolean) => clsx(
+const rowCls = (active: boolean, dimmed: boolean) => clsx(
   'w-full rounded-lg border p-2 text-left transition',
   active
     ? 'border-blue-500/40 bg-blue-500/5'
     : 'border-transparent hover:bg-zinc-950/5 dark:hover:bg-white/5',
+  dimmed && 'opacity-40',
 );
 
-/** The PMI / GD&T panel: lists the semantic dimensions, tolerances and datums
- * from pmi.json as control-frame chips. Clicking an entry pushes its face set
- * (and, for a tolerance, its referenced datum faces) into viewerParams, which
- * the pmiMode painter reads — toleranced faces amber, datum faces teal. */
+/** the active rail scope: everything, a single datum's network, the patterns,
+ * or the datum-free (form) frames. `datum:A` etc. carry the letter. */
+type Scope = 'all' | 'pattern' | 'nodatum' | `datum:${string}`;
+/** an isolated entity clicked in the panel (overrides the scope) */
+type SelEntity =
+  | { kind: 'tolerance' | 'dimension'; id: number }
+  | { kind: 'pattern'; key: string };
+
+/** The PMI / GD&T panel (mockup `3a`): scope chips, then the semantic frames
+ * grouped into datum-referenced control frames, collapsed patterns, datum-free
+ * form tolerances, and a toggleable dimensions layer. A scope or one clicked
+ * entry drives the viewer through `buildPmiView` — per-datum face colours,
+ * toleranced amber, dimensions blue, plus the floating callouts. */
 export function PmiRail() {
   const partId = useStore((s) => s.partId);
   const pmiUrl = useStore((s) => s.manifest?.pmi_url);
   const pmiMeta = useStore((s) => s.manifest?.pmi);
+  const manifestVersion = useStore((s) => s.manifestVersion);
   const setParam = useStore((s) => s.setViewerParam);
+  const editing = usePmiEdit((s) => s.active);
 
   const [pmi, setPmi] = useState<PmiData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<number | null>(null);
+  const [scope, setScope] = useState<Scope>('all');
+  const [sel, setSel] = useState<SelEntity | null>(null);
   const [showRefs, setShowRefs] = useState(false);
+  const [showDims, setShowDims] = useState(false);
 
-  // fetch pmi.json per part; reset the highlight params on every part change
+  const groups = useMemo(() => groupPmi(pmi), [pmi]);
+
+  const datumWithGeom = useMemo(() => {
+    const m = new Map<string, PmiDatum>();
+    for (const d of pmi?.datums ?? []) if (d.name) m.set(d.name, d);
+    return m;
+  }, [pmi]);
+  const datumLetters = useMemo(() => Array.from(new Set<string>([
+    ...datumWithGeom.keys(),
+    ...(pmi?.tolerances ?? []).flatMap((t) => t.datum_names).filter(Boolean),
+  ])).sort(), [datumWithGeom, pmi]);
+
+  function selectScope(s: Scope) { setScope(s); setSel(null); }
+  function toggleEntity(e: SelEntity) {
+    setSel((cur) => {
+      const same = cur && cur.kind === e.kind
+        && ('id' in e ? 'id' in cur && cur.id === e.id : 'key' in cur && cur.key === e.key);
+      return same ? null : e;
+    });
+  }
+
+  // push the computed view (colour map + callouts + legend) to the painter
+  useEffect(() => {
+    if (!pmi) return;
+    const selection: PmiSelection = sel
+      ? (sel.kind === 'pattern' ? { kind: 'pattern', key: sel.key } : { kind: sel.kind, id: sel.id })
+      : { kind: 'scope', scope };
+    const view = buildPmiView(pmi, groups, selection, showDims);
+    setParam(PROCESS, 'pmiColorMap', view.colorMap);
+    setParam(PROCESS, 'pmiCallouts', view.callouts);
+    setParam(PROCESS, 'pmiLegend', view.legend);
+  }, [pmi, groups, scope, sel, showDims, setParam]);
+
+  // fetch pmi.json per part; reset selection + params on every part change
   useEffect(() => {
     setPmi(null);
     setError(null);
-    setSelected(null);
-    setParam(PROCESS, 'pmiFaces', []);
-    setParam(PROCESS, 'pmiDatumFaces', []);
+    setSel(null);
+    setScope('all');
+    setShowDims(false);
+    setParam(PROCESS, 'pmiColorMap', []);
+    setParam(PROCESS, 'pmiCallouts', []);
+    setParam(PROCESS, 'pmiLegend', []);
     setParam(PROCESS, 'pmiCounts', undefined);
     if (!pmiUrl) return;
     let live = true;
@@ -55,46 +110,33 @@ export function PmiRail() {
       })
       .catch(() => live && setError('could not load PMI'));
     return () => { live = false; };
+    // manifestVersion bumps after a save (refreshManifest) → re-read pmi.json
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [partId, pmiUrl]);
-
-  function highlight(id: number, faces: number[], datumFaces: number[]) {
-    if (selected === id) {
-      setSelected(null);
-      setParam(PROCESS, 'pmiFaces', []);
-      setParam(PROCESS, 'pmiDatumFaces', []);
-      return;
-    }
-    setSelected(id);
-    setParam(PROCESS, 'pmiFaces', faces);
-    setParam(PROCESS, 'pmiDatumFaces', datumFaces);
-  }
-
-  function datumFacesFor(t: PmiTolerance): number[] {
-    if (!pmi) return [];
-    const names = new Set(t.datum_names);
-    const out: number[] = [];
-    for (const d of pmi.datums) if (d.name && names.has(d.name)) out.push(...d.face_ids);
-    return out;
-  }
+  }, [partId, pmiUrl, manifestVersion]);
 
   const header = (
     <div>
       <div className="flex items-center gap-2">
         <Frame className="size-4 text-blue-600 dark:text-blue-400" />
         <h2 className="text-sm/6 font-semibold text-zinc-950 dark:text-white">PMI / GD&T</h2>
+        <button
+          type="button"
+          onClick={() => usePmiEdit.getState().open(pmi)}
+          className="ml-auto inline-flex items-center gap-1 rounded-md border border-zinc-500/40 px-2 py-1 text-xs font-medium text-zinc-600 transition hover:bg-zinc-950/5 dark:text-zinc-300 dark:hover:bg-white/5"
+          title="Add, edit or remove semantic GD&T on this part"
+        >
+          <Pencil className="size-3.5" /> Edit
+        </button>
       </div>
       <p className={clsx('mt-1', hintCls)}>
-        Semantic tolerances, dimensions and datums from the STEP. Click an entry to
-        highlight its faces — <span style={{ color: 'rgb(242,155,41)' }}>toleranced</span> and{' '}
-        <span style={{ color: 'rgb(51,173,168)' }}>referenced datums</span>.
+        Semantic frames exactly as authored. Scope the view, or click one frame to
+        isolate it. Each datum has its own colour, shown on the model and in the frame.
       </p>
     </div>
   );
 
   const container = 'flex h-full w-72 shrink-0 flex-col gap-4 overflow-auto border-l border-zinc-950/5 bg-white p-4 dark:border-white/10 dark:bg-zinc-900';
 
-  // AP242 export button + degraded/round-trip warnings surfaced from the manifest
   const degraded = !!(pmi?.degraded || pmiMeta?.degraded);
   const warnings = (pmi?.warnings ?? pmiMeta?.warnings ?? []);
   const statusBlock = (
@@ -127,11 +169,16 @@ export function PmiRail() {
     </>
   );
 
+  if (editing) return <PmiEditor onDone={() => usePmiEdit.getState().close()} />;
+
   if (!pmiUrl) {
     return (
       <div className={container}>
         {header}
-        <p className={hintCls}>No PMI in this part — import a STEP (AP242) that carries semantic GD&T.</p>
+        <p className={hintCls}>
+          No PMI in this part yet. Use <b>Edit</b> to author semantic GD&T — even on an
+          AP203/AP214 import — then Export AP242.
+        </p>
       </div>
     );
   }
@@ -140,20 +187,26 @@ export function PmiRail() {
 
   const empty = !pmi.tolerances.length && !pmi.dimensions.length && !pmi.datums.length;
 
-  // datum letters: those with geometry (clickable) unioned with letters that
-  // are only referenced by a control frame (OCCT gave no geometry — greyed).
-  const datumWithGeom = new Map<string, PmiDatum>();
-  for (const d of pmi.datums) if (d.name) datumWithGeom.set(d.name, d);
-  const datumLetters = Array.from(new Set<string>([
-    ...datumWithGeom.keys(),
-    ...pmi.tolerances.flatMap((t) => t.datum_names).filter(Boolean),
-  ])).sort();
-
-  // split dimensions: toleranced sizes vs value-less reference/location dims
-  const hasMagnitude = (d: PmiDimension) =>
-    !!d.value || d.upper_tolerance != null || d.lower_tolerance != null;
-  const sizes = pmi.dimensions.filter(hasMagnitude);
-  const refDims = pmi.dimensions.filter((d) => !hasMagnitude(d));
+  // whether a card belongs to the active scope (out-of-scope cards dim). A
+  // single isolated entity never dims the others.
+  const inScope = (t: PmiTolerance): boolean => {
+    if (sel) return true;
+    switch (scope) {
+      case 'all': return true;
+      case 'pattern': return groups.patterns.some((p) => p.tolerances.includes(t));
+      case 'nodatum': return !isDatumReferenced(t);
+      default: return t.datum_names.includes(scope.slice('datum:'.length));
+    }
+  };
+  const patternInScope = (p: PmiPattern): boolean => {
+    if (sel) return true;
+    if (scope === 'all' || scope === 'pattern') return true;
+    if (scope === 'nodatum') return !isDatumReferenced(p.sample);
+    return p.sample.datum_names.includes(scope.slice('datum:'.length));
+  };
+  const isTol = (id: number) => sel?.kind === 'tolerance' && sel.id === id;
+  const isPat = (key: string) => sel?.kind === 'pattern' && sel.key === key;
+  const isDim = (id: number) => sel?.kind === 'dimension' && sel.id === id;
 
   return (
     <div className={container}>
@@ -162,51 +215,26 @@ export function PmiRail() {
 
       {empty && !degraded && <p className={hintCls}>No semantic PMI entities found in this part.</p>}
 
-      {datumLetters.length > 0 && (
-        <div>
-          <div className={sectionCls}>Datums</div>
-          <div className="flex flex-wrap gap-1.5">
-            {datumLetters.map((letter) => {
-              const d = datumWithGeom.get(letter);
-              const clickable = !!d && d.face_ids.length > 0;
-              return (
-                <button
-                  key={letter}
-                  type="button"
-                  disabled={!clickable}
-                  onClick={() => d && highlight(d.id, [], d.face_ids)}
-                  title={clickable ? 'Highlight datum faces'
-                    : 'datum geometry not readable — OCCT skips set-representation datum features'}
-                  className={clsx(
-                    'inline-flex size-7 items-center justify-center rounded border text-sm font-semibold transition',
-                    clickable && d && selected === d.id
-                      ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
-                      : clickable
-                        ? 'border-zinc-500/50 text-zinc-700 hover:bg-zinc-950/5 dark:text-zinc-200 dark:hover:bg-white/5'
-                        : 'border-dashed border-zinc-300 text-zinc-400 dark:border-zinc-700 dark:text-zinc-600',
-                  )}
-                >
-                  {letter}
-                </button>
-              );
-            })}
-          </div>
-          {datumLetters.some((l) => !datumWithGeom.get(l)?.face_ids.length) && (
-            <p className={clsx('mt-1', hintCls)}>Dashed = referenced datum whose geometry this STEP doesn’t expose.</p>
-          )}
-        </div>
+      {!empty && (
+        <ScopeChips
+          scope={scope}
+          datumLetters={datumLetters}
+          datumWithGeom={datumWithGeom}
+          groups={groups}
+          onScope={selectScope}
+        />
       )}
 
-      {pmi.tolerances.length > 0 && (
+      {groups.datumReferenced.length > 0 && (
         <div>
-          <div className={sectionCls}>Tolerances</div>
+          <div className={sectionCls}>Control frames · datum-referenced</div>
           <div className="flex flex-col gap-1.5">
-            {pmi.tolerances.map((t: PmiTolerance) => (
+            {groups.datumReferenced.map((t) => (
               <button
                 key={t.id}
                 type="button"
-                onClick={() => highlight(t.id, t.face_ids, datumFacesFor(t))}
-                className={rowCls(selected === t.id)}
+                onClick={() => toggleEntity({ kind: 'tolerance', id: t.id })}
+                className={rowCls(isTol(t.id), !inScope(t))}
               >
                 <ToleranceFrame t={t} />
                 {t.face_ids.length === 0 && (
@@ -218,44 +246,105 @@ export function PmiRail() {
         </div>
       )}
 
-      {sizes.length > 0 && (
+      {groups.patterns.length > 0 && (
         <div>
-          <div className={sectionCls}>Dimensions</div>
-          <div className="flex flex-col gap-1">
-            {sizes.map((d: PmiDimension) => (
+          <div className={sectionCls}>Patterns</div>
+          <div className="flex flex-col gap-1.5">
+            {groups.patterns.map((p) => (
               <button
-                key={d.id}
+                key={p.key}
                 type="button"
-                onClick={() => highlight(d.id,
-                  [...d.face_ids, ...(d.secondary_face_ids ?? [])], [])}
-                className={rowCls(selected === d.id)}
+                onClick={() => toggleEntity({ kind: 'pattern', key: p.key })}
+                className={clsx(rowCls(isPat(p.key), !patternInScope(p)), 'flex items-center gap-2')}
               >
-                <DimensionCallout d={d} />
+                <span className="shrink-0 font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400">
+                  {p.tolerances.length}×
+                </span>
+                <ToleranceFrame t={p.sample} />
+                <span className="ml-auto shrink-0 text-[10px] text-zinc-400">
+                  {p.faceIds.length} face{p.faceIds.length === 1 ? '' : 's'}
+                </span>
               </button>
             ))}
           </div>
         </div>
       )}
 
-      {refDims.length > 0 && (
+      {groups.noDatum.length > 0 && (
+        <div>
+          <div className={sectionCls}>No datum reference</div>
+          <div className="flex flex-col gap-1.5">
+            {groups.noDatum.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => toggleEntity({ kind: 'tolerance', id: t.id })}
+                className={clsx(rowCls(isTol(t.id), !inScope(t)),
+                  'border-l-[3px] border-l-slate-400/70 dark:border-l-slate-500/70')}
+              >
+                <ToleranceFrame t={t} />
+                <div className="mt-0.5 text-[10px] text-zinc-400">form · no reference</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {(groups.sizes.length > 0 || pmi.dimensions.length > 0) && (
+        <div>
+          <div className="mb-1.5 flex items-center justify-between">
+            <div className={sectionCls.replace('mb-1.5 ', '')}>Dimensions</div>
+            <button
+              type="button"
+              onClick={() => setShowDims((v) => !v)}
+              className={clsx(
+                'flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-medium transition',
+                showDims
+                  ? 'border-blue-500/40 bg-blue-500/10 text-blue-700 dark:text-blue-300'
+                  : 'border-zinc-500/40 text-zinc-500 hover:bg-zinc-950/5 dark:text-zinc-400 dark:hover:bg-white/5',
+              )}
+              title="Tint the dimensioned faces on the model (blue)"
+            >
+              <span className={clsx('inline-block size-3 rounded-sm border',
+                showDims ? 'border-blue-500 bg-blue-500' : 'border-zinc-400')} />
+              Show on model
+            </button>
+          </div>
+          {groups.sizes.length > 0 && (
+            <div className="flex flex-col gap-1">
+              {groups.sizes.map((d: PmiDimension) => (
+                <button
+                  key={d.id}
+                  type="button"
+                  onClick={() => toggleEntity({ kind: 'dimension', id: d.id })}
+                  className={rowCls(isDim(d.id), false)}
+                >
+                  <DimensionCallout d={d} />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {groups.refDims.length > 0 && (
         <div>
           <button
             type="button"
             onClick={() => setShowRefs((v) => !v)}
             className="flex w-full items-center justify-between text-xs/5 font-medium text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white"
           >
-            <span>Reference / location dimensions ({refDims.length})</span>
+            <span>Reference / location dimensions ({groups.refDims.length})</span>
             <span>{showRefs ? '▾' : '▸'}</span>
           </button>
           {showRefs && (
             <div className="mt-1.5 flex flex-col gap-1">
-              {refDims.map((d: PmiDimension) => (
+              {groups.refDims.map((d: PmiDimension) => (
                 <button
                   key={d.id}
                   type="button"
-                  onClick={() => highlight(d.id,
-                    [...d.face_ids, ...(d.secondary_face_ids ?? [])], [])}
-                  className={rowCls(selected === d.id)}
+                  onClick={() => toggleEntity({ kind: 'dimension', id: d.id })}
+                  className={rowCls(isDim(d.id), false)}
                   title="Basic/reference location — controlled by a tolerance, no independent value"
                 >
                   <span className="text-sm text-zinc-500 dark:text-zinc-400">
@@ -267,6 +356,67 @@ export function PmiRail() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+const chipCls = (active: boolean, tone: 'neutral' | 'indigo' | 'slate') => clsx(
+  'inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition',
+  active
+    ? {
+        neutral: 'border-zinc-900 bg-zinc-900 text-white dark:border-white dark:bg-white dark:text-zinc-900',
+        indigo: 'border-indigo-500 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300',
+        slate: 'border-slate-500 bg-slate-500/10 text-slate-700 dark:text-slate-300',
+      }[tone]
+    : 'border-zinc-500/40 text-zinc-600 hover:bg-zinc-950/5 dark:text-zinc-300 dark:hover:bg-white/5',
+);
+
+/** the scope selector row: All · one chip per datum (in its colour) · Pattern · No datum. */
+function ScopeChips({ scope, datumLetters, datumWithGeom, groups, onScope }: {
+  scope: Scope;
+  datumLetters: string[];
+  datumWithGeom: Map<string, PmiDatum>;
+  groups: PmiGroups;
+  onScope: (s: Scope) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className={sectionCls}>Scope</div>
+      <div className="flex flex-wrap gap-1.5">
+        <button type="button" onClick={() => onScope('all')} className={chipCls(scope === 'all', 'neutral')}>
+          All
+        </button>
+        {datumLetters.map((letter) => {
+          const hasGeom = !!datumWithGeom.get(letter)?.face_ids.length;
+          const active = scope === `datum:${letter}`;
+          return (
+            <button
+              key={letter}
+              type="button"
+              onClick={() => onScope(`datum:${letter}`)}
+              style={active
+                ? { borderColor: datumColorCss(letter), backgroundColor: datumColorCss(letter, 0.12) }
+                : { borderColor: datumColorCss(letter, 0.5) }}
+              className="inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition hover:bg-zinc-950/5 dark:hover:bg-white/5"
+              title={hasGeom ? `Datum ${letter} and its referencing frames`
+                : `Datum ${letter} (referenced only — geometry not exposed by this STEP)`}
+            >
+              <span className={clsx('font-mono', !hasGeom && 'opacity-60')}
+                style={{ color: datumColorCss(letter) }}>{letter}</span>
+            </button>
+          );
+        })}
+        {groups.patterns.length > 0 && (
+          <button type="button" onClick={() => onScope('pattern')} className={chipCls(scope === 'pattern', 'indigo')}>
+            ⌖ Pattern
+          </button>
+        )}
+        {groups.noDatum.length > 0 && (
+          <button type="button" onClick={() => onScope('nodatum')} className={chipCls(scope === 'nodatum', 'slate')}>
+            ∅ No datum
+          </button>
+        )}
+      </div>
     </div>
   );
 }
