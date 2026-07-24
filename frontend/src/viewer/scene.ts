@@ -84,6 +84,7 @@ export class Scene3D {
   // the face keeps the native viewport material instead of a lens tint)
   private paintedMask: Uint8Array | null = null;
   private paintVersion = 0;
+  private pmiOcclMesh: THREE.Mesh | null = null; // coarse proxy for PMI occlusion
   private lensAlphaState = ''; // skip redundant full-buffer alpha rewrites
   private selectionMask: Uint8Array | null = null;
   private selectionColorAttr: THREE.BufferAttribute | null = null;
@@ -939,8 +940,12 @@ export class Scene3D {
    * DOM overlay be occluded by the model like a real in-scene annotation.
    * (Raycast against the part; a hit closer than the anchor means it's behind.) */
   isOccluded(p: [number, number, number]): boolean {
-    if (!this.mesh) return false;
-    const geom = this.mesh.geometry as THREE.BufferGeometry;
+    // raycast the COARSE occlusion proxy (set by the controller) — the PMI
+    // callouts don't need fine-mesh precision, and a ~10k-face BVH is far
+    // cheaper to build and query than the multi-million-face display mesh
+    const target = this.pmiOcclMesh ?? this.mesh;
+    if (!target) return false;
+    const geom = target.geometry as THREE.BufferGeometry;
     if (!geom.boundsTree) geom.computeBoundsTree(); // lazy BVH, first query only
     const origin = this.camera.position;
     const dir = new THREE.Vector3(p[0], p[1], p[2]).sub(origin);
@@ -950,9 +955,20 @@ export class Scene3D {
     const far = this.raycaster.far;
     this.raycaster.firstHitOnly = true; // BVH: stop at the nearest hit
     this.raycaster.far = dist * 0.997;  // ignore the anchor's own surface
-    const hit = this.raycaster.intersectObject(this.mesh).length > 0;
+    const hit = this.raycaster.intersectObject(target).length > 0;
     this.raycaster.far = far;
     return hit;
+  }
+
+  /** Set the coarse mesh used for PMI callout occlusion (indexed geometry from
+   * the controller). Not added to the scene — it exists only to be raycast. */
+  setPmiOcclusion(verts: Float32Array, faces: Uint32Array) {
+    this.pmiOcclMesh?.geometry.disposeBoundsTree?.();
+    this.pmiOcclMesh?.geometry.dispose();
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+    geom.setIndex(new THREE.BufferAttribute(faces, 1));
+    this.pmiOcclMesh = new THREE.Mesh(geom);
   }
 
   /** Which faces the active lens counts as findings (null = no notion).
