@@ -1,4 +1,5 @@
 import type { PmiDimension, PmiTolerance } from '../../api/types';
+import { datumColorCss } from './datumColors';
 
 /**
  * Feature-control-frame + FOS rendering for the PMI panel. Glyphs are the
@@ -63,7 +64,9 @@ export function ToleranceFrame({ t }: { t: PmiTolerance }) {
           {dia}{val}{mat}{zone}
         </span>
         {datumRefs.map((r, i) => (
-          <span key={i} className={cell} title={`datum ${r.name}${r.modifiers?.length ? ' ' + r.modifiers.join(',') : ''}`}>
+          <span key={i} className={`${cell} font-semibold text-white`}
+            style={{ backgroundColor: datumColorCss(r.name) }}
+            title={`datum ${r.name}${r.modifiers?.length ? ' ' + r.modifiers.join(',') : ''}`}>
             {r.name}{modGlyphs(r.modifiers)}
           </span>
         ))}

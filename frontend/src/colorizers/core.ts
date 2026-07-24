@@ -647,13 +647,12 @@ export const faceAttrsMode: ViewMode = {
   },
 };
 
-/** PMI / GD&T view: paints the BREP faces referenced by the annotation the
- * user selected in the PmiRail — the toleranced/dimensioned faces in one
- * color, its referenced datum faces in another. The selection is pushed
- * through `viewerParams` (`pmiFaces` / `pmiDatumFaces`), same channel the
- * directions plugin uses for `highlightBrep`. */
+/** PMI / GD&T view: paints exactly the BREP faces the PmiRail selection asks
+ * for, each in a caller-chosen colour (toleranced amber, dimensions blue, and
+ * one distinct hue per datum). The rail pushes a full [brepFaceId, RGB] colour
+ * map plus a matching legend through `viewerParams`; every other face is left
+ * unpainted (null) so it keeps the native viewport style. */
 export const PMI_ANNO_COL: RGB = [0.95, 0.61, 0.16];   // amber — toleranced faces
-export const PMI_DATUM_COL: RGB = [0.20, 0.68, 0.66];  // teal — referenced datums
 export const PMI_DIM_COL: RGB = [0.30, 0.52, 0.90];    // blue — dimensioned faces
 
 export const pmiMode: ViewMode = {
@@ -661,27 +660,13 @@ export const pmiMode: ViewMode = {
   label: 'PMI / GD&T',
   async paint(ctx) {
     const { ids } = await loadBrepFaceIds(ctx);
-    const anno = new Set<number>((ctx.params.pmiFaces ?? []) as number[]);
-    const datum = new Set<number>((ctx.params.pmiDatumFaces ?? []) as number[]);
-    // dimensions are a separate toggleable layer (the rail's "Show on model")
-    const dim = new Set<number>((ctx.params.pmiDimFaces ?? []) as number[]);
-    ctx.paintFaces((f) => {
-      const b = ids[f];
-      if (datum.has(b)) return PMI_DATUM_COL;
-      if (anno.has(b)) return PMI_ANNO_COL;
-      if (dim.has(b)) return PMI_DIM_COL;
-      return null; // un-annotated faces keep the native viewport style
-    });
-    // the coloured faces are the findings, so they stay full while the "lens
-    // colours" slider can dial everything else (there is nothing else to dial)
-    ctx.setFindings((f) => {
-      const b = ids[f];
-      return datum.has(b) || anno.has(b) || dim.has(b);
-    });
-    const legend: LegendEntry[] = [];
-    if (anno.size) legend.push({ color: PMI_ANNO_COL, label: 'toleranced faces' });
-    if (datum.size) legend.push({ color: PMI_DATUM_COL, label: 'referenced datums' });
-    if (dim.size) legend.push({ color: PMI_DIM_COL, label: 'dimensioned faces' });
+    const colorMap = new Map<number, RGB>(
+      (ctx.params.pmiColorMap ?? []) as Array<[number, RGB]>);
+    ctx.paintFaces((f) => colorMap.get(ids[f]) ?? null);
+    // the coloured faces are the findings (stay full); the rest is native shell
+    ctx.setFindings((f) => colorMap.has(ids[f]));
+    const legend = ((ctx.params.pmiLegend ?? []) as Array<{ color: RGB; label: string }>)
+      .map((e) => ({ color: e.color, label: e.label }));
     const counts = ctx.params.pmiCounts as
       { tolerances: number; dimensions: number; datums: number } | undefined;
     const stats = counts

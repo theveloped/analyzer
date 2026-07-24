@@ -4,7 +4,25 @@
 
 import * as THREE from 'three';
 import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
+import {
+  acceleratedRaycast, computeBoundsTree, disposeBoundsTree, type MeshBVH,
+} from 'three-mesh-bvh';
 import type { RGB } from '../registry/types';
+
+// BVH-accelerate mesh raycasts (used by the occlusion test for the PMI callouts,
+// which runs per camera change — a linear raycast is O(faces) and stutters on
+// dense meshes; the bounds tree makes it O(log faces)).
+declare module 'three' {
+  interface BufferGeometry {
+    boundsTree?: MeshBVH;
+    computeBoundsTree: typeof computeBoundsTree;
+    disposeBoundsTree: typeof disposeBoundsTree;
+  }
+  interface Raycaster { firstHitOnly?: boolean; }
+}
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
 import { CameraRig } from './cameraRig';
 import { sequential } from './colormaps';
 import { computeMeasurement, type MeasureFrame, type MeasurePick } from './measure';
@@ -922,13 +940,16 @@ export class Scene3D {
    * (Raycast against the part; a hit closer than the anchor means it's behind.) */
   isOccluded(p: [number, number, number]): boolean {
     if (!this.mesh) return false;
+    const geom = this.mesh.geometry as THREE.BufferGeometry;
+    if (!geom.boundsTree) geom.computeBoundsTree(); // lazy BVH, first query only
     const origin = this.camera.position;
     const dir = new THREE.Vector3(p[0], p[1], p[2]).sub(origin);
     const dist = dir.length();
     if (dist < 1e-6) return false;
     this.raycaster.set(origin, dir.multiplyScalar(1 / dist));
     const far = this.raycaster.far;
-    this.raycaster.far = dist * 0.997; // ignore the anchor's own surface
+    this.raycaster.firstHitOnly = true; // BVH: stop at the nearest hit
+    this.raycaster.far = dist * 0.997;  // ignore the anchor's own surface
     const hit = this.raycaster.intersectObject(this.mesh).length > 0;
     this.raycaster.far = far;
     return hit;
