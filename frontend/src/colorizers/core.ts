@@ -701,13 +701,12 @@ export const highlightsMode: ViewMode = {
     const tracker = new FocusTracker(ctx); // legend click -> fly to the group
     ctx.paintFaces((f) => {
       if (flagged.has(f)) { tracker.add('flagged', f); return COL.tip; }
-      tracker.add('ok', f); return COL.ok;
+      return null; // un-flagged faces keep the native viewport style
     });
     ctx.setFindings((f) => flagged.has(f));
     return {
       legend: [
         { color: COL.tip, label: `flagged by last CLI run (${ctx.highlights.length} faces)`, focus: tracker.focus('flagged') },
-        { color: COL.ok, label: 'not flagged', focus: tracker.focus('ok') },
       ],
     };
   },
