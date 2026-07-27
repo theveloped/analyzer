@@ -105,6 +105,7 @@ if __name__ == "__main__":
     parser_precompute.add_argument("--clearances", help="cylinder radii for holder/shank clearance fields", nargs="*", type=float, default=[])
     parser_precompute.add_argument("--engine", help="field computation engine", choices=["zmap", "voxel"], default="zmap")
     parser_precompute.add_argument("--window", help="gap accuracy window: gaps up to this are Euclidean-exact (zmap engine)", type=float, default=0.3)
+    parser_precompute.add_argument("--workers", help="parallel worker processes for per-tip fields (1 = in-process)", type=int, default=min(4, os.cpu_count() or 1))
 
     # Create the parser for the "compose" command
     parser_compose = subparsers.add_parser("compose", help="evaluate a full tool assembly from precomputed fields")
@@ -470,7 +471,7 @@ if __name__ == "__main__":
 
     elif args.command == "precompute":
         logger.info("Precompute height maps and tool fields")
-        from zmap import DirectionCache
+        from zmap import DirectionCache, _sreq_key, _tip_key
 
         verts = np.load(os.path.join(args.directory, FINE_VERTS_FILE))
         faces = np.load(os.path.join(args.directory, FINE_FACES_FILE))
@@ -483,15 +484,32 @@ if __name__ == "__main__":
         for direction_index in args.directions:
             logger.info(f"Direction {direction_index}")
             cache = DirectionCache(args.directory, direction_index, verts=verts, faces=faces, pixel=args.pixel, window=args.window, engine=args.engine)
-            for diameter, corner_radius in tips:
-                cache.tip_gap(diameter, corner_radius)
             for radius in args.clearances:
                 cache.clearance(radius)
-            if args.engine == "zmap":
-                # tip-aware holder stickout fields per (tip, cylinder radius)
-                for diameter, corner_radius in tips:
-                    for radius in args.clearances:
-                        cache.tip_min_stickout(diameter, corner_radius, radius)
+            todo = [(d, rc) for d, rc in tips
+                    if any(k not in cache._fields for k in
+                           ([_tip_key(d, rc)] + [_sreq_key(d, rc, r) for r in args.clearances]
+                            if args.engine == "zmap" else [_tip_key(d, rc)]))]
+            if args.engine == "zmap" and args.workers > 1 and len(todo) > 1:
+                # per-tip fields are independent: farm them out and merge once
+                from concurrent.futures import ProcessPoolExecutor
+                from multiprocessing import get_context
+                from zmap import precompute_tip_worker
+                jobs = [(args.directory, direction_index, args.pixel, args.window,
+                         diameter, corner_radius, list(args.clearances))
+                        for diameter, corner_radius in todo]
+                workers = min(args.workers, len(jobs))
+                logger.info(f"Computing {len(jobs)} tip field sets on {workers} workers")
+                with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as pool:
+                    for fields in pool.map(precompute_tip_worker, jobs):
+                        cache._fields.update(fields)
+                cache._save()
+            else:
+                for diameter, corner_radius in todo:
+                    cache.tip_gap(diameter, corner_radius)
+                    if args.engine == "zmap":
+                        # tip-aware holder stickout: all radii in one sweep
+                        cache.tip_min_stickouts(diameter, corner_radius, args.clearances)
 
     elif args.command == "compose":
         logger.info("Compose tool accessibility from precomputed fields")

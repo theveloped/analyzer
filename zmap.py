@@ -384,11 +384,12 @@ def _contact_offsets(diameter, corner_radius, pixel, max_rings=24, max_angles=48
 
 
 @log_execution_time
-def tip_aware_min_stickout(tip_map, clear_map, diameter, corner_radius, pixel,
-                           fx, fy, height):
+def tip_aware_min_stickout_multi(tip_map, clear_maps, diameter, corner_radius,
+                                 pixel, fx, fy, height):
     """
-    Per-vertex minimal stickout for ONE holder cylinder (measured from the
-    tool tip), coupling the tip geometry with the holder:
+    Per-vertex minimal stickout for holder cylinders (measured from the tool
+    tip), coupling the tip geometry with the holder - one result per entry
+    in `clear_maps`, all computed in a single offset sweep:
 
     For a vertex v the tool can touch it with its axis at any offset o inside
     the tool silhouette - bottom contact through the tip profile, flank
@@ -410,29 +411,65 @@ def tip_aware_min_stickout(tip_map, clear_map, diameter, corner_radius, pixel,
     Takes FRACTIONAL pixel coordinates and searches from the 2x2 pixel
     bracket around each vertex (min over the four corners): floor-indexed
     starts alternate between the two columns straddling a vertical wall's
-    height cliff, speckling the field vertex-by-vertex. Axis candidates that
-    fall outside the map clamp to the border; with the rendered margin those
-    are exterior-air columns whose dilated values only ever err conservative
-    (over-required stickout for axes far outside the silhouette).
+    height cliff, speckling the field vertex-by-vertex.
+
+    The sweep is memory-bandwidth bound, so the maps are packed into one
+    interleaved float32 array ([clear_0..clear_{R-1}, tip] per pixel) padded
+    with edge replication (same values the previous per-offset clamp read):
+    each offset then costs one row gather plus a few fused in-place passes,
+    and all holder radii for a tip share the gather and feasibility work.
     """
-    eps = 1.5 * pixel
+    eps = np.float32(1.5 * pixel)
+    n_r = len(clear_maps)
+    map_h, map_w = tip_map.shape
+    pad = int(np.ceil(diameter / (2.0 * pixel))) + 1
+    wp = map_w + 2 * pad
 
-    ix, iy = _bracket_corners(fx, fy, tip_map.shape)  # (4, V)
+    packed = np.empty(((map_h + 2 * pad) * wp, n_r + 1), np.float32)
+    for ci, cm in enumerate(clear_maps):
+        packed[:, ci] = np.pad(cm, pad, mode="edge").ravel()
+    packed[:, n_r] = np.pad(tip_map, pad, mode="edge").ravel()
 
-    best = np.full(ix.shape, np.inf)
+    ix, iy = _bracket_corners(fx, fy, (map_h, map_w))  # (4, V)
+    base = ((iy + pad).astype(np.int64) * wp + (ix + pad))
+    h32 = height.astype(np.float32)
+
+    best = np.full((n_r,) + base.shape, np.inf, np.float32)
+    idx = np.empty(base.shape, np.int64)
+    gath = np.empty(base.shape + (n_r + 1,), np.float32)
+    val = np.empty(base.shape, np.float32)
+    infeasible = np.empty(base.shape, bool)
+    tip_req = thr = None
+    last_prof = None
     for dy, dx, prof in _contact_offsets(diameter, corner_radius, pixel):
-        ax = np.clip(ix - dx, 0, tip_map.shape[1] - 1)
-        ay = np.clip(iy - dy, 0, tip_map.shape[0] - 1)
-        tip_req = height - prof
-        feasible = tip_map[ay, ax] <= tip_req + eps
-        value = clear_map[ay, ax] - tip_req
-        np.minimum(best, np.where(feasible, value, np.inf), out=best)
+        if prof != last_prof:  # offsets arrive ring by ring
+            tip_req = h32 - np.float32(prof)
+            thr = tip_req + eps
+            last_prof = prof
+        np.subtract(base, dy * wp + dx, out=idx)
+        np.take(packed, idx, axis=0, out=gath)
+        np.greater(gath[..., n_r], thr, out=infeasible)
+        for ci in range(n_r):
+            np.subtract(gath[..., ci], tip_req, out=val)
+            np.copyto(val, np.inf, where=infeasible)
+            np.minimum(best[ci], val, out=best[ci])
 
     # vertices no contact offset can touch are tip-blocked anyway; fall back
     # to the vertex-centred estimate so the field stays finite
-    fallback = clear_map[iy, ix] - height
-    best = np.where(np.isfinite(best), best, fallback)
-    return np.maximum(best.min(axis=0), 0.0)
+    np.take(packed, base, axis=0, out=gath)
+    outs = []
+    for ci in range(n_r):
+        fallback = gath[..., ci] - h32
+        merged = np.where(np.isfinite(best[ci]), best[ci], fallback)
+        outs.append(np.maximum(merged.min(axis=0), 0.0))
+    return outs
+
+
+def tip_aware_min_stickout(tip_map, clear_map, diameter, corner_radius, pixel,
+                           fx, fy, height):
+    """Single-cylinder wrapper over tip_aware_min_stickout_multi."""
+    return tip_aware_min_stickout_multi(tip_map, [clear_map], diameter,
+                                        corner_radius, pixel, fx, fy, height)[0]
 
 
 @log_execution_time
@@ -486,7 +523,7 @@ class DirectionCache:
     VERSION = 4  # rendered border margin + subpixel stickout/clearance sampling
 
     def __init__(self, workdir, direction_index, verts=None, faces=None, pixel=0.1,
-                 window=0.3, engine="zmap", scale=10.0):
+                 window=0.3, engine="zmap", scale=10.0, autosave=True):
         suffix = "" if engine == "zmap" else f"_{engine}"
         self.path = os.path.join(workdir, "zcache", f"dir_{direction_index:04d}{suffix}.npz")
         self.direction_index = direction_index
@@ -496,6 +533,7 @@ class DirectionCache:
         self.window = window  # gap accuracy window: gaps up to this are Euclidean-exact
         self.engine = engine
         self.scale = scale  # anisotropy stretch factor for voxel in-plane offsets
+        self.autosave = autosave  # False in worker processes: parent merges + saves
         self._fields = {}
         self._maps = {}  # in-memory full-resolution maps (not persisted)
         self._mesh = None
@@ -551,6 +589,8 @@ class DirectionCache:
                 self._iy = np.floor(self._fy).astype(int)
 
     def _save(self):
+        if not self.autosave:
+            return
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         np.savez_compressed(self.path, **self._fields)
 
@@ -613,27 +653,37 @@ class DirectionCache:
             self._maps[key] = tip_position_map(self.heights, diameter, corner_radius, self.frame["pixel"])
         return self._maps[key]
 
-    def tip_min_stickout(self, diameter, corner_radius, radius):
+    def tip_min_stickouts(self, diameter, corner_radius, radii):
         """
-        Per-vertex minimal stickout (from the tool tip) for one holder
-        cylinder of `radius`, coupled with the tip geometry of
-        (diameter, corner_radius) - see tip_aware_min_stickout. zmap engine
-        only; computed once per (tip, radius) and cached.
+        Per-vertex minimal stickout (from the tool tip) for one tip
+        (diameter, corner_radius) across several holder cylinder radii - see
+        tip_aware_min_stickout_multi. All missing radii are computed in a
+        single offset sweep (the sweep dominates, so per-tip cost is nearly
+        independent of the radius count). zmap engine only; cached per
+        (tip, radius).
         """
-        key = _sreq_key(diameter, corner_radius, radius)
-        if key not in self._fields:
+        missing = [r for r in radii
+                   if _sreq_key(diameter, corner_radius, r) not in self._fields]
+        if missing:
             if self.engine != "zmap":
                 raise NotImplementedError("tip-aware stickout fields need the zmap engine")
-            logger.debug(f"Computing stickout field {key} for direction {self.direction_index}")
+            logger.debug(f"Computing stickout fields for tip {diameter}x{corner_radius} "
+                         f"radii {missing} for direction {self.direction_index}")
             pixel = self.frame["pixel"]
             self._vertex_samples()  # ensure projections exist
-            sreq = tip_aware_min_stickout(
-                self._tip_map(diameter, corner_radius), self._clearance_map(radius),
+            sreqs = tip_aware_min_stickout_multi(
+                self._tip_map(diameter, corner_radius),
+                [self._clearance_map(r) for r in missing],
                 diameter, corner_radius, pixel, self._fx, self._fy, self._vheight,
             )
-            self._fields[key] = sreq.astype(np.float32)
+            for radius, sreq in zip(missing, sreqs):
+                self._fields[_sreq_key(diameter, corner_radius, radius)] = sreq.astype(np.float32)
             self._save()
-        return self._fields[key]
+        return [self._fields[_sreq_key(diameter, corner_radius, r)] for r in radii]
+
+    def tip_min_stickout(self, diameter, corner_radius, radius):
+        """Single-radius wrapper over tip_min_stickouts."""
+        return self.tip_min_stickouts(diameter, corner_radius, [radius])[0]
 
     def clearance(self, radius):
         """
@@ -687,6 +737,27 @@ class DirectionCache:
                 required = self.clearance(radius) - start
             stickout = required if stickout is None else np.maximum(stickout, required)
         return stickout
+
+
+def precompute_tip_worker(job):
+    """
+    Compute the gap + stickout fields for ONE tip in a worker process and
+    return them as {field key: array}: spawn-safe (Windows), reloads the
+    mesh arrays and the cached height map from the workdir, and never writes
+    the cache itself - the parent merges all workers' fields and saves once,
+    avoiding concurrent .npz writes. The parent must have created the
+    direction cache (heights + frame) before dispatching.
+    """
+    workdir, direction_index, pixel, window, diameter, corner_radius, radii = job
+    verts = np.load(os.path.join(workdir, "fine_verts.npy"))
+    faces = np.load(os.path.join(workdir, "fine_faces.npy"))
+    cache = DirectionCache(workdir, direction_index, verts=verts, faces=faces,
+                           pixel=pixel, window=window, autosave=False)
+    cache.tip_gap(diameter, corner_radius)
+    cache.tip_min_stickouts(diameter, corner_radius, radii)
+    keys = [_tip_key(diameter, corner_radius)]
+    keys += [_sreq_key(diameter, corner_radius, r) for r in radii]
+    return {k: cache._fields[k] for k in keys}
 
 
 # ---------------------------------------------------------------------------

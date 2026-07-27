@@ -223,6 +223,41 @@ def main():
         check("border r3 stickout bound", float(sreq[v]) <= 5.3,
               f"sreq {float(sreq[v]):.3f} expected <= 5.3")
 
+        # ---- optimized stickout kernel matches the reference loop --------
+        # reference: the straightforward per-offset clip/gather formulation
+        # the packed float32 kernel replaced; results must agree to float32
+        # rounding for every tip shape (flat / bull / ball) and both radii
+        from zmap import _bracket_corners, _contact_offsets, tip_aware_min_stickout_multi
+
+        def sreq_reference(tip_map, clear_map, D, rc, px, rfx, rfy, rh):
+            eps = 1.5 * px
+            rix, riy = _bracket_corners(rfx, rfy, tip_map.shape)
+            best = np.full(rix.shape, np.inf)
+            for dy, dx, prof in _contact_offsets(D, rc, px):
+                ax = np.clip(rix - dx, 0, tip_map.shape[1] - 1)
+                ay = np.clip(riy - dy, 0, tip_map.shape[0] - 1)
+                tip_req = rh - prof
+                feasible = tip_map[ay, ax] <= tip_req + eps
+                value = clear_map[ay, ax] - tip_req
+                np.minimum(best, np.where(feasible, value, np.inf), out=best)
+            fb = clear_map[riy, rix] - rh
+            best = np.where(np.isfinite(best), best, fb)
+            return np.maximum(best.min(axis=0), 0.0)
+
+        print("=== optimized stickout kernel vs reference ===")
+        radii = (3.0, 8.0)
+        clear_maps = [cache._clearance_map(r) for r in radii]
+        for D, rc in [(6.0, 0.0), (6.0, 1.0), (6.0, 3.0)]:
+            tip_map = cache._tip_map(D, rc)
+            fast = tip_aware_min_stickout_multi(
+                tip_map, clear_maps, D, rc, PIXEL,
+                cache._fx, cache._fy, cache._vheight)
+            for r, cm, f in zip(radii, clear_maps, fast):
+                ref = sreq_reference(tip_map, cm, D, rc, PIXEL,
+                                     cache._fx, cache._fy, cache._vheight)
+                d = float(np.abs(f - ref).max())
+                check(f"kernel D{D:g}rc{rc:g} r{r:g}", d < 1e-3, f"max |fast - ref| {d:.2e}")
+
     print("ALL CHECKS PASSED" if not failures else "FAILURES:\n  " + "\n  ".join(failures))
     return 1 if failures else 0
 

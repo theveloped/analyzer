@@ -94,6 +94,14 @@ reports coverage per stickout without recomputing anything. Lengths are free:
 the clearance fields already encode the tallest obstruction within each
 radius, so all 45 catalog lengths are thresholds over the same field.
 
+Precompute cost is dominated by the tip-aware stickout sweep, which is
+per unique (tip, holder radius) — never per tool. All holder radii of a tip
+share one sweep, and `--workers N` (default up to 4) farms independent tips
+out to worker processes, so a catalog run scales as
+`unique tips x sweep / workers`. On the testpart_42 repro (7 tips x 2 radii,
+465k verts) the full precompute takes ~80 s with `--workers 4`
+(~25 s per tip serially).
+
 ## Interactive viewer
 
 Everything the caches know can be inspected interactively:
@@ -112,8 +120,9 @@ clearance / accessibility values for step-by-step debugging. The bundle is
 self-contained (three.js is vendored into it), so it also works offline.
 
 Catalog math: of the 16 x 13 nose-radius/diameter grid, ~156 combinations are
-valid (rc <= D/2). Per direction that is ~156 tip closings at ~8 s each
-(pixel 0.1 on a 100 mm part) ~ 20 min once, plus ~1 s per clearance radius —
+valid (rc <= D/2). Per direction that is ~156 tip closings plus one stickout
+sweep per tip covering all holder radii (~25 s serial, divided by
+`--workers`) — a full catalog direction lands in the tens of minutes once,
 after which every (tip, length, holder) query composes in ~0.2 s. The exact
 voxel `endmill` path stays useful as a spot-check (it agrees within a couple
 percent of flagged faces: 885 vs 904 on testpart_42, the difference being the
