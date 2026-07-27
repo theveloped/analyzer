@@ -207,40 +207,51 @@ export function isOccluded(p: [number, number, number]): boolean {
   return scene?.isOccluded(p) ?? false;
 }
 
-// PMI callout anchors + occlusion use the COARSE mesh, not the display mesh —
-// they need no fine-mesh precision, and a ~10k-face proxy keeps the BVH build
-// and the per-camera-change raycast cheap. Loaded once per part, and handed to
-// the scene as the occlusion raycast target.
-let pmiCoarse: { verts: Float32Array; faces: Uint32Array; ids: Uint32Array } | null = null;
-let pmiCoarseKey = '';
-
-async function ensurePmiCoarse() {
+// The OCCLUSION raycast uses the COARSE mesh — it needs no fine precision and a
+// ~10k-face BVH keeps the per-camera-change raycast cheap. It's only a blocker
+// for the ray, so its exact face ids don't matter. Loaded once per part.
+let pmiOcclKey = '';
+async function ensurePmiOcclusion() {
   const { manifest, partId, manifestVersion } = useStore.getState();
   const key = `${partId}:${manifestVersion}`;
-  if (pmiCoarse && pmiCoarseKey === key) return pmiCoarse;
+  if (pmiOcclKey === key) return;
   const cm = manifest?.coarse_mesh;
-  if (!cm?.verts_url || !cm?.faces_url || !cm?.brep_faces_url) return null;
-  const [cverts, cfaces, cids] = await Promise.all([
+  if (!cm?.verts_url || !cm?.faces_url) return;
+  const [cverts, cfaces] = await Promise.all([
     fetchBin(cm.verts_url, Float32Array),
     fetchBin(cm.faces_url, Uint32Array),
-    fetchBin(cm.brep_faces_url, Uint32Array),
   ]);
-  pmiCoarse = { verts: cverts, faces: cfaces, ids: cids };
-  pmiCoarseKey = key;
-  scene?.setPmiOcclusion(cverts, cfaces); // coarse occlusion proxy for isOccluded
-  return pmiCoarse;
+  pmiOcclKey = key;
+  scene?.setPmiOcclusion(cverts, cfaces);
 }
 
-/** Coarse-mesh surface anchor for a set of BREP faces — the point a PMI callout
- * leader ends at. Snaps to the nearest surface vertex so a hole/boss centroid
- * (which sits on its axis, inside the solid) doesn't read as always-occluded. */
+/** BREP face ids aligned to the CURRENTLY displayed mesh — the SAME source the
+ * pmiMode painter uses (fine `subfaces`/`brep_faces` field when the fine mesh is
+ * up, else the coarse ids). Anchors must use this so a leader ends on the same
+ * face the painter colours (coarse and fine ids can differ). */
+async function currentBrepIds(): Promise<Uint32Array | null> {
+  const { manifest } = useStore.getState();
+  if (!manifest || !faces) return null;
+  const desc = manifest.fields.find((f) => f.id === 'subfaces')
+    ?? manifest.fields.find((f) => f.id === 'brep_faces') ?? null;
+  if (desc) {
+    const ids = await fetchField(desc) as Uint32Array;
+    if (ids.length === faces.length / 3) return ids; // aligned to display mesh
+  }
+  const url = manifest.coarse_mesh?.brep_faces_url;
+  return url ? fetchBin(url, Uint32Array) : null;
+}
+
+/** Surface anchor (on the DISPLAY mesh) for a set of BREP faces — the point a
+ * PMI callout leader ends at. Snaps to the nearest surface vertex so a hole/boss
+ * centroid (which sits on its axis, inside the solid) doesn't read as occluded. */
 export async function pmiFaceCentroid(
   brepIds: number[],
 ): Promise<[number, number, number] | null> {
-  if (brepIds.length === 0) return null;
-  const c = await ensurePmiCoarse();
-  if (!c) return null;
-  const { verts, faces, ids } = c;
+  void ensurePmiOcclusion(); // ready the coarse occlusion proxy in the background
+  if (!verts || !faces || brepIds.length === 0) return null;
+  const ids = await currentBrepIds();
+  if (!ids || ids.length !== faces.length / 3) return null;
   const want = new Set(brepIds);
   let x = 0; let y = 0; let z = 0; let n = 0;
   for (let f = 0; f < ids.length && 3 * f + 2 < faces.length; f++) {
