@@ -29,7 +29,6 @@ export const PROVENANCE_LABELS: Record<SourceKind, string> = {
   manual: 'manual axis',
 };
 
-const BASE: RGB = [0.85, 0.88, 0.90];
 const PICKED: RGB = [0.98, 0.85, 0.20];   // BREP faces being picked
 const HILITE: RGB = [0.20, 0.70, 0.95];   // BREP faces of an inspected direction
 
@@ -98,7 +97,7 @@ export const directionsMode: ViewMode = {
       const b = brepIds ? brepIds[f] : -1;
       if (pickBrep.has(b)) return PICKED;
       if (hiBrep.has(b)) return HILITE;
-      return BASE;
+      return null; // context faces keep the native viewport style
     });
 
     ctx.setArrows(dirs.map((d) => ({

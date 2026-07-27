@@ -88,8 +88,9 @@ export function makeLensOpacityUniforms(): LensOpacityUniforms {
   return { uLensOpacity: { value: 1 }, uFindingsOpacity: { value: 1 } };
 }
 
-/** Chainable shader patch (after the edge patch): replace the vertex-alpha
- * product with the lens/findings mix keyed on the mask in vColor.a. */
+/** Chainable shader patch (after the edge patch): pick the face opacity from
+ * the 3-level flag in vColor.a — 0.0 unpainted (base shows through, opacity 0),
+ * 0.5 painted non-finding (uLensOpacity), 1.0 finding (uFindingsOpacity). */
 export function patchLensOpacity(
   material: THREE.Material, uniforms: LensOpacityUniforms,
 ) {
@@ -102,8 +103,9 @@ export function patchLensOpacity(
       .replace('#include <common>',
         '#include <common>\nuniform float uLensOpacity;\nuniform float uFindingsOpacity;')
       .replace('#include <color_fragment>', `#include <color_fragment>
-        diffuseColor.a = opacity
-          * mix(uLensOpacity, uFindingsOpacity, vColor.a);`);
+        float lensSel = vColor.a < 0.25 ? 0.0
+          : (vColor.a < 0.75 ? uLensOpacity : uFindingsOpacity);
+        diffuseColor.a = opacity * lensSel;`);
   };
 }
 

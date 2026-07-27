@@ -225,6 +225,11 @@ overview rendering each child's coarse mesh at its instance transform.
 
 ### 11. PMI inspect panel
 
+> Consolidated with item 19 into a phased program in
+> **docs/PMI-VIEWER-EDITOR.md** (viewer `3a` mockup first, then the editor).
+> The flat inspect panel below shipped; the remaining viewer work (scope
+> chips, grouped sections, dimensions layer, floating 3D callouts) lives there.
+
 `pmi.json` + `face_attrs.json` are served (`pmi_url`/`face_attrs_url` in
 the manifest) with 0-based face ids and AAG-canonical edge ids. Wire
 into `inspect`: clicking a face with `pmi_refs` lists its dimensions/
@@ -396,6 +401,9 @@ C:/temp/claude/corpus/parts/f488820d15c3` (delete
 `results/sheet_metal/bend_plan` first — results are cached).
 
 ### 19. PMI / GD&T editor in the viewer
+
+> Consolidated with item 11 into **docs/PMI-VIEWER-EDITOR.md** (phases 0/3/4/5
+> there cover the editor); the notes below remain the detailed spec.
 
 **Goal.** Let users *add / remove / edit* semantic GD&T in the viewer and
 export it — turning the analyzer into a lightweight PMI authoring tool.

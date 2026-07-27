@@ -156,6 +156,30 @@ export async function putPlan(
   return res.json();
 }
 
+export interface PmiSaveResult {
+  schema: number;
+  counts: { tolerances: number; dimensions: number; datums: number };
+  warnings: string[];
+}
+
+/** Author/replace a part's semantic PMI (pmi.json). The server validates the
+ * payload and re-derives the AP242 round-trip warnings before writing; a bad
+ * payload surfaces as a 400 with a human-readable detail. */
+export async function putPmi(
+  partId: string, pmi: unknown,
+): Promise<PmiSaveResult> {
+  const res = await fetch(`/api/parts/${encodeURIComponent(partId)}/pmi`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pmi }),
+  });
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null))?.detail;
+    throw new Error(detail ?? `saving PMI failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 /** Dry-run a plan edit: per check `unchanged` | `revalidates` | `recomputes`
  * | `error`. Pure hash arithmetic server-side — never enqueues a job. */
 export async function postPlanImpact(

@@ -19,12 +19,17 @@ from api import parts as parts_api
 from api import ejector as ejector_api
 from api import plan as plan_api
 from api.jobs import JobManager, PartBusyError
-from api.schemas import EjectorSimRequest, JobRequest, SplitRequest
+from api.schemas import (EjectorSimRequest, JobRequest, PmiPutRequest,
+                         SplitRequest)
 import pipeline
 
 FRONTEND_DIST = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "frontend", "dist")
+
+# PMI edits are read-modify-write over pmi.json (OCP-free, no jobs queue) —
+# serialise them, like the plan sidecars.
+_pmi_lock = threading.Lock()
 
 
 def create_app(root=".", preload=None):
@@ -325,6 +330,23 @@ def create_app(root=".", preload=None):
         if not os.path.exists(path):
             raise HTTPException(status_code=404, detail="no PMI")
         return FileResponse(path, media_type="application/json")
+
+    @app.put("/api/parts/{part_id}/pmi")
+    def put_pmi(part_id: str, body: PmiPutRequest):
+        """Author/replace a part's semantic PMI (pmi.json). Validates the
+        payload and re-derives the AP242 round-trip warnings before writing —
+        synchronous, OCP-free, like the export route. Works even on a part that
+        arrived without PMI, so an AP214/AP203 import can be given GD&T and then
+        re-exported as AP242 (the manifest rebuilds its pmi block from disk)."""
+        import pmi_edit
+
+        part = part_or_404(part_id)
+        workdir = parts_api.workdir_for(root, part["id"])
+        with _pmi_lock:
+            try:
+                return pmi_edit.save_pmi(workdir, body.pmi)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
 
     @app.get("/api/parts/{part_id}/assembly")
     def get_assembly(part_id: str):

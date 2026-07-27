@@ -30,6 +30,13 @@ class PlanPutRequest(BaseModel):
     revision: int
 
 
+class PmiPutRequest(BaseModel):
+    """Author/replace a part's semantic PMI. ``pmi`` is a full pmi.json payload
+    (dimensions/tolerances/datums); it is validated and its round-trip warnings
+    re-derived server-side before the file is written."""
+    pmi: dict
+
+
 class PlanImpactRequest(BaseModel):
     """Dry-run a plan edit: decisions deep-merge, operations/checks replace
     when present. Never enqueues work."""
