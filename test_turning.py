@@ -312,7 +312,7 @@ def test_shaft(check, root):
     check("the shoulder has fine faces to test", shoulder.sum() > 10,
           f"{int(shoulder.sum())} faces")
     check("the shoulder is an external facing cut, not internal",
-          bool((roles[shoulder] == turning.ROLE_FACE).all()),
+          bool((roles[shoulder] == turning.ROLE_OD_FACE).all()),
           f"roles = {sorted(set(roles[shoulder].tolist()))}")
     return workdir
 
@@ -388,6 +388,106 @@ def test_oblique(check, root):
           f"{stats['length']:.4f}")
 
 
+def boss_on_flange():
+    """A flange with a concave-filleted boss, a counterbore and a square pad.
+
+    Each feature reproduces one field-reported defect:
+
+    - the boss/flange transition carries an OD chamfer that sits well below
+      the flange diameter at its own axial station — it must still read as OD
+      turning, not as an internal cut;
+    - the flange top is a wide annulus whose triangles straddle any radius
+      threshold — deciding per triangle splits it and the vote lands wrong;
+    - the counterbore gives a genuine ID facing surface and an ID diameter;
+    - the square pad is a plane perpendicular to the axis, so it passes the
+      revolution test trivially and can only be rejected as non-annular.
+    """
+    shape = _fuse(_cylinder(75.0, 20.0), _cylinder(30.0, 60.0, (0, 0, 20)))
+    from OCP.BRepPrimAPI import BRepPrimAPI_MakeCone
+    from OCP.gp import gp_Ax2, gp_Dir, gp_Pnt
+
+    chamfer = BRepPrimAPI_MakeCone(
+        gp_Ax2(gp_Pnt(0, 0, 20), gp_Dir(0, 0, 1)), 34.0, 30.0, 4.0).Shape()
+    shape = _fuse(shape, chamfer)
+    shape = _cut(shape, _cylinder(12.0, 40.0, (0, 0, 40)))    # bore
+    shape = _cut(shape, _cylinder(18.0, 10.0, (0, 0, 70)))    # counterbore
+    return _fuse(shape, _box(24.0, 24.0, 6.0, (-12.0, -12.0, 80.0)))
+
+
+def test_roles(check, root):
+    print("\nfixture 7: boss on a flange — the reported role defects")
+    workdir = build_workdir(boss_on_flange(), root, "boss", resolution=1.5)
+    stats = run(workdir)[0].stats
+
+    import splits
+    from processes import resolver
+    from processes.base import load_result_arrays
+
+    arrays = load_result_arrays(
+        workdir, "cnc", "turning",
+        resolver.cache_key(workdir, "cnc/turning", run(workdir)[1]))
+    roles = arrays["turn_role"]
+    verts, faces = pipeline.load_mesh_arrays(workdir)
+    normals = pipeline.load_face_normals(workdir)
+    centroids = verts[faces].mean(axis=1)
+    radius = np.linalg.norm(centroids[:, :2], axis=1)
+    ids = splits.effective_face_ids(workdir)[0]
+
+    def role_of(mask, name):
+        picked = np.unique(roles[mask])
+        check(name, len(picked) == 1, f"roles {picked.tolist()}")
+        return int(picked[0]) if len(picked) else -1
+
+    # the OD chamfer: outward-facing, but far below the flange diameter at its z
+    chamfer = ((np.abs(normals @ [0.0, 0, 1.0]) > 0.3)
+               & (np.abs(normals @ [0.0, 0, 1.0]) < 0.9)
+               & (centroids[:, 2] > 20.5) & (centroids[:, 2] < 23.5)
+               & (radius > 30.0) & (radius < 34.0))
+    check("the OD chamfer has faces to test", chamfer.sum() > 10,
+          f"{int(chamfer.sum())}")
+    check("OD chamfer is OD turning, not an internal cut",
+          bool((roles[chamfer] == turning.ROLE_OD_TURN).all()),
+          f"roles {sorted(set(roles[chamfer].tolist()))}")
+
+    # the flange top annulus — one face, one verdict, and it is external
+    flange = ((normals @ [0.0, 0, 1.0] > 0.99)
+              & (np.abs(centroids[:, 2] - 20.0) < 0.4) & (radius > 40.0))
+    check("the flange top has faces to test", flange.sum() > 20,
+          f"{int(flange.sum())}")
+    check("flange top is OD facing (not split per triangle)",
+          role_of(flange, "flange top is one role") == turning.ROLE_OD_FACE,
+          f"role {turning.TURN_ROLES[roles[flange][0]]}")
+
+    # the counterbore floor: a genuine annulus buried inside the envelope
+    floor = ((normals @ [0.0, 0, 1.0] > 0.99)
+             & (np.abs(centroids[:, 2] - 70.0) < 0.4)
+             & (radius > 13.0) & (radius < 17.0))
+    if floor.sum() > 5:
+        check("counterbore floor is ID facing",
+              bool((roles[floor] == turning.ROLE_ID_FACE).all()),
+              f"roles {sorted(set(roles[floor].tolist()))}")
+
+    # the square pad top is perpendicular to the axis but is not an annulus
+    pad = ((normals @ [0.0, 0, 1.0] > 0.99)
+           & (np.abs(centroids[:, 2] - 86.0) < 0.4))
+    check("the square pad has faces to test", pad.sum() > 10,
+          f"{int(pad.sum())}")
+    check("square pad top is milled, not a facing cut",
+          bool((roles[pad] == turning.ROLE_OTHER).all()),
+          f"roles {sorted(set(roles[pad].tolist()))}")
+
+    # no ID face may be reported where the geometry has no bore
+    check("bores are reported", len(stats["bores"]) >= 1,
+          f"{[round(b['diameter'], 2) for b in stats['bores']]}")
+    check("the turned section carries an internal contour",
+          len(stats["inner_profile"]) >= 2,
+          f"{len(stats['inner_profile'])} points")
+    inner_max = max((r for _, r in stats["inner_profile"]), default=0.0)
+    check("internal contour reaches the counterbore radius",
+          abs(inner_max - 18.0) < 1.5, f"r_max {inner_max:.2f}")
+    del ids
+
+
 def test_negatives(check, root):
     print("\nfixtures 4 and 5: a plain box and a drilled plate")
     workdir = build_workdir(_box(60.0, 40.0, 20.0), root, "box")
@@ -456,6 +556,7 @@ def main():
         shaft = test_shaft(check, root)
         test_turn_mill(check, root)
         test_oblique(check, root)
+        test_roles(check, root)
         test_negatives(check, root)
         test_fields_and_cache(check, shaft)
     finally:

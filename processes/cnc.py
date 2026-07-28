@@ -9,7 +9,7 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
 SETUPS_SCHEMA = 3  # result schema version, salted into the cache key
 FEATURES_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/features.ts
 REACH_STUDY_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/reach.ts
-TURNING_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/turning.ts
+TURNING_SCHEMA = 2  # keep in sync with frontend/src/processes/cnc/turning.ts
 HULL_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/hull.ts
 
 # default library: 3 flat endmills + 2 ball mills, each at its longest
@@ -95,9 +95,6 @@ def run_turning(workdir, params, progress):
     result = turning.analyse_turning(
         workdir, tollerance=params["tollerance"],
         profile_bins=params["profile_bins"],
-        face_inlier_fraction=params["face_inlier_fraction"],
-        min_radial_fraction=params["min_radial_fraction"],
-        turned_fraction=params["turned_fraction"],
         refine_rounds=params["refine_rounds"],
         max_candidates=params["max_candidates"],
         sample_faces=params["sample_faces"],
@@ -230,14 +227,6 @@ PROCESS = ProcessDef(
                       label="Revolution angle tolerance (blank = 1° STEP / 5° STL)"),
                 Param("profile_bins", "int", default=512, min=16,
                       label="Profile bins along the axis"),
-                Param("face_inlier_fraction", "number", default=0.9,
-                      min=0, max=1,
-                      label="Min revolved area fraction of a turnable face"),
-                Param("min_radial_fraction", "number", default=0.15,
-                      min=0, max=1,
-                      label="Min swept (radial) area for a turned verdict"),
-                Param("turned_fraction", "number", default=0.95, min=0, max=1,
-                      label="Turned area fraction for a fully-turned verdict"),
                 Param("refine_rounds", "int", default=3, min=0,
                       label="Axis refinement rounds"),
                 Param("max_candidates", "int", default=12, min=1,

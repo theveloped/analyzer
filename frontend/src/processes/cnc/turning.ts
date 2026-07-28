@@ -10,22 +10,23 @@ import type {
 } from '../../registry/types';
 
 // keep in sync with TURNING_SCHEMA in processes/cnc.py
-export const TURNING_SCHEMA = 1;
+export const TURNING_SCHEMA = 2;
 
 // index == backend category code (turning.TURN_ROLES)
-const ROLE_LABELS = ['milled / other', 'OD turning', 'facing', 'boring',
-                     'internal face', 'on axis'];
+const ROLE_LABELS = ['milled / other', 'OD facing', 'OD turning',
+                     'ID facing', 'ID turning', 'on axis'];
 // external operations blue-ish, internal ones red/orange-ish — the convention
 // the Analysis Situs turning recognizer uses, so the split reads at a glance
 const ROLE_COLORS: RGB[] = [
   COL.inaccess,          // milled / other
+  [0.55, 0.75, 0.93],    // OD facing
   [0.30, 0.55, 0.85],    // OD turning
-  [0.55, 0.75, 0.93],    // facing
-  [0.88, 0.35, 0.28],    // boring
-  [0.95, 0.63, 0.35],    // internal face
+  [0.95, 0.63, 0.35],    // ID facing
+  [0.88, 0.35, 0.28],    // ID turning
   [0.60, 0.60, 0.66],    // on axis
 ];
 const SECTION_COLOR: RGB = [1.0, 0.85, 0.25];
+const INNER_COLOR: RGB = [1.0, 0.55, 0.35];
 const AXIS_COLOR: RGB = [0.55, 0.85, 0.55];
 
 type Vec3 = [number, number, number];
@@ -79,17 +80,20 @@ function perpendicular(d: Vec3): Vec3 {
  *
  * Profile coordinates are AXIAL — z from stats.axis.point along
  * stats.axis.direction — so a point is `p + z*d + r*u`. Both halves (+u and
- * -u) are drawn so the result reads as a lathe section through the part, plus
- * the centreline.
+ * -u) are drawn so the result reads as a lathe section through the part.
+ *
+ * The inner contour is a separate polyline, not part of the outer one: the
+ * meridian of a bored part is a region with holes rather than a single closed
+ * curve. Without it the section shows only the outer silhouette and every
+ * internal feature is missing from it.
  */
 function sectionLines(result: ResultEntry): {
-  section: Float32Array; axis: Float32Array;
+  outer: Float32Array; inner: Float32Array; axis: Float32Array;
 } {
   const s = result.stats;
   const p = s.axis.point as Vec3;
   const d = s.axis.direction as Vec3;
   const u = perpendicular(d);
-  const profile = (s.profile ?? []) as [number, number][];
 
   const at = (z: number, r: number, sign: number): Vec3 => [
     p[0] + z * d[0] + sign * r * u[0],
@@ -97,19 +101,25 @@ function sectionLines(result: ResultEntry): {
     p[2] + z * d[2] + sign * r * u[2],
   ];
 
-  const segments: number[] = [];
-  for (const sign of [1, -1]) {
-    for (let i = 0; i + 1 < profile.length; i++) {
-      const a = at(profile[i][0], profile[i][1], sign);
-      const b = at(profile[i + 1][0], profile[i + 1][1], sign);
-      segments.push(...a, ...b);
+  const mirrored = (profile: [number, number][]) => {
+    const segments: number[] = [];
+    for (const sign of [1, -1]) {
+      for (let i = 0; i + 1 < profile.length; i++) {
+        segments.push(...at(profile[i][0], profile[i][1], sign),
+                      ...at(profile[i + 1][0], profile[i + 1][1], sign));
+      }
     }
-  }
+    return new Float32Array(segments);
+  };
 
+  const profile = (s.profile ?? []) as [number, number][];
   const zLo = profile.length ? profile[0][0] : 0;
   const zHi = profile.length ? profile[profile.length - 1][0] : 0;
-  const axis = new Float32Array([...at(zLo, 0, 1), ...at(zHi, 0, 1)]);
-  return { section: new Float32Array(segments), axis };
+  return {
+    outer: mirrored(profile),
+    inner: mirrored((s.inner_profile ?? []) as [number, number][]),
+    axis: new Float32Array([...at(zLo, 0, 1), ...at(zHi, 0, 1)]),
+  };
 }
 
 export const turningRolesMode: ViewMode = {
@@ -150,15 +160,22 @@ export const turningRolesMode: ViewMode = {
     }
     for (const bore of (result.stats.bores ?? []) as any[]) {
       legend.push({
-        color: ROLE_COLORS[3],
+        color: ROLE_COLORS[4],
         label: `bore Ø${Number(bore.diameter).toFixed(2)}`
           + `${bore.through ? ' (through)' : ''}`,
       });
     }
 
-    const { section, axis } = sectionLines(result);
-    if (section.length) ctx.setLines(section, SECTION_COLOR, false);
+    const { outer, inner, axis } = sectionLines(result);
+    if (outer.length) ctx.setLines(outer, SECTION_COLOR, false);
+    if (inner.length) ctx.setLines(inner, INNER_COLOR, false);
     ctx.setLines(axis, AXIS_COLOR, false);
+    if (outer.length) {
+      legend.push({ color: SECTION_COLOR, label: 'turned state — outer' });
+    }
+    if (inner.length) {
+      legend.push({ color: INNER_COLOR, label: 'turned state — bores' });
+    }
 
     return { legend, stats: summary(result) };
   },

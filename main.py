@@ -153,8 +153,6 @@ if __name__ == "__main__":
     parser_turning.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
     parser_turning.add_argument("--tollerance", help="revolution angle tolerance in degrees (default: 1 for STEP, 5 for STL)", type=float, default=None)
     parser_turning.add_argument("--profile_bins", help="profile bins along the axis (default: 512)", type=int, default=512)
-    parser_turning.add_argument("--face_inlier_fraction", help="min revolved area fraction of a turnable face (default: 0.9)", type=float, default=0.9)
-    parser_turning.add_argument("--min_radial_fraction", help="min swept (radial) area for a turned verdict (default: 0.15)", type=float, default=0.15)
     parser_turning.add_argument("--sample_faces", help="faces sampled for the axis search, 0 = all (default: 100000)", type=int, default=100000)
     parser_turning.add_argument("--axis", help="force the turning axis", type=float, nargs=6, default=None, metavar=("PX", "PY", "PZ", "DX", "DY", "DZ"))
     parser_turning.add_argument("--serve", help="serve results in browser", action="store_true")
@@ -588,8 +586,6 @@ if __name__ == "__main__":
         merged = apply_defaults(analysis, {
             "tollerance": args.tollerance,
             "profile_bins": args.profile_bins,
-            "face_inlier_fraction": args.face_inlier_fraction,
-            "min_radial_fraction": args.min_radial_fraction,
             "sample_faces": args.sample_faces,
             "axis_override": list(args.axis) if args.axis else [],
         })

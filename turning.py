@@ -84,16 +84,46 @@ from utils import log_execution_time
 
 # index == category code in the per-face field; mirrored in
 # frontend/src/processes/cnc/turning.ts
-TURN_ROLES = ["other", "od_turn", "face_turn", "bore", "internal_face",
-              "on_axis"]
-(ROLE_OTHER, ROLE_OD, ROLE_FACE, ROLE_BORE, ROLE_INTERNAL_FACE,
- ROLE_ON_AXIS) = range(6)
+#
+# The role is (side x operation). OPERATION is `face` when the normal is
+# parallel to the axis (a facing cut) and `turn` otherwise (a profiling pass —
+# cylinder, taper, chamfer, radius, contour, all the same tool motion). SIDE is
+# which boundary of the turned section the face lies on: OD outward, ID inward.
+#
+# For a radial face the side is the sign of the normal's radial component —
+# material is inside an OD surface and outside an ID one, so the outward normal
+# points away from the axis on the OD and toward it on the ID. That test is
+# purely local, which is what makes it right for chamfers and fillets at a
+# diameter transition: they are outward-facing whether or not they happen to
+# reach the widest radius at their own axial station.
+#
+# For a facing cut the normal carries no radial information, so the side comes
+# from whether the face reaches the outer envelope at its own z.
+TURN_ROLES = ["other", "od_face", "od_turn", "id_face", "id_turn", "on_axis"]
+(ROLE_OTHER, ROLE_OD_FACE, ROLE_OD_TURN,
+ ROLE_ID_FACE, ROLE_ID_TURN, ROLE_ON_AXIS) = range(6)
+OD_ROLES = (ROLE_OD_FACE, ROLE_OD_TURN)
+ID_ROLES = (ROLE_ID_FACE, ROLE_ID_TURN)
 
 TOLLERANCE = 1e-9
 # |n.d| >= cos(this) makes a face "axial" (a facing surface). Not a param: a
 # real facing cut is perpendicular to a fraction of a degree, and the slack is
 # only there to absorb tessellation.
 FACE_NORMAL_TOL_DEG = 5.0
+# Fixed constants rather than params: these are properties of what "turnable"
+# means, not knobs a user should have to dial per part.
+#   COMPAT_FRACTION   share of a face's area that must be revolution-compatible
+#   SWING_TOLLERANCE  how much a facing cut's radial band may vary with azimuth
+#                     before it stops being an annulus (a square boss top swings
+#                     ~0.5, a real annulus ~0.001)
+#   MIN_RADIAL_FRACTION  swept area below which no axis is believable at all —
+#                     every plane perpendicular to a candidate axis is trivially
+#                     a surface of revolution about it, so a plain box scores
+#                     ~55% compatible area on normals alone
+COMPAT_FRACTION = 0.9
+SWING_TOLLERANCE = 0.1
+MIN_RADIAL_FRACTION = 0.15
+TURNED_FRACTION = 0.95
 # Trimmed re-fit schedule, loose first: (tolerance multiplier, support
 # quantile). The quantile term is what makes a COLD seed usable — a PCA or
 # world-axis seed can start tens of degrees off, where a pure tolerance band
@@ -545,6 +575,34 @@ def outer_profile(verts, faces, axis, *, bins=512):
             "widths": widths, "gap_bins": gaps}
 
 
+@log_execution_time
+def inner_profile(verts, faces, axis, grouping, id_faces, low, step, count):
+    """``R_in`` per bin: the innermost material radius, or 0 where solid.
+
+    Taken over the faces that bound the part from the inside, because a plain
+    "minimum radius per bin" is 0 wherever the section is solid and would say
+    nothing. Bins with no ID face stay 0, which reads correctly as "no bore
+    here" when the meridian is drawn.
+    """
+    if not np.any(id_faces):
+        return np.zeros(count)
+    mask = id_faces[grouping]
+    picked = faces[mask]
+    if not len(picked):
+        return np.zeros(count)
+
+    point = np.asarray(axis.point, dtype=np.float64)
+    direction = np.asarray(axis.direction, dtype=np.float64)
+    local = verts[np.unique(picked)] - point
+    axial = local @ direction
+    radial = np.linalg.norm(local - np.outer(axial, direction), axis=1)
+
+    index = np.clip(((axial - low) / step).astype(np.int64), 0, count - 1)
+    inner = np.full(count, np.inf)
+    np.minimum.at(inner, index, radial)
+    return np.where(np.isfinite(inner), inner, 0.0)
+
+
 def sample_profile(profile, low, step, axial):
     """``R_out`` at arbitrary axial coordinates; 0 outside the part."""
     index = np.floor((np.asarray(axial) - low) / step).astype(np.int64)
@@ -607,79 +665,142 @@ def mesh_volume(verts, faces):
     return float(total.sum() / 6.0)
 
 
-def classify_faces(centroids, normals, axis, residual, rho, axial, profile,
-                   low, step, *, sin_tol, slack, rho_floor, margin, face_cos):
-    """``(role u1[F], inlier bool[F])`` — the turning role of every fine face.
+def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
+                 face_ids, n_faces, *, sin_tol, slack, rho_floor,
+                 azimuth_bins=24):
+    """Per-effective-face geometry, area-weighted, all by ``np.bincount``.
 
-    External vs internal is decided differently for radial and axial faces:
+    Every turning decision is taken at this granularity, never per triangle.
+    That is not an optimization — it is required for correctness. A facing
+    surface spanning a wide radial band has triangles on both sides of any
+    radius threshold, so a per-triangle test splits the face and the vote
+    then lands wherever the tessellation happens to weigh more.
 
-    - a *radial* face is external when it faces outward and sits on the
-      envelope, ``rho >= R_out(z) - margin``;
-    - an *axial* (facing) face is external when the envelope one bin BEYOND it,
-      along its own outward normal, has already fallen to its own radius:
-      ``R_out(z + sign(n.d) * step) <= rho + margin``.
+    ``theta_span``/``radius_swing`` are the annularity pair: a face is a
+    genuine surface of revolution only if its radial band is the same at every
+    azimuth it occupies. A plane perpendicular to the axis passes the normal
+    test trivially — every such plane is locally a surface of revolution — so
+    a milled pocket floor or a square boss top can only be told from a real
+    annulus by its radius varying with theta.
 
-    The axial rule cannot be the naive "``rho >= R_out(z)`` at its own z": a
-    stepped-shaft shoulder sits below the large diameter, so every triangle on
-    it under the step radius would be misfiled as internal. Sampling one bin
-    past the face gets the shoulder (envelope past the step is the *small*
-    diameter), the end faces (envelope past the end is 0), a blind-bore floor
-    (envelope past it is the full OD) and an OD groove flank all right.
+    ``azimuth_bins`` is deliberately coarse. The metric reads triangle
+    centroids, and near the rim of a tessellated disc those are sparse in
+    azimuth; fine buckets then miss the true outer radius and report a genuine
+    annulus as non-circular. At 24 buckets the separation is an order of
+    magnitude (real annuli land under 0.04, a square boss top at 0.43).
     """
-    inliers = np.abs(residual) <= sin_tol * rho + slack
-    inliers &= rho > rho_floor
-
-    role = np.full(len(normals), ROLE_OTHER, dtype=np.uint8)
-    axial_dot = normals @ axis.direction
-    is_axial = np.abs(axial_dot) >= face_cos
-
-    beyond = axial + np.sign(axial_dot) * step
-    envelope_beyond = sample_profile(profile, low, step, beyond)
-    envelope_here = sample_profile(profile, low, step, axial)
-
-    external_axial = envelope_beyond <= rho + margin
-
-    # n.rho_hat without materializing the radial vectors:
-    #   rho_hat = (c - p - z d) / rho  =>  n.rho_hat = (n.(c-p) - z (n.d)) / rho
-    outward = (np.einsum('ij,ij->i', normals, centroids - axis.point)
-               - axial * axial_dot) > 0.0
-    on_envelope = rho >= envelope_here - margin
-
-    role[inliers & is_axial & external_axial] = ROLE_FACE
-    role[inliers & is_axial & ~external_axial] = ROLE_INTERNAL_FACE
-    role[inliers & ~is_axial & outward & on_envelope] = ROLE_OD
-    role[inliers & ~is_axial & ~(outward & on_envelope)] = ROLE_BORE
-
-    # anything genuinely on the axis is trivially turnable but carries no
-    # radial information — keep it out of both the OD and the bore buckets
-    role[rho <= rho_floor] = ROLE_ON_AXIS
-    inliers = inliers | (rho <= rho_floor)
-    return role, inliers
-
-
-def aggregate_by_brep(role, inlier, areas, face_ids, n_faces, *,
-                      min_fraction=0.9):
-    """Vote fine-face roles onto effective (BREP / sub-) faces, area-weighted.
-
-    A face is turnable only when at least ``min_fraction`` of its area is
-    revolution-compatible — a *fraction* gate, not a majority vote, because the
-    artifacts this has to kill are thin: a milled flat has a hairline stripe
-    through its centre where the normal happens to lie in the meridian plane,
-    and a cross-hole has a mid-plane ring. A 0.5 threshold would let a large
-    flat through on that stripe alone.
-    """
-    n_roles = len(TURN_ROLES)
     face_ids = np.asarray(face_ids, dtype=np.int64)
-    total = np.bincount(face_ids, weights=areas, minlength=n_faces)
-    covered = np.bincount(face_ids, weights=areas * inlier, minlength=n_faces)
-    turnable = covered >= min_fraction * np.maximum(total, TOLLERANCE)
+    inlier = (np.abs(residual) <= sin_tol * rho + slack) | (rho <= rho_floor)
+    weights = areas * inlier
 
-    histogram = np.bincount(
-        face_ids * n_roles + role, weights=areas * inlier,
-        minlength=n_faces * n_roles).reshape(n_faces, n_roles)
-    role_by_face = histogram.argmax(axis=1).astype(np.uint8)
-    role_by_face[~turnable] = ROLE_OTHER
-    return role_by_face, turnable, total
+    direction = np.asarray(axis.direction, dtype=np.float64)
+    axial_dot = normals @ direction
+    # n.rho_hat without materializing the radial vectors:
+    #   rho_hat = (c - p - z d)/rho  =>  n.rho_hat = (n.(c-p) - z (n.d)) / rho
+    radial_dot = ((np.einsum('ij,ij->i', normals, centroids - axis.point)
+                   - axial * axial_dot) / np.maximum(rho, rho_floor))
+
+    def total(values):
+        return np.bincount(face_ids, weights=values, minlength=n_faces)
+
+    def extreme(values, op, fill):
+        out = np.full(n_faces, fill, dtype=np.float64)
+        op(out, face_ids, values)
+        return out
+
+    area_total = np.maximum(total(areas), TOLLERANCE)
+    area_inlier = total(weights)
+    safe = np.maximum(area_inlier, TOLLERANCE)
+
+    metrics = {
+        "area": area_total,
+        "inlier_fraction": area_inlier / area_total,
+        "axial_dot": total(np.abs(axial_dot) * weights) / safe,
+        "radial_dot": total(radial_dot * weights) / safe,
+        "r_min": extreme(rho, np.minimum.at, np.inf),
+        "r_max": extreme(rho, np.maximum.at, -np.inf),
+        "z_min": extreme(axial, np.minimum.at, np.inf),
+        "z_max": extreme(axial, np.maximum.at, -np.inf),
+    }
+
+    # annularity: bucket by azimuth, then compare the radial band across the
+    # occupied buckets
+    reference = _unit(np.cross(direction, np.eye(3)[int(np.argmin(
+        np.abs(direction)))]))
+    other = np.cross(direction, reference)
+    relative = centroids - axis.point
+    theta = np.arctan2(relative @ other, relative @ reference)
+    bucket = np.clip(((theta + np.pi) / (2.0 * np.pi)
+                      * azimuth_bins).astype(np.int64), 0, azimuth_bins - 1)
+    cell = face_ids * azimuth_bins + bucket
+    size = n_faces * azimuth_bins
+
+    occupied = np.bincount(cell, minlength=size).reshape(n_faces, -1) > 0
+    per_cell = np.full(size, -np.inf)
+    np.maximum.at(per_cell, cell, rho)
+    per_cell = per_cell.reshape(n_faces, -1)
+
+    counts = occupied.sum(axis=1)
+    metrics["theta_span"] = counts / azimuth_bins
+    high = np.where(occupied, per_cell, -np.inf).max(axis=1)
+    # a LOW PERCENTILE, not the minimum: on a tessellated disc the triangles
+    # near the rim are sparse in azimuth, so a few buckets never reach the true
+    # outer radius and the minimum would report a genuine annulus as wildly
+    # non-circular (this is what filed every blind-bore floor as milled).
+    ordered = np.sort(np.where(occupied, per_cell, np.inf), axis=1)
+    rank = np.clip((0.1 * counts).astype(np.int64), 0,
+                   max(azimuth_bins - 1, 0))
+    low = ordered[np.arange(n_faces), rank]
+    scale = np.maximum(metrics["r_max"], TOLLERANCE)
+    metrics["radius_swing"] = np.where(
+        counts > 0, (high - low) / scale, 0.0)
+    return metrics, inlier
+
+
+def classify_effective_faces(metrics, profile, low, step, *, face_cos,
+                             margin, rho_floor, compat_fraction,
+                             swing_tollerance):
+    """``role u1[n_faces]`` — the turning role of every effective face."""
+    n_faces = len(metrics["area"])
+    role = np.full(n_faces, ROLE_OTHER, dtype=np.uint8)
+
+    revolved = metrics["inlier_fraction"] >= compat_fraction
+    axialish = metrics["axial_dot"] >= face_cos
+    r_max = metrics["r_max"]
+
+    # a facing cut must be a true annulus: same radial band at every azimuth
+    annular = metrics["radius_swing"] <= swing_tollerance
+
+    # the outer envelope over the face's own axial extent, from the RAW bins.
+    # Sampling the Douglas-Peucker polyline instead loses exactly the short
+    # runs that matter (it reports ~0 for a part's end face).
+    lo = np.floor((metrics["z_min"] - low) / step).astype(np.int64)
+    hi = np.floor((metrics["z_max"] - low) / step).astype(np.int64)
+    envelope = np.zeros(n_faces)
+    last = len(profile) - 1
+    for index in range(n_faces):  # effective faces: hundreds, not millions
+        a = int(np.clip(lo[index], 0, last))
+        b = int(np.clip(hi[index], 0, last))
+        envelope[index] = profile[a:b + 1].max()
+
+    on_envelope = r_max >= envelope - margin
+
+    # radial faces: the side is the SIGN of the radial normal component.
+    # Material sits inside an OD surface and outside an ID one, so this is a
+    # purely local test — a chamfer at a diameter step is outward-facing
+    # whether or not it reaches the widest radius at its own station.
+    radial = revolved & ~axialish
+    role[radial & (metrics["radial_dot"] > 0)] = ROLE_OD_TURN
+    role[radial & (metrics["radial_dot"] <= 0)] = ROLE_ID_TURN
+
+    # facing cuts: the normal carries no radial information, so the side comes
+    # from whether the face reaches the outer envelope over its own z range
+    facing = revolved & axialish & annular
+    role[facing & on_envelope] = ROLE_OD_FACE
+    role[facing & ~on_envelope] = ROLE_ID_FACE
+
+    role[revolved & (r_max <= rho_floor)] = ROLE_ON_AXIS
+    return role
 
 
 def _report(progress, fraction, message):
@@ -752,8 +873,7 @@ def _region_stats(region, face_ids, areas, rho, axial, *, kind, limit=32):
 
 @log_execution_time
 def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
-                    face_inlier_fraction=0.9, min_radial_fraction=0.15,
-                    turned_fraction=0.95, refine_rounds=3, max_candidates=12,
+                    refine_rounds=3, max_candidates=12,
                     sample_faces=100000, axis_override=(), progress=None):
     """Recognize the maximal turned state and classify every face.
 
@@ -860,14 +980,14 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
                               dist_tol=max(1e-3 * diagonal, 1e-3))
     scored.sort(key=lambda a: -a.detail["inlier_fraction"])
     qualified = [a for a in scored
-                 if a.detail["radial_fraction"] >= min_radial_fraction]
+                 if a.detail["radial_fraction"] >= MIN_RADIAL_FRACTION]
     best = qualified[0] if qualified else scored[0]
     if not qualified:
         reasons.append(
             f"no candidate axis sweeps enough area (best "
-            f"{100 * scored[0].detail['radial_fraction']:.1f}% radial, needs "
-            f"{100 * min_radial_fraction:.0f}%) — the fit is carried by planes "
-            f"perpendicular to the axis, not by a rotational sweep")
+            f"{100 * scored[0].detail['radial_fraction']:.1f}% radial) — the "
+            f"fit is carried by planes perpendicular to the axis, not by a "
+            f"rotational sweep")
     if len(scored) > 1:
         runner = scored[1].detail["inlier_fraction"]
         if abs(runner - scored[0].detail["inlier_fraction"]) < 0.01:
@@ -883,48 +1003,58 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
     margin = max(2.0 * chord_slack, 1e-3 * max(r_max, 1.0))
 
     residual, rho, axial = azimuthal_residual(centroids, normals, best)
-    role_fine, inlier = classify_faces(
-        centroids, normals, best, residual, rho, axial, profile, low, step,
-        sin_tol=sin_tol, slack=slack, rho_floor=rho_floor, margin=margin,
-        face_cos=face_cos)
 
-    _report(progress, 0.75, "aggregating faces")
+    _report(progress, 0.75, "classifying faces")
+    # every turning decision is taken per EFFECTIVE face; on an STL there are
+    # none, so each triangle stands alone as its own face
     if face_ids is None:
-        role_out = role_fine
-        regions = []
-        bores = []
-        milled_region_fine = np.zeros(total_faces, dtype=np.uint32)
+        grouping = np.arange(total_faces, dtype=np.int64)
+        group_count = total_faces
         reasons.append("no BREP faces (STL part) — roles are per triangle and "
                        "will speckle on milled flats")
     else:
-        role_face, turnable, _ = aggregate_by_brep(
-            role_fine, inlier, areas, face_ids, n_faces,
-            min_fraction=face_inlier_fraction)
-        role_out = role_face[face_ids]
-        pairs = _edge_pairs(workdir, n_faces)
-        milled = face_regions(pairs, ~turnable, n_faces)
-        milled_region_fine = milled[face_ids].astype(np.uint32)
-        regions = _region_stats(milled, face_ids, areas, rho, axial,
-                                kind="milled")
-        bores = _region_stats(face_regions(pairs, role_face == ROLE_BORE,
-                                           n_faces),
-                              face_ids, areas, rho, axial, kind="bore")
-        for bore in bores:
-            bore["through"] = bool(bore["z_max"] - bore["z_min"]
-                                   >= length - 2.0 * step)
+        grouping, group_count = face_ids, n_faces
+
+    metrics, inlier = face_metrics(
+        centroids, normals, areas, best, residual, rho, axial, grouping,
+        group_count, sin_tol=sin_tol, slack=slack, rho_floor=rho_floor)
+    role_face = classify_effective_faces(
+        metrics, profile, low, step, face_cos=face_cos, margin=margin,
+        rho_floor=rho_floor, compat_fraction=COMPAT_FRACTION,
+        swing_tollerance=SWING_TOLLERANCE)
+    role_out = role_face[grouping]
+
+    # the ID meridian: the innermost material radius per bin, over the faces
+    # already known to bound the part from the inside. Without this the drawn
+    # section is only the outer silhouette and every internal feature — bores,
+    # counterbores, ID facing — is invisible in it.
+    inner = inner_profile(verts, faces, best, grouping,
+                          np.isin(role_face, ID_ROLES), low, step,
+                          len(profile))
+
+    pairs = _edge_pairs(workdir, group_count) if face_ids is not None else None
+    milled = face_regions(pairs, role_face == ROLE_OTHER, group_count)
+    milled_region_fine = milled[grouping].astype(np.uint32)
+    regions = _region_stats(milled, grouping, areas, rho, axial, kind="milled")
+    bores = _region_stats(
+        face_regions(pairs, role_face == ROLE_ID_TURN, group_count),
+        grouping, areas, rho, axial, kind="bore")
+    for bore in bores:
+        bore["through"] = bool(bore["z_max"] - bore["z_min"]
+                               >= length - 2.0 * step)
 
     # -- stats ------------------------------------------------------------
     total_area = float(areas.sum()) or 1.0
     role_areas = {name: float(areas[role_out == code].sum())
                   for code, name in enumerate(TURN_ROLES)}
     turned_area = total_area - role_areas["other"]
-    radial_area = role_areas["od_turn"] + role_areas["bore"]
+    radial_area = role_areas["od_turn"] + role_areas["id_turn"]
     turned_share = turned_area / total_area
     radial_share = radial_area / total_area
 
-    if not qualified or radial_share < min_radial_fraction:
+    if not qualified or radial_share < MIN_RADIAL_FRACTION:
         verdict = "not_turned"
-    elif turned_share >= turned_fraction:
+    elif turned_share >= TURNED_FRACTION:
         verdict = "turned"
     elif turned_share >= 0.5:
         verdict = "turn_mill"
@@ -939,10 +1069,19 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
 
     centres = low + step * (np.arange(len(profile)) + 0.5)
     centres[-1] = min(centres[-1], envelope["high"])
+    simplify_tol = max(chord_slack, 2e-3 * max(length, 1.0))
     polyline = np.column_stack([centres, profile])
     polyline = np.vstack([[low, 0.0], polyline, [envelope["high"], 0.0]])
-    polyline = simplify_profile(polyline,
-                                max(chord_slack, 2e-3 * max(length, 1.0)))
+    polyline = simplify_profile(polyline, simplify_tol)
+
+    # the internal contour is emitted as its own polyline rather than folded
+    # into the outer one: the meridian of a bored part is a region with holes,
+    # not a single closed curve, and the viewer draws the two separately
+    bored = inner > 0
+    inner_polyline = np.zeros((0, 2))
+    if bored.any():
+        inner_polyline = simplify_profile(
+            np.column_stack([centres[bored], inner[bored]]), simplify_tol)
 
     residual_deg = np.degrees(np.arcsin(np.clip(
         np.abs(residual) / np.maximum(rho, rho_floor), 0.0, 1.0)))
@@ -969,6 +1108,7 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
         # along stats["axis"]["direction"], so a world point is
         # point + z * direction + r * (any unit vector perpendicular to it)
         "profile": [[float(z), float(r)] for z, r in polyline],
+        "inner_profile": [[float(z), float(r)] for z, r in inner_polyline],
         "profile_step": float(step),
         "profile_gap_bins": int(envelope["gap_bins"]),
         "milled_regions": regions,
