@@ -200,14 +200,6 @@ export const turningRolesMode: ViewMode = {
         focus: tracker.focus(`region:${region.id}`),
       });
     }
-    for (const bore of (result.stats.bores ?? []) as any[]) {
-      legend.push({
-        color: ROLE_COLORS[4],
-        label: `bore Ø${Number(bore.diameter).toFixed(2)}`
-          + `${bore.through ? ' (through)' : ''}`,
-      });
-    }
-
     const { outer, inner, axis } = sectionLines(result);
     if (outer.length) ctx.setLines(outer, SECTION_COLOR, false);
     if (inner.length) ctx.setLines(inner, INNER_COLOR, false);
