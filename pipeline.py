@@ -1322,6 +1322,105 @@ def reach_study(workdir, *, directions=(), tools=(), tollerance=0.1,
     return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
 
 
+HULL_EDGE_ANGLE_DEG = 10.0  # hull crease edges kept for the viewer overlay
+
+
+def convex_hull_faces(workdir, *, tollerance=None, progress=None):
+    """Per-face 'lies on the convex hull' mask: the surface an infinitely
+    large mill can machine directly from outside.
+
+    A facet is on the hull iff its own supporting plane supports the whole
+    vertex set: gap = support(hull verts, facet normal) - support(facet's
+    own verts, facet normal) <= eps. Normal agreement is implicit — an
+    inward-facing coplanar sliver has a flipped normal, so its gap equals
+    the part extent along that normal. ``tollerance`` overrides eps; the
+    default scales with the tessellation chord error (curved facets sit
+    chord-sag below the true hull).
+    """
+    import machining
+    from scipy.spatial import ConvexHull, QhullError
+
+    verts, faces = load_mesh_arrays(workdir)
+    points = verts.astype(np.float64)
+
+    _report(progress, 0.0, "convex hull")
+    try:
+        hull = ConvexHull(points)
+    except QhullError:
+        # near-planar/degenerate input: joggle the points
+        hull = ConvexHull(points, qhull_options="QJ")
+    hull_pts = points[hull.vertices]
+
+    diagonal = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
+    deflection = part_deflection(workdir)
+    if tollerance is not None:
+        eps = float(tollerance)
+    else:
+        eps = max(1.5 * deflection, 1e-5 * diagonal, 1e-6)
+
+    _report(progress, 0.2, "support gaps")
+    normals = _facet_normals(verts, faces).astype(np.float64)
+    own = np.einsum('fkj,fj->fk', points[faces], normals).max(axis=1)
+    support = np.empty(len(faces))
+    chunk = max(1, int(8_000_000 // max(len(hull_pts), 1)))
+    for start in range(0, len(faces), chunk):
+        stop = start + chunk
+        support[start:stop] = (normals[start:stop] @ hull_pts.T).max(axis=1)
+    gap = np.maximum(support - own, 0.0)
+
+    areas = machining.face_areas(verts, faces)
+    degenerate = areas < 1e-12
+    on_hull = (gap <= eps) & ~degenerate
+
+    _report(progress, 0.8, "hull crease edges")
+    # each undirected hull edge once (s < nb), kept where the adjacent hull
+    # facets bend more than HULL_EDGE_ANGLE_DEG — the silhouette the viewer
+    # draws; smooth hulls legitimately yield few or no crease edges
+    s = np.repeat(np.arange(len(hull.simplices)), 3)
+    k = np.tile(np.arange(3), len(hull.simplices))
+    nb = hull.neighbors.ravel()
+    plane_normals = hull.equations[:, :3]
+    keep = (s < nb) & (np.einsum('ij,ij->i', plane_normals[s], plane_normals[nb])
+                       < np.cos(np.radians(HULL_EDGE_ANGLE_DEG)))
+    a = hull.simplices[s, (k + 1) % 3][keep]
+    b = hull.simplices[s, (k + 2) % 3][keep]
+    hull_edges = points[np.stack([a, b], axis=1)].astype("<f4")
+
+    arrays = {
+        "on_hull": on_hull.astype(np.uint8),
+        "hull_gap": gap.astype("<f4"),
+        "hull_edges": hull_edges,
+    }
+    field_meta = {
+        "on_hull": {"association": "face", "role": "mask", "kind": "hull"},
+        "hull_gap": {"association": "face", "role": "scalar",
+                     "kind": "hull_gap", "units": "mm"},
+        "hull_edges": {"association": "none", "role": "lines", "dtype": "f4",
+                       "kind": "hull_edges",
+                       "segments": int(len(hull_edges))},
+    }
+    total_area = float(areas.sum())
+    stats = {
+        "face_count": int(len(faces)),
+        "on_hull_faces": int(on_hull.sum()),
+        "on_hull_area": round(float(areas[on_hull].sum()), 3),
+        "total_area": round(total_area, 3),
+        "area_fraction": round(float(areas[on_hull].sum())
+                               / max(total_area, 1e-30), 6),
+        "hull_area": round(float(hull.area), 3),
+        "hull_volume": round(float(hull.volume), 3),
+        "hull_vertex_count": int(len(hull.vertices)),
+        "tollerance": float(eps),
+        "deflection": float(deflection),
+        "degenerate_faces": int(degenerate.sum()),
+        "edge_segments": int(len(hull_edges)),
+    }
+    logger.info(f"convex hull: {stats['on_hull_faces']}/{stats['face_count']} "
+                f"faces on hull ({100 * stats['area_fraction']:.1f}% of area, "
+                f"eps {eps:.4g} mm)")
+    return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
+
+
 def thickness_highlights(faces, thickness, hi=1.3):
     """Face indices whose three vertices all exceed hi * mean thickness."""
     mask = thickness > hi * float(np.mean(thickness))
