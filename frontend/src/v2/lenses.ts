@@ -1,9 +1,8 @@
 import {
-  ArrowUpFromLine, Axis3d, CircleDot, Compass, Crosshair, Disc3, Drill,
-  Droplets, Expand, Eye,
-  Frame, Grid3x3, Highlighter, Layers, ListOrdered, MoveVertical, Network,
-  Palette, Pin, Play, Radius, Ratio, Ruler, Scissors, Shapes, ShieldCheck,
-  Snowflake, Spline, TrendingUp, Waves, type LucideIcon,
+  ArrowUpFromLine, Axis3d, Box, CircleDot, Compass, Crosshair, Disc3, Drill,
+  Droplets, Expand, Eye, Frame, Grid3x3, Highlighter, Layers, ListOrdered,
+  MoveVertical, Network, Palette, Pin, Play, Radius, Ratio, Ruler, Scissors,
+  Shapes, ShieldCheck, Snowflake, Spline, TrendingUp, Waves, type LucideIcon,
 } from 'lucide-react';
 import { PROCESS_PLUGINS } from '../registry';
 
@@ -129,6 +128,10 @@ const CURATION: Record<string, Curation> = {
     advanced: true,
     blurb: 'How far each face is from being a surface of revolution about the '
       + 'turning axis.',
+  },
+  'cnc:hull': {
+    icon: Box,
+    blurb: 'Faces on the convex hull — machinable from outside with an infinitely large tool.',
   },
   'cnc:unified': { icon: ShieldCheck },
   'cnc:access': { icon: Eye },

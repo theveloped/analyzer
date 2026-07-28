@@ -111,6 +111,7 @@ python test_pmi_roundtrip.py # AP242 GD&T export -> re-import round-trip (step_e
 python test_pmi_edit.py      # PMI editor write-path: validate/save + PUT /pmi endpoint
 python test_features.py      # CNC feature recognition (holes family)
 python test_turning.py       # turning axis fit, maximal turned state, face roles
+python test_hull.py          # cnc/hull: convex-hull face mask on box/pocket/cylinder parts
 python test_sheet.py         # sheet detect + K-factor unfold + DXF round-trip
 python test_tube.py          # tube/profile classification + unroll
 python test_pressbrake.py    # press-brake core: kinematics, envelopes, tooling, search

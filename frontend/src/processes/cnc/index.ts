@@ -9,6 +9,7 @@ import {
 } from './modes';
 import { reachAggregateMode, reachOpMode, reachStudyMode } from './reach';
 import { featuresMode, inspectFeature } from './features';
+import { hullMode } from './hull';
 import {
   inspectTurning, turningResidualMode, turningRolesMode,
 } from './turning';
@@ -70,9 +71,10 @@ export const cncPlugin: ProcessPlugin = {
   processId: 'cnc',
   label: 'CNC machining',
   modes: [setupsMode, featuresMode, turningRolesMode, turningResidualMode,
-          unifiedMode, accessMode, classMode,
-          gapMode, stickoutMode, thinSpanMode, reachStudyMode, reachOpMode,
-          reachAggregateMode, brepFacesMode, faceAttrsMode, highlightsMode],
+          hullMode, unifiedMode, accessMode,
+          classMode, gapMode, stickoutMode, thinSpanMode, reachStudyMode,
+          reachOpMode, reachAggregateMode, brepFacesMode, faceAttrsMode,
+          highlightsMode],
   defaults: () => ({
     source: 0,
     tip: 0,
@@ -97,6 +99,7 @@ export const cncPlugin: ProcessPlugin = {
     setupsOption: 0,
     showLines: true,
     showArrows: true,
+    showHullEdges: true,
     splitMode: false,
     splitFace: null,
     splitStart: null,

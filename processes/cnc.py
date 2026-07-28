@@ -10,6 +10,7 @@ SETUPS_SCHEMA = 3  # result schema version, salted into the cache key
 FEATURES_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/features.ts
 REACH_STUDY_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/reach.ts
 TURNING_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/turning.ts
+HULL_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/hull.ts
 
 # default library: 3 flat endmills + 2 ball mills, each at its longest
 # practical reach (stickout 5xD) with the shank as the holder cylinder
@@ -130,6 +131,22 @@ def run_reach_study(workdir, params, progress):
                           fields=list(result["arrays"]))
 
 
+def run_hull(workdir, params, progress):
+    cache_params = resolver.cache_key(workdir, "cnc/hull", params)
+    cached = load_cached_result(workdir, "cnc", "hull", cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    result = pipeline.convex_hull_faces(
+        workdir, tollerance=params["tollerance"], progress=progress)
+
+    store_result(workdir, "cnc", "hull", cache_params, result["stats"],
+                 arrays=result["arrays"], field_meta=result["field_meta"])
+    return AnalysisResult(stats=result["stats"],
+                          fields=list(result["arrays"]))
+
+
 def _tips(params):
     """Accept tip specs as 'D:rc' strings or [D, rc] pairs."""
     tips = []
@@ -235,6 +252,21 @@ PROCESS = ProcessDef(
             # roles are voted per EFFECTIVE face, so a user cut changes the
             # answer and must orphan the old result (as cnc/setups does)
             salts=("splits",),
+        ),
+        AnalysisDef(
+            id="hull",
+            label="Convex hull faces",
+            description="Faces lying on the part's convex hull — the "
+                        "surface an infinitely large mill can machine "
+                        "directly from outside.",
+            requires=["prep/mesh"],
+            params=[
+                Param("tollerance", "number", default=None, unit="mm", min=0,
+                      label="On-hull distance tolerance "
+                            "(blank = from mesh deflection)"),
+            ],
+            run=run_hull,
+            schema=HULL_SCHEMA,
         ),
         AnalysisDef(
             id="setups",
