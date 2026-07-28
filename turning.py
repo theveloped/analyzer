@@ -137,8 +137,6 @@ from utils import log_execution_time
 TURN_ROLES = ["other", "od_face", "od_turn", "id_face", "id_turn", "on_axis"]
 (ROLE_OTHER, ROLE_OD_FACE, ROLE_OD_TURN,
  ROLE_ID_FACE, ROLE_ID_TURN, ROLE_ON_AXIS) = range(6)
-OD_ROLES = (ROLE_OD_FACE, ROLE_OD_TURN)
-ID_ROLES = (ROLE_ID_FACE, ROLE_ID_TURN)
 
 TOLLERANCE = 1e-9
 # |n.d| >= cos(this) makes a face "axial" (a facing surface). Not a param: a
@@ -865,15 +863,6 @@ def boundary_membership(rho_hi, rho_lo, axial, axial_dot, low, step, outer,
     return on_outer, on_inner
 
 
-def sample_profile(profile, low, step, axial):
-    """``R_out`` at arbitrary axial coordinates; 0 outside the part."""
-    index = np.floor((np.asarray(axial) - low) / step).astype(np.int64)
-    inside = (index >= 0) & (index < len(profile))
-    out = np.zeros(len(index), dtype=np.float64)
-    out[inside] = profile[index[inside]]
-    return out
-
-
 def simplify_profile(points, tollerance):
     """Douglas-Peucker on a (z, r) polyline, iterative (explicit stack).
 
@@ -1231,8 +1220,6 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
     """
     import json
     import os
-
-    import splits
 
     _report(progress, 0.02, "loading mesh")
     verts, faces = pipeline.load_mesh_arrays(workdir)
