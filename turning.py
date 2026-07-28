@@ -93,6 +93,9 @@ Known limitations, all deliberate in this phase:
   fits. A deep narrow groove passes.
 - Blocking is judged one bin along the normal, so a distant overhang that
   clears the immediate neighbourhood is not seen.
+- Boundary membership is measured against a BINNED profile, so a face whose
+  radius sweeps faster than the bin resolution leans on the vertex extent
+  (outer) and the within-bin sweep (inner) rather than on the profile itself.
 - The binned profile over-estimates on steep tapers by up to one bin of taper.
   Conservative in the right direction for a stock envelope; reported as
   ``stats["profile_error"]``.
@@ -665,8 +668,8 @@ def inner_profile(rho, axial, radial_dot, low, step, count, *, rho_floor):
     return np.where(bore, inner, 0.0)
 
 
-def boundary_membership(rho, axial, axial_dot, low, step, outer, inner,
-                        margin, face_cos):
+def boundary_membership(rho_hi, rho_lo, axial, axial_dot, low, step, outer,
+                        inner, margin, face_cos):
     """``(on_outer, on_inner)`` per triangle — is it on the turned boundary?
 
     A lathe only ever cuts the boundary of the turned state. A face buried
@@ -710,6 +713,7 @@ def boundary_membership(rho, axial, axial_dot, low, step, outer, inner,
     outer_win = window(outer, np.minimum.reduce)
     inner_win = window(inner, np.maximum.reduce)
 
+
     # Sampled at a BIN, never interpolated. Interpolation smooths over exactly
     # the steps this has to detect: a flange top would be measured half-way up
     # the boss standing on it, and a bore wall half-way through its own floor.
@@ -722,10 +726,26 @@ def boundary_membership(rho, axial, axial_dot, low, step, outer, inner,
     outside = facing & ((beyond < 0) | (beyond >= count))
     sample = np.where(facing, np.clip(beyond, 0, count - 1), own)
 
+    # The two sides need different slack, and the asymmetry is not arbitrary.
+    # `outer` stores a per-bin MAXIMUM, which a triangle's outermost vertex
+    # can reach, so no slack is needed and none is given — the outer test is
+    # what detects blocking, and widening it by the local step would erase
+    # exactly that signal. `inner` stores a per-bin MINIMUM, attained
+    # somewhere else in the bin, so on a sloping chamfer no vertex of the
+    # triangle can reach it; that side gets the within-bin sweep as slack.
+    # Safe there because what the inner test must reject — cross-hole walls,
+    # counterbore walls — misses the inner boundary by orders more than a bin
+    # of taper.
+    sweep = np.zeros_like(inner)
+    if count > 1:
+        drop = np.abs(np.diff(inner))
+        sweep[:-1] = np.maximum(sweep[:-1], drop)
+        sweep[1:] = np.maximum(sweep[1:], drop)
+
     r_out = np.where(outside, 0.0, outer_win[sample])
     r_in = np.where(outside, 0.0, inner_win[sample])
-    on_outer = rho >= r_out - margin
-    on_inner = (r_in > 0.0) & (rho <= r_in + margin)
+    on_outer = rho_hi >= r_out - margin
+    on_inner = (r_in > 0.0) & (rho_lo <= r_in + margin + sweep[sample])
     return on_outer, on_inner
 
 
@@ -1237,9 +1257,19 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
                   / np.maximum(rho, rho_floor))
     inner = inner_profile(rho, axial, radial_dot, low, step, len(profile),
                           rho_floor=rho_floor)
+    # per-triangle radial extent, gathered a column at a time: verts[faces] is
+    # a float64 (F, 3, 3), which is 200 MB on a 3M-face part
+    local = verts - best.point
+    vertex_axial = local @ direction
+    vertex_rho = np.linalg.norm(local - np.outer(vertex_axial, direction),
+                                axis=1)
+    corner = [vertex_rho[faces[:, k]] for k in range(3)]
+    rho_hi = np.maximum(np.maximum(corner[0], corner[1]), corner[2])
+    rho_lo = np.minimum(np.minimum(corner[0], corner[1]), corner[2])
+    del local, vertex_axial, corner
     on_outer, on_inner = boundary_membership(
-        rho, axial, normals @ direction, low, step, profile, inner, margin,
-        face_cos)
+        rho_hi, rho_lo, axial, normals @ direction, low, step, profile, inner,
+        margin, face_cos)
 
     metrics, inlier = face_metrics(
         centroids, normals, areas, best, residual, rho, axial, grouping,
