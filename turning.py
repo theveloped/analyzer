@@ -568,16 +568,26 @@ def outer_profile(verts, faces, axis, *, bins=512):
     smallest solid of revolution containing it, which is exactly what turning
     alone can leave behind; milling removes the rest.
 
-    Bins are widened to at least the 99th-percentile triangle axial extent, so
-    a bin can essentially never fall between two rows of vertices. The base
-    profile is then the per-bin max VERTEX radius, and triangles spanning
-    several bins are used only to fill bins that hold no vertex at all.
+    Each bin's value is EXACT for the mesh, not a sample of it, and one fact
+    buys that. Along a straight edge ``r(z)`` is convex: writing ``r^2`` as a
+    quadratic ``a z^2 + b z + c`` (it is, because the radial vector is linear
+    in the parameter), ``r'' = (4ac - b^2) / 4r^3``, and ``4ac - b^2 >= 0``
+    because ``r^2`` is a squared length and so never negative. A convex
+    function on an interval takes its maximum at an endpoint, so the largest
+    radius an edge reaches inside a bin is reached either at a VERTEX or where
+    the edge crosses a BIN BOUNDARY. Sampling both is therefore not an
+    approximation — it is the per-bin maximum exactly.
 
-    Making the spanning pass raise *every* bin it touches instead — the
-    obvious "conservative" reading — is wrong in a way that matters: at a
-    shoulder it smears the large diameter one bin into the small-diameter
-    section, and the external/internal test samples exactly one bin past a
-    facing surface, so every shoulder would come back as an internal face.
+    That is what makes the bin width a free choice. The older version sampled
+    vertices only, so it had to widen bins to the 99th-percentile triangle
+    extent to stop one falling between two rows of vertices, which pinned a
+    482 mm part at 259 bins however many were asked for, and it patched the
+    leftovers by raising empty bins to a spanning triangle's largest radius.
+    That patch could only ever be applied to EMPTY bins: used everywhere it
+    smears a shoulder's large diameter one bin into the small-diameter
+    section, and since the facing test samples one bin past a surface, every
+    shoulder would come back internal. With the crossings sampled there is
+    nothing left to patch.
 
     Returns ``{low, high, step, r_out, widths, gap_bins}``. ``high - low`` is
     the exact axial extent of the part; the bin count is rounded up, so the
@@ -599,31 +609,55 @@ def outer_profile(verts, faces, axis, *, bins=512):
                 "r_out": np.array([float(radial.max())]),
                 "widths": np.array([0.0]), "gap_bins": 0}
 
-    tri_axial = axial[faces]
-    extent = tri_axial.max(axis=1) - tri_axial.min(axis=1)
-    resolution = float(np.percentile(extent, 99.0)) if len(extent) else 0.0
-    step = max(span / max(int(bins), 1), resolution, span * 1e-4)
+    step = max(span / max(int(bins), 1), span * 1e-4)
     count = max(int(math.ceil(span / step)), 1)
     index = np.clip(((axial - low) / step).astype(np.int64), 0, count - 1)
 
     profile = np.zeros(count, dtype=np.float64)
     np.maximum.at(profile, index, radial)
-    populated = np.bincount(index, minlength=count) > 0
 
-    gaps = int((~populated).sum())
-    if gaps:
-        tri_bins = index[faces]
-        lowest = tri_bins.min(axis=1)
-        highest = tri_bins.max(axis=1)
-        spans = highest - lowest + 1
+    # the radial vector per vertex, so a crossing's radius is an interpolation
+    # rather than a fresh projection
+    perp = local - np.outer(axial, direction)
+
+    # every triangle edge, deduplicated only by ordering — a max does not care
+    # about duplicates, and sorting 9M pairs costs more than the extra passes
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]],
+                            faces[:, [2, 0]]])
+    CHUNK = 1 << 20  # bounds the crossing gather, which is the memory peak
+    for begin in range(0, len(edges), CHUNK):
+        first, second = edges[begin:begin + CHUNK].T
+        z_a, z_b = axial[first], axial[second]
+        lo_bin = np.minimum(index[first], index[second])
+        hi_bin = np.maximum(index[first], index[second])
+        spans = hi_bin - lo_bin  # number of boundaries strictly crossed
+        if not spans.any():
+            continue
+        keep = spans > 0
+        first, second = first[keep], second[keep]
+        z_a, z_b = z_a[keep], z_b[keep]
+        lo_bin, spans = lo_bin[keep], spans[keep]
+
         total = int(spans.sum())
         starts = np.concatenate([[0], np.cumsum(spans)[:-1]])
-        spread = (np.repeat(lowest, spans)
-                  + (np.arange(total) - np.repeat(starts, spans)))
-        filler = np.zeros(count, dtype=np.float64)
-        np.maximum.at(filler, spread, np.repeat(radial[faces].max(axis=1),
-                                                spans))
-        profile[~populated] = filler[~populated]
+        rank = np.arange(total) - np.repeat(starts, spans)
+        boundary = np.repeat(lo_bin, spans) + rank + 1  # bin index of the wall
+        where = low + boundary * step
+
+        owner = np.repeat(np.arange(len(spans)), spans)
+        gap = z_b[owner] - z_a[owner]
+        ratio = np.where(np.abs(gap) > TOLLERANCE,
+                         (where - z_a[owner]) / np.where(gap == 0, 1.0, gap),
+                         0.0)
+        crossing = (perp[first[owner]]
+                    + ratio[:, None] * (perp[second[owner]]
+                                        - perp[first[owner]]))
+        reach = np.linalg.norm(crossing, axis=1)
+        # a boundary belongs to the bins on both of its sides
+        np.maximum.at(profile, np.clip(boundary, 0, count - 1), reach)
+        np.maximum.at(profile, np.clip(boundary - 1, 0, count - 1), reach)
+
+    gaps = int((profile <= 0.0).sum())
 
     widths = np.full(count, step, dtype=np.float64)
     widths[-1] = span - (count - 1) * step
@@ -632,7 +666,7 @@ def outer_profile(verts, faces, axis, *, bins=512):
 
 
 @log_execution_time
-def inner_profile(rho, axial, radial_dot, low, step, count, *, rho_floor):
+def inner_profile(rho, radial_dot, lo_bin, hi_bin, count, *, rho_floor):
     """``R_in`` per bin: the innermost radius the turned state reaches.
 
     The maximal turned state is the union of all rotations of the part, so at
@@ -652,14 +686,30 @@ def inner_profile(rho, axial, radial_dot, low, step, count, *, rho_floor):
     version took a minimum over the faces already called internal) is circular
     — a single misfiled face moved the boundary that judged every other one.
     """
-    index = np.clip(((axial - low) / step).astype(np.int64), 0, count - 1)
     inward = radial_dot < 0.0
     outward = radial_dot > 0.0
 
     def smallest(mask):
+        """Smallest radius over the triangles that REACH each bin.
+
+        Spread across every bin a triangle spans, not just the one holding
+        its centroid. The two sides are compared against each other, so a bin
+        that happens to catch one and miss the other invents a bore out of
+        nothing: at fine resolution a bin can hold a rib's inward-facing end
+        face while the outward-facing shaft beside it lands in the
+        neighbouring bin, and the comparison then reads a void that is solid
+        metal. Spanning makes the answer independent of the bin width.
+        """
         out = np.full(count, np.inf)
-        if mask.any():
-            np.minimum.at(out, index[mask], rho[mask])
+        if not mask.any():
+            return out
+        first, last = lo_bin[mask], hi_bin[mask]
+        spans = last - first + 1
+        total = int(spans.sum())
+        starts = np.concatenate([[0], np.cumsum(spans)[:-1]])
+        spread = np.repeat(first, spans) + (np.arange(total)
+                                            - np.repeat(starts, spans))
+        np.minimum.at(out, spread, np.repeat(rho[mask], spans))
         return out
 
     inner, solid = smallest(inward), smallest(outward)
@@ -1255,10 +1305,8 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
     radial_dot = ((np.einsum('ij,ij->i', normals, centroids - best.point)
                    - axial * (normals @ direction))
                   / np.maximum(rho, rho_floor))
-    inner = inner_profile(rho, axial, radial_dot, low, step, len(profile),
-                          rho_floor=rho_floor)
-    # per-triangle radial extent, gathered a column at a time: verts[faces] is
-    # a float64 (F, 3, 3), which is 200 MB on a 3M-face part
+    # per-triangle radial and axial extent, gathered a column at a time:
+    # verts[faces] is a float64 (F, 3, 3), which is 200 MB on a 3M-face part
     local = verts - best.point
     vertex_axial = local @ direction
     vertex_rho = np.linalg.norm(local - np.outer(vertex_axial, direction),
@@ -1266,7 +1314,16 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
     corner = [vertex_rho[faces[:, k]] for k in range(3)]
     rho_hi = np.maximum(np.maximum(corner[0], corner[1]), corner[2])
     rho_lo = np.minimum(np.minimum(corner[0], corner[1]), corner[2])
-    del local, vertex_axial, corner
+    height = [vertex_axial[faces[:, k]] for k in range(3)]
+    last_bin = len(profile) - 1
+    lo_bin = np.clip(np.floor((np.minimum.reduce(height) - low) / step),
+                     0, last_bin).astype(np.int64)
+    hi_bin = np.clip(np.floor((np.maximum.reduce(height) - low) / step),
+                     0, last_bin).astype(np.int64)
+    del local, vertex_axial, corner, height
+
+    inner = inner_profile(rho_lo, radial_dot, lo_bin, hi_bin, len(profile),
+                          rho_floor=rho_floor)
     on_outer, on_inner = boundary_membership(
         rho_hi, rho_lo, axial, normals @ direction, low, step, profile, inner,
         margin, face_cos)
@@ -1322,7 +1379,11 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
 
     centres = low + step * (np.arange(len(profile)) + 0.5)
     centres[-1] = min(centres[-1], envelope["high"])
-    simplify_tol = max(chord_slack, 2e-3 * max(length, 1.0))
+    # Kept an order below the mesh's own chord error so the drawn section is
+    # limited by the mesh, never by this: the old 2e-3 * length threw 512 bins
+    # away to 18 points and 2.2 mm of deviation, which is most of what read as
+    # a coarse section.
+    simplify_tol = max(0.1 * chord_slack, 1e-5 * max(length, 1.0))
     polyline = np.column_stack([centres, profile])
     polyline = np.vstack([[low, 0.0], polyline, [envelope["high"], 0.0]])
     polyline = simplify_profile(polyline, simplify_tol)
