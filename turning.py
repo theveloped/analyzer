@@ -4,8 +4,8 @@ A part is *turned* when most of its surface is a body of revolution about one
 axis; the rest is milled away afterwards. This module finds that axis, builds
 the **maximal turned state** — the smallest solid of revolution containing the
 part, i.e. the union of all rotations of the part about the axis — and labels
-every face by the turning operation that would produce it (OD turning, facing,
-boring) or as milled leftover.
+every face by the turning operation that would produce it (OD/ID turning and
+facing) or as milled leftover.
 
 The whole thing rests on one identity. A surface is a surface of revolution
 about the axis line ``(p, d)`` **iff its normal everywhere has no azimuthal
@@ -52,16 +52,26 @@ is radial at the chord midpoint azimuth while the centroid sits at the 1/3
 azimuth, giving ~``phi/6`` of azimuthal error (about 2 degrees at typical
 deflections) that no length slack fixes — hence the STL default of 5 degrees.
 
+Roles are decided per EFFECTIVE face, never per triangle. A facing surface
+spanning a wide radial band has triangles on both sides of any radius
+threshold, so a per-triangle test splits the face and the vote then lands
+wherever the tessellation happens to weigh more. Only the *participation* test
+— is this triangle a surface of revolution at all — is local, and that is what
+drives the needs-split flag: a face that is part turned and part not gets
+``brep_default = CONFLICT_ROLE`` and paints its two parts separately, so a user
+cut can resolve it.
+
 Known limitations, all deliberate in this phase:
 
 - A plane *parallel to and offset from* the axis has a hairline turnable stripe
   through its centre (width ~ ``2 h tan(tol)``), and a cross-hole has a turnable
-  mid-plane ring. Both are measure-zero and are suppressed by the BREP-face
-  inlier *fraction* gate, not by a majority vote — which is why that gate is
-  0.9 and not 0.5. An STL part has no BREP faces to aggregate over and will
+  mid-plane ring. Both are measure-zero. Two guards kill them: the ``COMPAT_FRACTION``
+  coverage gate for the role, and the ``SPLIT_STABILITY`` tolerance-halving test
+  for the needs-split flag — without the latter every flag on a real part is one
+  of these artifacts. An STL part has no BREP faces to aggregate over and will
   show speckle there.
 - A revolution-compatible face shadowed by an axial overhang (a true undercut)
-  is filed as ``bore``.
+  is filed as an ID role.
 - The binned profile over-estimates on steep tapers by up to one bin of taper.
   Conservative in the right direction for a stock envelope; reported as
   ``stats["profile_error"]``.
@@ -80,6 +90,7 @@ from loguru import logger
 
 import machining
 import pipeline
+import splits
 from utils import log_execution_time
 
 # index == category code in the per-face field; mirrored in
@@ -122,6 +133,17 @@ FACE_NORMAL_TOL_DEG = 5.0
 #                     ~55% compatible area on normals alone
 COMPAT_FRACTION = 0.9
 SWING_TOLLERANCE = 0.1
+#   SPLIT_FLOOR       both sides of a mixed face must hold at least this share
+#                     of its area before it is worth flagging for a cut
+#   SPLIT_STABILITY   how much of a face's compatible area must survive
+#                     halving the tolerance before the compatible part counts
+#                     as a real turned patch rather than a zero-crossing stripe.
+#                     A genuine patch is EXACTLY compatible and scores 1.0, so
+#                     the bar is high: off-axis cones are tangential rather than
+#                     transversal zeros and still reach 0.80.
+SPLIT_FLOOR = 0.05
+SPLIT_STABILITY = 0.85
+CONFLICT_ROLE = 254  # brep_default sentinel, as molding.DEFAULT_CONFLICT
 MIN_RADIAL_FRACTION = 0.15
 TURNED_FRACTION = 0.95
 # Trimmed re-fit schedule, loose first: (tolerance multiplier, support
@@ -634,7 +656,11 @@ def simplify_profile(points, tollerance):
         if length < TOLLERANCE:
             distance = np.linalg.norm(segment - points[first], axis=1)
         else:
-            distance = np.abs(np.cross(chord, segment - points[first])) / length
+            # the 2-D cross product written out: np.cross on 2-vectors is
+            # deprecated in NumPy 2 and slated for removal
+            offsets = segment - points[first]
+            area = chord[0] * offsets[:, 1] - chord[1] * offsets[:, 0]
+            distance = np.abs(area) / length
         offset = int(np.argmax(distance))
         if float(distance[offset]) <= tollerance:
             continue
@@ -690,7 +716,16 @@ def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
     magnitude (real annuli land under 0.04, a square boss top at 0.43).
     """
     face_ids = np.asarray(face_ids, dtype=np.int64)
-    inlier = (np.abs(residual) <= sin_tol * rho + slack) | (rho <= rho_floor)
+    band = sin_tol * rho + slack
+    inlier = (np.abs(residual) <= band) | (rho <= rho_floor)
+    # the same test at half the tolerance. A genuinely revolved patch keeps
+    # essentially all of its area; a measure-zero artifact — the hairline
+    # stripe down an offset plane, the mid-plane ring of a cross-hole — is a
+    # transversal ZERO CROSSING of the residual, so its width is proportional
+    # to the tolerance and it loses about half. That ratio is what separates
+    # "this face is part turned and part milled" from "this face is milled and
+    # the residual happens to pass through zero along a line".
+    inlier_half = (np.abs(residual) <= 0.5 * band) | (rho <= rho_floor)
     weights = areas * inlier
 
     direction = np.asarray(axis.direction, dtype=np.float64)
@@ -715,6 +750,7 @@ def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
     metrics = {
         "area": area_total,
         "inlier_fraction": area_inlier / area_total,
+        "stability": total(areas * inlier_half) / safe,
         "axial_dot": total(np.abs(axial_dot) * weights) / safe,
         "radial_dot": total(radial_dot * weights) / safe,
         "r_min": extreme(rho, np.minimum.at, np.inf),
@@ -758,13 +794,21 @@ def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
 
 
 def classify_effective_faces(metrics, profile, low, step, *, face_cos,
-                             margin, rho_floor, compat_fraction,
-                             swing_tollerance):
-    """``role u1[n_faces]`` — the turning role of every effective face."""
+                             margin, rho_floor, swing_tollerance):
+    """``role u1[n_faces]`` — the turning role every effective face would take.
+
+    Computed from the face's revolution-COMPATIBLE area alone (``face_metrics``
+    weights the normal components by it), and deliberately ungated: a face that
+    is only partly compatible still has a well-defined role for the part that
+    is. Applying the coverage gate here would collapse that to "milled" and
+    throw away exactly what the needs-split presentation has to show — which
+    part of the face is turned and which was cut away by a second operation.
+    The caller applies the gate.
+    """
     n_faces = len(metrics["area"])
     role = np.full(n_faces, ROLE_OTHER, dtype=np.uint8)
 
-    revolved = metrics["inlier_fraction"] >= compat_fraction
+    revolved = np.ones(n_faces, dtype=bool)
     axialish = metrics["axial_dot"] >= face_cos
     r_max = metrics["r_max"]
 
@@ -774,14 +818,18 @@ def classify_effective_faces(metrics, profile, low, step, *, face_cos,
     # the outer envelope over the face's own axial extent, from the RAW bins.
     # Sampling the Douglas-Peucker polyline instead loses exactly the short
     # runs that matter (it reports ~0 for a part's end face).
-    lo = np.floor((metrics["z_min"] - low) / step).astype(np.int64)
-    hi = np.floor((metrics["z_max"] - low) / step).astype(np.int64)
-    envelope = np.zeros(n_faces)
+    # a retired parent id (split away, no triangles left) keeps the +/-inf
+    # identities from the extreme reduction — cast those to int and the result
+    # is undefined, so clamp to the bin range BEFORE the cast, not after
     last = len(profile) - 1
+    def bin_of(values):
+        scaled = np.where(np.isfinite(values), (values - low) / step, 0.0)
+        return np.clip(np.floor(scaled), 0, last).astype(np.int64)
+
+    lo, hi = bin_of(metrics["z_min"]), bin_of(metrics["z_max"])
+    envelope = np.zeros(n_faces)
     for index in range(n_faces):  # effective faces: hundreds, not millions
-        a = int(np.clip(lo[index], 0, last))
-        b = int(np.clip(hi[index], 0, last))
-        envelope[index] = profile[a:b + 1].max()
+        envelope[index] = profile[lo[index]:hi[index] + 1].max()
 
     on_envelope = r_max >= envelope - margin
 
@@ -801,6 +849,48 @@ def classify_effective_faces(metrics, profile, low, step, *, face_cos,
 
     role[revolved & (r_max <= rho_floor)] = ROLE_ON_AXIS
     return role
+
+
+def split_state(role_guess, inlier, grouping, n_faces, share, stability, *,
+                compat_fraction, split_floor, split_stability):
+    """``(role_face, mixed, brep_valid, brep_default)`` for the split UI.
+
+    A face is MIXED when a real share of it is a surface of revolution and a
+    real share is not — a turned cylinder with a flat milled across it, say.
+    That is the case a single per-face role cannot describe honestly, and the
+    one a user cut resolves: split the face and each piece classifies on its
+    own.
+
+    Two guards, and both are load-bearing. ``split_floor`` keeps each side
+    substantial, so a few stray triangles at a tangent edge do not flag an
+    otherwise perfect cylinder. ``split_stability`` is the one that matters:
+    without it EVERY flag on a real part is a false positive, because the
+    measure-zero artifacts (a hairline stripe down an offset plane, a
+    cross-hole's mid-plane ring) look exactly like a small turned patch by
+    area alone. They are told apart by tightening the tolerance — see
+    ``face_metrics`` — which on a NIST test part separates them completely:
+    ratio 1.00 for every genuine face against 0.57 and below for every
+    artifact.
+    """
+    role_face = np.where(share >= compat_fraction, role_guess,
+                         ROLE_OTHER).astype(np.uint8)
+    mixed = ((share >= split_floor) & (share <= 1.0 - split_floor)
+             & (stability >= split_stability))
+
+    # a uniform face floods its own role; a mixed one shows the truth per
+    # triangle, so the milled patch reads as a patch and not as the whole face
+    role_fine = role_face[grouping]
+    on_mixed = mixed[grouping]
+    role_fine = np.where(on_mixed,
+                         np.where(inlier, role_guess[grouping], ROLE_OTHER),
+                         role_fine).astype(np.uint8)
+
+    # bit r set iff role r covers the whole face; mixed faces set nothing,
+    # which is what marks them as needing a cut
+    brep_valid = np.where(mixed, 0,
+                          (1 << role_face.astype(np.uint32))).astype(np.uint32)
+    brep_default = np.where(mixed, CONFLICT_ROLE, role_face).astype(np.uint8)
+    return role_fine, role_face, mixed, brep_valid, brep_default
 
 
 def _report(progress, fraction, message):
@@ -1018,11 +1108,15 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
     metrics, inlier = face_metrics(
         centroids, normals, areas, best, residual, rho, axial, grouping,
         group_count, sin_tol=sin_tol, slack=slack, rho_floor=rho_floor)
-    role_face = classify_effective_faces(
+    role_guess = classify_effective_faces(
         metrics, profile, low, step, face_cos=face_cos, margin=margin,
-        rho_floor=rho_floor, compat_fraction=COMPAT_FRACTION,
-        swing_tollerance=SWING_TOLLERANCE)
-    role_out = role_face[grouping]
+        rho_floor=rho_floor, swing_tollerance=SWING_TOLLERANCE)
+    role_out, role_face, mixed, brep_valid, brep_default = split_state(
+        role_guess, inlier, grouping, group_count, metrics["inlier_fraction"],
+        metrics["stability"], compat_fraction=COMPAT_FRACTION,
+        split_floor=SPLIT_FLOOR, split_stability=SPLIT_STABILITY)
+    if face_ids is not None:
+        splits.sanitize_retired(brep_valid, brep_default, grouping)
 
     # the ID meridian: the innermost material radius per bin, over the faces
     # already known to bound the part from the inside. Without this the drawn
@@ -1113,20 +1207,36 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
         "profile_gap_bins": int(envelope["gap_bins"]),
         "milled_regions": regions,
         "bores": bores,
+        "needs_split": int(mixed.sum()),
+        "needs_split_area": float(areas[mixed[grouping]].sum()),
     }
 
     arrays = {
         "turn_role": role_out.astype("<u1"),
         "turn_residual": residual_deg.astype("<f4"),
         "milled_region": milled_region_fine.astype("<u4"),
+        "brep_valid": brep_valid.astype("<u4"),
+        "brep_default": brep_default.astype("<u1"),
     }
+    # colors stay frontend-owned: unlike setups, the role set is fixed, so
+    # there is nothing per-run for the backend to name
+    common = {"kind": "turn_role", "labels": TURN_ROLES,
+              "conflict": CONFLICT_ROLE}
     field_meta = {
-        "turn_role": {"kind": "turn_role", "association": "face",
-                      "role": "category", "dtype": "u1", "labels": TURN_ROLES},
+        "turn_role": {**common, "variant": "turn_role", "association": "face",
+                      "role": "category", "dtype": "u1"},
         "turn_residual": {"kind": "turn_residual", "association": "face",
                           "role": "scalar", "dtype": "f4", "units": "deg"},
         "milled_region": {"kind": "milled_region", "association": "face",
                           "role": "data", "dtype": "u4"},
+        # per-EFFECTIVE-face, so association "none": indexed by the ids in
+        # subfaces/brep_faces, not by fine triangle
+        "brep_valid": {**common, "variant": "brep_valid", "association": "none",
+                       "role": "data", "dtype": "u4",
+                       "count": int(len(brep_valid))},
+        "brep_default": {**common, "variant": "brep_default",
+                         "association": "none", "role": "data", "dtype": "u1",
+                         "count": int(len(brep_default))},
     }
 
     logger.info(

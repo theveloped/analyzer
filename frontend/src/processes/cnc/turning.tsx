@@ -2,12 +2,16 @@
 // lathe section drawn through the part, and the revolution-error heatmap that
 // answers "why isn't this face turned".
 
-import type { ResultEntry } from '../../api/types';
+import type { Manifest, ResultEntry } from '../../api/types';
 import { COL, FocusTracker, rampColor } from '../../colorizers/core';
 import { sequentialGradientCss } from '../../viewer/colormaps';
 import type {
   LegendEntry, RGB, ViewCtx, ViewMode,
 } from '../../registry/types';
+import {
+  drawSplitOverlays, effectiveDescriptor, type SplitHost,
+} from '../../splits/splits';
+import { SplitControls } from '../../splits/SplitControls';
 
 // keep in sync with TURNING_SCHEMA in processes/cnc.py
 export const TURNING_SCHEMA = 2;
@@ -27,14 +31,22 @@ const ROLE_COLORS: RGB[] = [
 ];
 const SECTION_COLOR: RGB = [1.0, 0.85, 0.25];
 const INNER_COLOR: RGB = [1.0, 0.55, 0.35];
+// brep_default sentinel — keep in sync with turning.CONFLICT_ROLE
+const CONFLICT_ROLE = 254;
+const CONFLICT_COLOR: RGB = [0.95, 0.25, 0.75];
 const AXIS_COLOR: RGB = [0.55, 0.85, 0.55];
 
 type Vec3 = [number, number, number];
 
-export function latestTurning(ctx: ViewCtx): ResultEntry | null {
-  const results = ctx.manifest.results.filter((r) => r.process === 'cnc'
+/** Usable turning results, newest last. */
+export function turningResults(manifest: Manifest): ResultEntry[] {
+  return manifest.results.filter((r) => r.process === 'cnc'
     && r.analysis === 'turning' && !r.stale
     && r.params.schema === TURNING_SCHEMA);
+}
+
+export function latestTurning(ctx: ViewCtx): ResultEntry | null {
+  const results = turningResults(ctx.manifest);
   return results.length ? results[results.length - 1] : null;
 }
 
@@ -131,6 +143,23 @@ export const turningRolesMode: ViewMode = {
     const regions = await turningField(ctx, result,
                                        'milled_region') as Uint32Array;
 
+    // per-EFFECTIVE-face verdict: 254 marks a face that is part turned and
+    // part not, which no single role describes and a user cut resolves
+    const brepDesc = effectiveDescriptor(ctx.manifest);
+    const defaultsDesc = ctx.manifest.fields.find(
+      (f) => f.id === `results.cnc.turning.${result.hash}.brep_default`);
+    const [brepIds, defaults] = await Promise.all([
+      brepDesc ? ctx.getField(brepDesc) as Promise<Uint32Array> : null,
+      defaultsDesc ? ctx.getField(defaultsDesc) as Promise<Uint8Array> : null,
+    ]);
+    const mixed = (f: number) => {
+      if (!brepIds || !defaults) return false;
+      const b = brepIds[f];
+      // ids past the array are sub-faces the result predates — treat them as
+      // needing attention until the auto re-run lands, as setups does
+      return b >= defaults.length || defaults[b] === CONFLICT_ROLE;
+    };
+
     const tracker = new FocusTracker(ctx);
     const counts = new Array(ROLE_LABELS.length).fill(0);
     ctx.paintFaces((f) => {
@@ -138,6 +167,13 @@ export const turningRolesMode: ViewMode = {
       if (code < counts.length) counts[code]++;
       tracker.add(`role:${code}`, f);
       if (regions[f]) tracker.add(`region:${regions[f]}`, f);
+      if (mixed(f)) {
+        tracker.add('needs_split', f);
+        // spatially truthful: the turned part keeps its role color, the part
+        // that is not a surface of revolution takes the conflict color, so
+        // the cut line the face wants is visible before it is made
+        if (code === 0) return CONFLICT_COLOR;
+      }
       return ROLE_COLORS[code] ?? COL.inaccess;
     });
     // the leftovers are exactly what still needs a mill
@@ -177,9 +213,45 @@ export const turningRolesMode: ViewMode = {
       legend.push({ color: INNER_COLOR, label: 'turned state — bores' });
     }
 
-    return { legend, stats: summary(result) };
+    const faceCount = Number(result.stats.needs_split ?? 0);
+    if (faceCount) {
+      const area = Number(result.stats.needs_split_area ?? 0);
+      legend.push({
+        color: CONFLICT_COLOR,
+        label: `needs split — ${faceCount} face(s), ${area.toFixed(0)} mm²`,
+        focus: tracker.focus('needs_split'),
+      });
+    }
+
+    let stats = summary(result);
+    if (brepIds) {
+      const splitLines = await drawSplitOverlays(ctx, turningSplitHost, brepIds);
+      if (splitLines.length) stats += `\n${splitLines.join('\n')}`;
+    }
+    if (faceCount) {
+      stats += '\nmagenta = turned and milled on one face — split it so each '
+        + 'piece classifies on its own';
+    }
+    return { legend, stats };
   },
 };
+
+/** Split-interaction wiring for the turning roles view. */
+export const turningSplitHost: SplitHost = {
+  processId: 'cnc',
+  modeId: 'turning',
+  currentResult: (manifest: Manifest) => {
+    const results = turningResults(manifest);
+    return results[results.length - 1];
+  },
+  analysisOf: () => 'turning',
+  resultParam: 'turningResult',
+};
+
+/** Turning-mode section of the CNC controls: just the split interaction. */
+export function TurningControls() {
+  return <SplitControls host={turningSplitHost} />;
+}
 
 export const turningResidualMode: ViewMode = {
   id: 'turning_residual',

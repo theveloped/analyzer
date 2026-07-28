@@ -22,10 +22,18 @@ Fixtures with analytically known answers:
    axis is trivially a surface of revolution about it) — only the swept-area
    guard separates them from a real turned part, so these assert the verdict.
 6. stored fields and the cache round-trip.
+7. boss on a flange — the four role defects found in the field: an OD chamfer
+   below the flange diameter, a wide facing annulus that a per-triangle vote
+   would split, a counterbore floor, and a square pad that passes the
+   revolution test trivially and must be rejected as non-annular.
+8. the needs-split contract, driven directly (a clean solid has no genuinely
+   mixed faces to author in BREP), and the split round-trip: a cut re-keys the
+   result, resizes the per-face arrays and leaves the classification unmoved.
 """
 
 import math
 import os
+import warnings
 import shutil
 import sys
 import tempfile
@@ -488,6 +496,138 @@ def test_roles(check, root):
     del ids
 
 
+def test_split_state(check):
+    """The needs-split contract, on hand-built faces with known answers.
+
+    Driven directly rather than through a STEP fixture because the interesting
+    cases are hard to author in BREP: on a clean solid the face boundaries
+    already follow the role changes, so a genuinely mixed face is rare (the
+    NIST part has none). The contract still has to be right for the ones that
+    do occur — freeform faces that are revolved over part of their extent, and
+    anything arriving without BREP faces at all.
+    """
+    print("\nsplit state: mixed faces, artifacts and the brep arrays")
+
+    # 4 faces x 100 triangles: uniform turned, uniform milled, genuinely
+    # mixed (60/40), and an artifact (5% compatible but unstable)
+    grouping = np.repeat(np.arange(4), 100)
+    role_guess = np.array([turning.ROLE_OD_TURN, turning.ROLE_OD_TURN,
+                           turning.ROLE_OD_TURN, turning.ROLE_OD_TURN],
+                          dtype=np.uint8)
+    inlier = np.zeros(400, dtype=bool)
+    inlier[0:100] = True                    # face 0: all compatible
+    inlier[200:260] = True                  # face 2: 60% compatible
+    inlier[300:305] = True                  # face 3: 5%, a stripe
+    share = np.array([1.0, 0.0, 0.6, 0.05])
+    stability = np.array([1.0, 1.0, 1.0, 0.5])  # face 3 halves with the tol
+
+    role_fine, role_face, mixed, valid, default = turning.split_state(
+        role_guess, inlier, grouping, 4, share, stability,
+        compat_fraction=turning.COMPAT_FRACTION,
+        split_floor=turning.SPLIT_FLOOR,
+        split_stability=turning.SPLIT_STABILITY)
+
+    check("uniformly turned face is not flagged", not mixed[0], f"{mixed[0]}")
+    check("uniformly milled face is not flagged", not mixed[1], f"{mixed[1]}")
+    check("genuinely mixed face is flagged", bool(mixed[2]), f"{mixed[2]}")
+    check("zero-crossing artifact is NOT flagged", not mixed[3],
+          "5% compatible but the share halves with the tolerance")
+
+    check("uniform turned face keeps its role",
+          bool((role_fine[0:100] == turning.ROLE_OD_TURN).all()), "")
+    check("uniform milled face floods as other",
+          bool((role_fine[100:200] == turning.ROLE_OTHER).all()), "")
+    check("mixed face shows the turned part per triangle",
+          bool((role_fine[200:260] == turning.ROLE_OD_TURN).all()), "")
+    check("mixed face shows the milled part per triangle",
+          bool((role_fine[260:300] == turning.ROLE_OTHER).all()), "")
+    check("artifact face does not speckle",
+          bool((role_fine[300:400] == turning.ROLE_OTHER).all()),
+          "the documented stripe must not paint a turned role")
+
+    check("uniform face sets exactly its role bit",
+          valid[0] == (1 << turning.ROLE_OD_TURN), f"{valid[0]}")
+    check("mixed face sets no valid bit", valid[2] == 0, f"{valid[2]}")
+    check("uniform face defaults to its role",
+          default[0] == turning.ROLE_OD_TURN,
+          f"{turning.TURN_ROLES[default[0]]}")
+    check("mixed face defaults to the conflict sentinel",
+          default[2] == turning.CONFLICT_ROLE, f"{default[2]}")
+    check("milled face defaults to other",
+          default[1] == turning.ROLE_OTHER, f"{default[1]}")
+    del role_face
+
+
+def test_split_roundtrip(check, root):
+    """A user cut re-keys the result and every piece classifies on its own.
+
+    The classification must not MOVE under a cut — splitting a face changes
+    how the answer is reported, never what the geometry is — and the per-face
+    arrays must follow the new effective ids, including the retired parent
+    (which carries no triangles and so no axial extent at all; casting its
+    +/-inf extremes to a bin index is undefined, which this exercises).
+    """
+    print("\nsplit round-trip: a cut through the OD cylinder")
+    import test_splits
+    import splits
+
+    workdir = build_workdir(shaft_with_milling(), root, "split_shaft")
+    before = run(workdir)[0].stats
+    ids, n_before, _ = splits.effective_face_ids(workdir)
+
+    verts, faces = pipeline.load_mesh_arrays(workdir)
+    verts = verts.astype(np.float64)
+    centroids = verts[faces].mean(axis=1)
+    radius = np.hypot(centroids[:, 0], centroids[:, 1])
+    on_od = ((np.abs(radius - 20.0) < 0.6) & (centroids[:, 2] > 5.0)
+             & (centroids[:, 2] < 55.0))
+    face = int(np.bincount(ids[on_od]).argmax())
+
+    state = splits.add_cut(
+        workdir, face,
+        test_splits.nearest_boundary_vertex(verts, faces, ids, face, (20, 0, 0)),
+        test_splits.nearest_boundary_vertex(verts, faces, ids, face, (20, 0, 60)))
+    created = state.cut_info[-1]["created"]
+    check("the cut separates the face", state.cut_info[-1]["separated"],
+          f"created {created}")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        after = run(workdir)[0].stats
+        noisy = [str(w.message) for w in caught
+                 if issubclass(w.category, (RuntimeWarning, DeprecationWarning))]
+    check("re-run is warning-clean (retired ids have no axial extent)",
+          not noisy, "; ".join(noisy[:2]) or "none")
+
+    ids_after, n_after, _ = splits.effective_face_ids(workdir)
+    check("effective face count grows by the pieces",
+          n_after == n_before + len(created), f"{n_before} -> {n_after}")
+
+    from processes import resolver
+    from processes.base import load_result_arrays
+    arrays = load_result_arrays(
+        workdir, "cnc", "turning",
+        resolver.cache_key(workdir, "cnc/turning", run(workdir)[1]))
+    check("brep_default is sized to the new effective ids",
+          len(arrays["brep_default"]) == n_after,
+          f"{len(arrays['brep_default'])} vs {n_after}")
+
+    pieces = sorted(set(ids_after[ids == face].tolist()))
+    roles = {int(arrays["brep_default"][p]) for p in pieces}
+    check("every piece of a turned face is still turned",
+          roles == {turning.ROLE_OD_TURN},
+          f"{[turning.TURN_ROLES[r] for r in sorted(roles)]}")
+
+    check("the verdict does not move under a cut",
+          after["verdict"] == before["verdict"],
+          f"{before['verdict']} -> {after['verdict']}")
+    check("the turned area does not move under a cut",
+          abs(after["turned_area_fraction"]
+              - before["turned_area_fraction"]) < 1e-9,
+          f"{100 * before['turned_area_fraction']:.2f}% -> "
+          f"{100 * after['turned_area_fraction']:.2f}%")
+
+
 def test_negatives(check, root):
     print("\nfixtures 4 and 5: a plain box and a drilled plate")
     workdir = build_workdir(_box(60.0, 40.0, 20.0), root, "box")
@@ -557,6 +697,8 @@ def main():
         test_turn_mill(check, root)
         test_oblique(check, root)
         test_roles(check, root)
+        test_split_state(check)
+        test_split_roundtrip(check, root)
         test_negatives(check, root)
         test_fields_and_cache(check, shaft)
     finally:

@@ -11,7 +11,7 @@ import { reachAggregateMode, reachOpMode, reachStudyMode } from './reach';
 import { featuresMode, inspectFeature } from './features';
 import { hullMode } from './hull';
 import {
-  inspectTurning, turningResidualMode, turningRolesMode,
+  inspectTurning, turningResidualMode, turningRolesMode, turningSplitHost,
 } from './turning';
 import { cncSplitHost, loadSetups, setupsMode } from './setups';
 import { currentSource, currentTip } from './sources';
@@ -96,6 +96,7 @@ export const cncPlugin: ProcessPlugin = {
     sideMill: true,
     mask: true,
     setupsResult: 0,
+    turningResult: 0,
     setupsOption: 0,
     showLines: true,
     showArrows: true,
@@ -112,6 +113,9 @@ export const cncPlugin: ProcessPlugin = {
     const params = viewerParams.cnc ?? {};
     if (modeId === 'setups' && params.splitMode) {
       return handleSplitPick(cncSplitHost, face, point, ctx);
+    }
+    if (modeId === 'turning' && params.splitMode) {
+      return handleSplitPick(turningSplitHost, face, point, ctx);
     }
     return false;
   },
