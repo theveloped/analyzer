@@ -137,8 +137,6 @@ from utils import log_execution_time
 TURN_ROLES = ["other", "od_face", "od_turn", "id_face", "id_turn", "on_axis"]
 (ROLE_OTHER, ROLE_OD_FACE, ROLE_OD_TURN,
  ROLE_ID_FACE, ROLE_ID_TURN, ROLE_ON_AXIS) = range(6)
-OD_ROLES = (ROLE_OD_FACE, ROLE_OD_TURN)
-ID_ROLES = (ROLE_ID_FACE, ROLE_ID_TURN)
 
 TOLLERANCE = 1e-9
 # |n.d| >= cos(this) makes a face "axial" (a facing surface). Not a param: a
@@ -568,16 +566,26 @@ def outer_profile(verts, faces, axis, *, bins=512):
     smallest solid of revolution containing it, which is exactly what turning
     alone can leave behind; milling removes the rest.
 
-    Bins are widened to at least the 99th-percentile triangle axial extent, so
-    a bin can essentially never fall between two rows of vertices. The base
-    profile is then the per-bin max VERTEX radius, and triangles spanning
-    several bins are used only to fill bins that hold no vertex at all.
+    Each bin's value is EXACT for the mesh, not a sample of it, and one fact
+    buys that. Along a straight edge ``r(z)`` is convex: writing ``r^2`` as a
+    quadratic ``a z^2 + b z + c`` (it is, because the radial vector is linear
+    in the parameter), ``r'' = (4ac - b^2) / 4r^3``, and ``4ac - b^2 >= 0``
+    because ``r^2`` is a squared length and so never negative. A convex
+    function on an interval takes its maximum at an endpoint, so the largest
+    radius an edge reaches inside a bin is reached either at a VERTEX or where
+    the edge crosses a BIN BOUNDARY. Sampling both is therefore not an
+    approximation — it is the per-bin maximum exactly.
 
-    Making the spanning pass raise *every* bin it touches instead — the
-    obvious "conservative" reading — is wrong in a way that matters: at a
-    shoulder it smears the large diameter one bin into the small-diameter
-    section, and the external/internal test samples exactly one bin past a
-    facing surface, so every shoulder would come back as an internal face.
+    That is what makes the bin width a free choice. The older version sampled
+    vertices only, so it had to widen bins to the 99th-percentile triangle
+    extent to stop one falling between two rows of vertices, which pinned a
+    482 mm part at 259 bins however many were asked for, and it patched the
+    leftovers by raising empty bins to a spanning triangle's largest radius.
+    That patch could only ever be applied to EMPTY bins: used everywhere it
+    smears a shoulder's large diameter one bin into the small-diameter
+    section, and since the facing test samples one bin past a surface, every
+    shoulder would come back internal. With the crossings sampled there is
+    nothing left to patch.
 
     Returns ``{low, high, step, r_out, widths, gap_bins}``. ``high - low`` is
     the exact axial extent of the part; the bin count is rounded up, so the
@@ -599,31 +607,55 @@ def outer_profile(verts, faces, axis, *, bins=512):
                 "r_out": np.array([float(radial.max())]),
                 "widths": np.array([0.0]), "gap_bins": 0}
 
-    tri_axial = axial[faces]
-    extent = tri_axial.max(axis=1) - tri_axial.min(axis=1)
-    resolution = float(np.percentile(extent, 99.0)) if len(extent) else 0.0
-    step = max(span / max(int(bins), 1), resolution, span * 1e-4)
+    step = max(span / max(int(bins), 1), span * 1e-4)
     count = max(int(math.ceil(span / step)), 1)
     index = np.clip(((axial - low) / step).astype(np.int64), 0, count - 1)
 
     profile = np.zeros(count, dtype=np.float64)
     np.maximum.at(profile, index, radial)
-    populated = np.bincount(index, minlength=count) > 0
 
-    gaps = int((~populated).sum())
-    if gaps:
-        tri_bins = index[faces]
-        lowest = tri_bins.min(axis=1)
-        highest = tri_bins.max(axis=1)
-        spans = highest - lowest + 1
+    # the radial vector per vertex, so a crossing's radius is an interpolation
+    # rather than a fresh projection
+    perp = local - np.outer(axial, direction)
+
+    # every triangle edge, deduplicated only by ordering — a max does not care
+    # about duplicates, and sorting 9M pairs costs more than the extra passes
+    edges = np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]],
+                            faces[:, [2, 0]]])
+    CHUNK = 1 << 20  # bounds the crossing gather, which is the memory peak
+    for begin in range(0, len(edges), CHUNK):
+        first, second = edges[begin:begin + CHUNK].T
+        z_a, z_b = axial[first], axial[second]
+        lo_bin = np.minimum(index[first], index[second])
+        hi_bin = np.maximum(index[first], index[second])
+        spans = hi_bin - lo_bin  # number of boundaries strictly crossed
+        if not spans.any():
+            continue
+        keep = spans > 0
+        first, second = first[keep], second[keep]
+        z_a, z_b = z_a[keep], z_b[keep]
+        lo_bin, spans = lo_bin[keep], spans[keep]
+
         total = int(spans.sum())
         starts = np.concatenate([[0], np.cumsum(spans)[:-1]])
-        spread = (np.repeat(lowest, spans)
-                  + (np.arange(total) - np.repeat(starts, spans)))
-        filler = np.zeros(count, dtype=np.float64)
-        np.maximum.at(filler, spread, np.repeat(radial[faces].max(axis=1),
-                                                spans))
-        profile[~populated] = filler[~populated]
+        rank = np.arange(total) - np.repeat(starts, spans)
+        boundary = np.repeat(lo_bin, spans) + rank + 1  # bin index of the wall
+        where = low + boundary * step
+
+        owner = np.repeat(np.arange(len(spans)), spans)
+        gap = z_b[owner] - z_a[owner]
+        ratio = np.where(np.abs(gap) > TOLLERANCE,
+                         (where - z_a[owner]) / np.where(gap == 0, 1.0, gap),
+                         0.0)
+        crossing = (perp[first[owner]]
+                    + ratio[:, None] * (perp[second[owner]]
+                                        - perp[first[owner]]))
+        reach = np.linalg.norm(crossing, axis=1)
+        # a boundary belongs to the bins on both of its sides
+        np.maximum.at(profile, np.clip(boundary, 0, count - 1), reach)
+        np.maximum.at(profile, np.clip(boundary - 1, 0, count - 1), reach)
+
+    gaps = int((profile <= 0.0).sum())
 
     widths = np.full(count, step, dtype=np.float64)
     widths[-1] = span - (count - 1) * step
@@ -632,7 +664,7 @@ def outer_profile(verts, faces, axis, *, bins=512):
 
 
 @log_execution_time
-def inner_profile(rho, axial, radial_dot, low, step, count, *, rho_floor):
+def inner_profile(rho, radial_dot, lo_bin, hi_bin, count, *, rho_floor):
     """``R_in`` per bin: the innermost radius the turned state reaches.
 
     The maximal turned state is the union of all rotations of the part, so at
@@ -652,24 +684,72 @@ def inner_profile(rho, axial, radial_dot, low, step, count, *, rho_floor):
     version took a minimum over the faces already called internal) is circular
     — a single misfiled face moved the boundary that judged every other one.
     """
-    index = np.clip(((axial - low) / step).astype(np.int64), 0, count - 1)
     inward = radial_dot < 0.0
     outward = radial_dot > 0.0
 
     def smallest(mask):
+        """Smallest radius over the triangles that REACH each bin.
+
+        Spread across every bin a triangle spans, not just the one holding
+        its centroid. The two sides are compared against each other, so a bin
+        that happens to catch one and miss the other invents a bore out of
+        nothing: at fine resolution a bin can hold a rib's inward-facing end
+        face while the outward-facing shaft beside it lands in the
+        neighbouring bin, and the comparison then reads a void that is solid
+        metal. Spanning makes the answer independent of the bin width.
+        """
         out = np.full(count, np.inf)
-        if mask.any():
-            np.minimum.at(out, index[mask], rho[mask])
+        if not mask.any():
+            return out
+        first, last = lo_bin[mask], hi_bin[mask]
+        spans = last - first + 1
+        total = int(spans.sum())
+        starts = np.concatenate([[0], np.cumsum(spans)[:-1]])
+        spread = np.repeat(first, spans) + (np.arange(total)
+                                            - np.repeat(starts, spans))
+        np.minimum.at(out, spread, np.repeat(rho[mask], spans))
         return out
 
     inner, solid = smallest(inward), smallest(outward)
     # innermost surface faces outward => material runs to the axis => no bore
     bore = np.isfinite(inner) & (inner < solid) & (inner > rho_floor)
-    return np.where(bore, inner, 0.0)
+    return close_hairline_breaks(np.where(bore, inner, 0.0),
+                                 int(np.percentile(hi_bin - lo_bin, 99.0)) + 2)
+
+
+def close_hairline_breaks(inner, widest):
+    """Rejoin a bore across interruptions too narrow to be real.
+
+    Where a rib crosses a bore, the station it occupies reports material at a
+    small radius and the bore test fails for exactly the bins the rib touches.
+    On a real part that is one or two bins -- a through cavity came back as
+    three, meeting at z -0.66 and -0.57, a 0.09 mm break -- and it splits one
+    cavity into several in both the section and the bore list.
+
+    A break NARROWER THAN ONE TRIANGLE cannot separate two cavities, because
+    no surface spans it to close the bore off. Wider breaks are left, which is
+    what keeps a part bored from both ends with solid between it reading as
+    two bores rather than one line drawn through the middle.
+    """
+    bored = inner > 0.0
+    if not bored.any():
+        return inner
+    out = inner.copy()
+    edges = np.flatnonzero(np.diff(bored.astype(np.int8)))
+    spans = list(zip(np.r_[0, edges + 1], np.r_[edges + 1, len(bored)]))
+    for begin, end in spans:
+        if bored[begin] or begin == 0 or end == len(bored):
+            continue
+        if end - begin > widest:
+            continue
+        out[begin:end] = np.interp(np.arange(begin, end),
+                                   [begin - 1, end], [inner[begin - 1],
+                                                      inner[end]])
+    return out
 
 
 def boundary_membership(rho_hi, rho_lo, axial, axial_dot, low, step, outer,
-                        inner, margin, face_cos):
+                        inner, margin, face_cos, radial_dot):
     """``(on_outer, on_inner)`` per triangle — is it on the turned boundary?
 
     A lathe only ever cuts the boundary of the turned state. A face buried
@@ -744,18 +824,43 @@ def boundary_membership(rho_hi, rho_lo, axial, axial_dot, low, step, outer,
 
     r_out = np.where(outside, 0.0, outer_win[sample])
     r_in = np.where(outside, 0.0, inner_win[sample])
+    # A steep surface is invisible to its own bin, the same way an edge-on
+    # wall is invisible to its own column in the z-map raster, and the fix is
+    # the one that solved it there: offer the sample SEVERAL positions and let
+    # the face take the best of them. Here the measurement axis is radial, so
+    # the lateral direction is the axial one, and a candidate steps along the
+    # normal's axial component -- proportional to it, so a cylinder does not
+    # move at all and an end round moves nearly a full bin.
+    #
+    # What it fixes: an end round turning over towards the axis crosses its
+    # bin while still widening, so the bin's MAXIMUM radius belongs to the
+    # part of it nearest the shoulder and the rest cannot reach it. A thin
+    # band down the middle of every such round came back milled. Its own bin
+    # still counts, so nothing that passes today stops passing.
+    #
+    # Facing cuts keep their own probe. They are the extreme of this rule --
+    # a full bin along a normal that is all axial -- but they take it as a
+    # fixed whole bin rather than a proportional step, and it is the blocking
+    # test for the approach rather than a sampling correction.
     on_outer = rho_hi >= r_out - margin
-    on_inner = (r_in > 0.0) & (rho_lo <= r_in + margin + sweep[sample])
+    for reach in (1.0, 2.0):
+        moved = axial + reach * step * axial_dot
+        index = np.floor((moved - low) / step).astype(np.int64)
+        past = (index < 0) | (index >= count)
+        beside = np.where(past, 0.0, outer_win[np.clip(index, 0, count - 1)])
+        on_outer |= ~facing & (rho_hi >= beside - margin)
+    # A radial surface can only be the INNER boundary if it faces the axis.
+    # The turned state's bore wall has material outboard of it, so its normal
+    # points inward; one pointing away has material on the far side and is an
+    # outer surface, buried or not. Without this a cylinder lying 1 mm under a
+    # corrugated OD passed as internal turning, because the sweep slack that
+    # exists for sloping chamfers is metres wide on a corrugated bore. Facing
+    # cuts are exempt: a counterbore floor is axial and its radial component
+    # says nothing either way.
+    faces_axis = facing | (radial_dot <= 0.0)
+    on_inner = (r_in > 0.0) & faces_axis & (rho_lo <= r_in + margin
+                                            + sweep[sample])
     return on_outer, on_inner
-
-
-def sample_profile(profile, low, step, axial):
-    """``R_out`` at arbitrary axial coordinates; 0 outside the part."""
-    index = np.floor((np.asarray(axial) - low) / step).astype(np.int64)
-    inside = (index >= 0) & (index < len(profile))
-    out = np.zeros(len(index), dtype=np.float64)
-    out[inside] = profile[index[inside]]
-    return out
 
 
 def simplify_profile(points, tollerance):
@@ -871,6 +976,7 @@ def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
     # the residual happens to pass through zero along a line".
     inlier_half = ((np.abs(residual) <= 0.5 * band) | (rho <= rho_floor))
     inlier_half &= on_outer | on_inner
+
     weights = areas * inlier
 
     direction = np.asarray(axis.direction, dtype=np.float64)
@@ -1115,8 +1221,6 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
     import json
     import os
 
-    import splits
-
     _report(progress, 0.02, "loading mesh")
     verts, faces = pipeline.load_mesh_arrays(workdir)
     verts = verts.astype(np.float64)
@@ -1255,10 +1359,8 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
     radial_dot = ((np.einsum('ij,ij->i', normals, centroids - best.point)
                    - axial * (normals @ direction))
                   / np.maximum(rho, rho_floor))
-    inner = inner_profile(rho, axial, radial_dot, low, step, len(profile),
-                          rho_floor=rho_floor)
-    # per-triangle radial extent, gathered a column at a time: verts[faces] is
-    # a float64 (F, 3, 3), which is 200 MB on a 3M-face part
+    # per-triangle radial and axial extent, gathered a column at a time:
+    # verts[faces] is a float64 (F, 3, 3), which is 200 MB on a 3M-face part
     local = verts - best.point
     vertex_axial = local @ direction
     vertex_rho = np.linalg.norm(local - np.outer(vertex_axial, direction),
@@ -1266,10 +1368,20 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
     corner = [vertex_rho[faces[:, k]] for k in range(3)]
     rho_hi = np.maximum(np.maximum(corner[0], corner[1]), corner[2])
     rho_lo = np.minimum(np.minimum(corner[0], corner[1]), corner[2])
-    del local, vertex_axial, corner
+    height = [vertex_axial[faces[:, k]] for k in range(3)]
+    last_bin = len(profile) - 1
+    lo_bin = np.clip(np.floor((np.minimum.reduce(height) - low) / step),
+                     0, last_bin).astype(np.int64)
+    hi_bin = np.clip(np.floor((np.maximum.reduce(height) - low) / step),
+                     0, last_bin).astype(np.int64)
+    del local, vertex_axial, corner, height
+
+    inner = inner_profile(rho_lo, radial_dot, lo_bin, hi_bin, len(profile),
+                          rho_floor=rho_floor)
+    axial_dot_all = normals @ direction
     on_outer, on_inner = boundary_membership(
-        rho_hi, rho_lo, axial, normals @ direction, low, step, profile, inner,
-        margin, face_cos)
+        rho_hi, rho_lo, axial, axial_dot_all, low, step, profile, inner,
+        margin, face_cos, radial_dot)
 
     metrics, inlier = face_metrics(
         centroids, normals, areas, best, residual, rho, axial, grouping,
@@ -1322,7 +1434,11 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
 
     centres = low + step * (np.arange(len(profile)) + 0.5)
     centres[-1] = min(centres[-1], envelope["high"])
-    simplify_tol = max(chord_slack, 2e-3 * max(length, 1.0))
+    # Kept an order below the mesh's own chord error so the drawn section is
+    # limited by the mesh, never by this: the old 2e-3 * length threw 512 bins
+    # away to 18 points and 2.2 mm of deviation, which is most of what read as
+    # a coarse section.
+    simplify_tol = max(0.1 * chord_slack, 1e-5 * max(length, 1.0))
     polyline = np.column_stack([centres, profile])
     polyline = np.vstack([[low, 0.0], polyline, [envelope["high"], 0.0]])
     polyline = simplify_profile(polyline, simplify_tol)
