@@ -126,10 +126,10 @@ Registered today:
   `prep/mesh` explicitly so the resolver builds the fine mesh on demand. `voxels`
   is the shared SDF (moved here from `injection_molding/flow_voxels`; that runner is
   now a thin forwarder, and `flow_fill` sub-runs `prep/voxels`)
-- `cnc` — `features`, `setups`, `setup_verdict`, `precompute`, `compose`
+- `cnc` — `features`, `setups`, `setup_verdict`, `hull`, `precompute`, `compose`
 - `injection_molding` — `mold_orientation`, `thickness`, `gaps`, `ray_thickness`, `ray_gap`, `slenderness`, `thin_span`, `wall_skeleton`, `sprue_proposals`, `ejection_sticking`, `flow_voxels`, `flow_fill`
 - `sheet_metal` — `detect`, `flat_pattern` (SHEET_SCHEMA mirrored in `frontend/src/processes/sheetmetal/index.ts`), `bend_plan` (BENDPLAN_SCHEMA mirrored in `sheetmetal/bendplan.ts`). Schema-2 bend_plan additions: npz `flat_verts` f4 (3V, pattern-frame fold coordinates, z = material height with mid-surface at z_offset), `vertex_panel`/`vertex_bend` u1 (+1-encoded owners), `bend_t` f4, optional `collision_faces` u1 (mesh_check hits); stats gain `fold_mesh` (availability + base_transform), `tooling` (referenced punch/die/machine YZ profiles), per-plan-step `placement`/`lift_sign`/`theta_before`/`phi_target` (machine pose for the bend-sequence animation), and `mesh_check`. Viewer scene capabilities backing the animation: `Scene3D.setVertexPositions` / `addOverlayMesh`+`shiftOverlay` / `setAnimator` (reset on every repaint)
-- `tube_laser` — `profile` (TUBE_SCHEMA mirrored in `frontend/src/processes/tubelaser/index.ts`; FEATURES_SCHEMA likewise in `cnc/features.ts`)
+- `tube_laser` — `profile` (TUBE_SCHEMA mirrored in `frontend/src/processes/tubelaser/index.ts`; FEATURES_SCHEMA likewise in `cnc/features.ts`, HULL_SCHEMA in `cnc/hull.ts`)
 
 `run` callables must go through `pipeline.py` functions and write only into the
 workdir cache, reporting via `progress(fraction, message)`.

@@ -9,6 +9,7 @@ import {
 } from './modes';
 import { reachAggregateMode, reachOpMode, reachStudyMode } from './reach';
 import { featuresMode, inspectFeature } from './features';
+import { hullMode } from './hull';
 import { cncSplitHost, loadSetups, setupsMode } from './setups';
 import { currentSource, currentTip } from './sources';
 
@@ -65,9 +66,10 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
 export const cncPlugin: ProcessPlugin = {
   processId: 'cnc',
   label: 'CNC machining',
-  modes: [setupsMode, featuresMode, unifiedMode, accessMode, classMode,
-          gapMode, stickoutMode, thinSpanMode, reachStudyMode, reachOpMode,
-          reachAggregateMode, brepFacesMode, faceAttrsMode, highlightsMode],
+  modes: [setupsMode, featuresMode, hullMode, unifiedMode, accessMode,
+          classMode, gapMode, stickoutMode, thinSpanMode, reachStudyMode,
+          reachOpMode, reachAggregateMode, brepFacesMode, faceAttrsMode,
+          highlightsMode],
   defaults: () => ({
     source: 0,
     tip: 0,
@@ -92,6 +94,7 @@ export const cncPlugin: ProcessPlugin = {
     setupsOption: 0,
     showLines: true,
     showArrows: true,
+    showHullEdges: true,
     splitMode: false,
     splitFace: null,
     splitStart: null,
