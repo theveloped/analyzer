@@ -382,6 +382,73 @@ mesh immediately (exact round-trip to the 3D mesh and viewer), and the metric
 concern is solved by the Euclidean gap above. The grid is purely an internal
 computation device — the cached artifacts are per-vertex scalars on the real mesh.
 
+### Stage 3d — `turning`: the maximal turned state
+
+Turning is the one process where the constraint is not a tool shape but a
+**symmetry**. The whole analysis rests on a single identity: a surface is a
+surface of revolution about the axis line `(p, d)` **iff its normal everywhere
+has no azimuthal component** — equivalently the normal line is coplanar with
+the axis, lying in the meridian half-plane through its own point:
+
+```
+r = ((c − p) × n) · d = n · (d × (c − p)) = 0
+```
+
+`r` is a length, not an angle: `r = ρ · sin α` for radius `ρ` and tilt `α` off
+the meridian plane. This one test replaces per-surface-type rules and works
+uniformly on cylinders, cones, tori, spheres centred on the axis, planes
+perpendicular to it — and, crucially, on B-splines and surfaces of revolution,
+which carry `surface_params: null` in `brep_meta.json` and cannot be classified
+analytically at all. It rejects planes containing the axis (`|r| = ρ`),
+off-axis holes and milled flats. Because `brep.analytic_face_normals` evaluates
+the exact normal *at the fine triangle centroid* — the same point used for `c`
+— the residual is zero to machine precision on analytic STEP faces, so chord
+error contributes nothing and the tolerance only has to cover freeform faces
+(a length slack, the tessellation deflection) and STL facet normals (~2° of
+azimuthal error, hence the 5° STL default).
+
+Finding the axis is the same identity read the other way. Expanding the
+determinant with `w = d × p` makes the condition **linear in the Plücker
+coordinates of the line**, `(c×n)·d − n·w = 0`, so the least-squares axis over
+every face is the null direction of a 6×6 normal matrix — reduced by Schur
+complement to a 3×3 eigenproblem so that `|d| = 1` is a hard constraint. That
+matters: a naive 6×6 null vector admits `d = 0` solutions (any extruded prism
+satisfies `n·w = 0` for `w` along the extrusion) which routinely outscore the
+true axis. Seeds come from the analytic quadric axes, the three PCA axes and
+the normal-bundle null direction; each is then refined by re-solving jointly on
+a trimmed inlier set. Alternating the two exact closed-form blocks instead —
+best direction for a fixed point, best point for a fixed direction — is
+tempting and each half is exact, but the blocks are strongly coupled and
+converge only linearly (~0.77 per round), so a 5° seed would need tens of
+rounds; the joint solve lands the same data in one.
+
+The **maximal turned state** follows the repo's general recipe (reduce the
+process to a volume construction, diff against the part, threshold): it is the
+union of all rotations of the part about the axis, `∪θ Rθ(P)` — the smallest
+solid of revolution containing the part, which is exactly what turning alone
+can leave behind, with milling removing the rest. In `(z, ρ)` that union is
+just `R_out(z) = max radius per axial bin`, one O(V) pass.
+
+Two subtleties decided the design:
+
+- **Bins are widened to the mesh's own axial resolution** (the 99th-percentile
+  triangle extent), and triangles spanning several bins only *fill* bins that
+  hold no vertex. Letting them raise every bin they touch — the obvious
+  "conservative" reading — smears the large diameter one bin past a shoulder,
+  and since the external/internal test samples exactly one bin beyond a facing
+  surface, every shoulder would come back as an internal face.
+- **External vs internal** is radial-face `ρ ≥ R_out(z)` but axial-face
+  `R_out(z + sign(n·d)·step) ≤ ρ`: sampling one bin *beyond* the face along its
+  own outward normal. The naive "`ρ ≥ R_out` at my own z" misfiles a stepped
+  shaft's shoulder, which sits well below the large diameter.
+
+The verdict needs two numbers, not one. Every plane perpendicular to a
+candidate axis is trivially a surface of revolution about it, so a plain box
+scores 55% revolution-compatible area and a drilled plate 91%. What separates
+them from a real turned part is the **swept** area — inliers that are off-axis
+and not perpendicular to it — which is ~0% for the box and 1.4% for the plate.
+Both fractions are area-weighted, never triangle counts.
+
 ### Auxiliary — `thickness`
 
 Independent of tooling: `pipeline.compute_thickness` rolls meshlib's maximal

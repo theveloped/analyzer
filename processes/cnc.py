@@ -9,6 +9,7 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
 SETUPS_SCHEMA = 3  # result schema version, salted into the cache key
 FEATURES_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/features.ts
 REACH_STUDY_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/reach.ts
+TURNING_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/turning.ts
 
 # default library: 3 flat endmills + 2 ball mills, each at its longest
 # practical reach (stickout 5xD) with the shank as the holder cylinder
@@ -77,6 +78,31 @@ def run_features(workdir, params, progress):
         include_pockets=params["include_pockets"], progress=progress)
 
     store_result(workdir, "cnc", "features", cache_params, result["stats"],
+                 arrays=result["arrays"], field_meta=result["field_meta"])
+    return AnalysisResult(stats=result["stats"],
+                          fields=list(result["arrays"]))
+
+
+def run_turning(workdir, params, progress):
+    cache_params = resolver.cache_key(workdir, "cnc/turning", params)
+    cached = load_cached_result(workdir, "cnc", "turning", cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    import turning
+    result = turning.analyse_turning(
+        workdir, tollerance=params["tollerance"],
+        profile_bins=params["profile_bins"],
+        face_inlier_fraction=params["face_inlier_fraction"],
+        min_radial_fraction=params["min_radial_fraction"],
+        turned_fraction=params["turned_fraction"],
+        refine_rounds=params["refine_rounds"],
+        max_candidates=params["max_candidates"],
+        sample_faces=params["sample_faces"],
+        axis_override=params["axis_override"], progress=progress)
+
+    store_result(workdir, "cnc", "turning", cache_params, result["stats"],
                  arrays=result["arrays"], field_meta=result["field_meta"])
     return AnalysisResult(stats=result["stats"],
                           fields=list(result["arrays"]))
@@ -168,6 +194,47 @@ PROCESS = ProcessDef(
             ],
             run=run_features,
             schema=FEATURES_SCHEMA,
+        ),
+        AnalysisDef(
+            id="turning",
+            label="Turned state",
+            # requires only prep/mesh: everything consumed (brep_faces.npy,
+            # brep_meta.json, brep_edge_pairs.npy, normals.npy) is written by
+            # mesh_part, and demanding prep/aag would make the resolver
+            # auto-run it on an STL part, where compute_aag raises
+            description="Best-fit turning axis and the maximal turned state "
+                        "(the smallest solid of revolution containing the "
+                        "part): outer profile, stock and per-face turning "
+                        "roles — OD turning, facing, boring — with the "
+                        "remainder grouped as milled regions.",
+            requires=["prep/mesh"],
+            params=[
+                Param("tollerance", "number", default=None, unit="deg", min=0,
+                      label="Revolution angle tolerance (blank = 1° STEP / 5° STL)"),
+                Param("profile_bins", "int", default=512, min=16,
+                      label="Profile bins along the axis"),
+                Param("face_inlier_fraction", "number", default=0.9,
+                      min=0, max=1,
+                      label="Min revolved area fraction of a turnable face"),
+                Param("min_radial_fraction", "number", default=0.15,
+                      min=0, max=1,
+                      label="Min swept (radial) area for a turned verdict"),
+                Param("turned_fraction", "number", default=0.95, min=0, max=1,
+                      label="Turned area fraction for a fully-turned verdict"),
+                Param("refine_rounds", "int", default=3, min=0,
+                      label="Axis refinement rounds"),
+                Param("max_candidates", "int", default=12, min=1,
+                      label="Candidate axes scored"),
+                Param("sample_faces", "int", default=100000, min=0,
+                      label="Faces sampled for the axis search (0 = all)"),
+                Param("axis_override", "number_list", default=[],
+                      label="Force the axis: px py pz dx dy dz (blank = search)"),
+            ],
+            run=run_turning,
+            schema=TURNING_SCHEMA,
+            # roles are voted per EFFECTIVE face, so a user cut changes the
+            # answer and must orphan the old result (as cnc/setups does)
+            salts=("splits",),
         ),
         AnalysisDef(
             id="setups",

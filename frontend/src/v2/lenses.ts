@@ -1,5 +1,6 @@
 import {
-  ArrowUpFromLine, Axis3d, Compass, Crosshair, Drill, Droplets, Expand, Eye,
+  ArrowUpFromLine, Axis3d, CircleDot, Compass, Crosshair, Disc3, Drill,
+  Droplets, Expand, Eye,
   Frame, Grid3x3, Highlighter, Layers, ListOrdered, MoveVertical, Network,
   Palette, Pin, Play, Radius, Ratio, Ruler, Scissors, Shapes, ShieldCheck,
   Snowflake, Spline, TrendingUp, Waves, type LucideIcon,
@@ -118,6 +119,17 @@ const CURATION: Record<string, Curation> = {
   },
   'cnc:setups': { icon: Axis3d },
   'cnc:features': { icon: Drill },
+  'cnc:turning': {
+    icon: Disc3,
+    blurb: 'Faces a lathe can produce — OD turning, facing and boring — with '
+      + 'the maximal turned state as a section, and the milled remainder.',
+  },
+  'cnc:turning_residual': {
+    icon: CircleDot,
+    advanced: true,
+    blurb: 'How far each face is from being a surface of revolution about the '
+      + 'turning axis.',
+  },
   'cnc:unified': { icon: ShieldCheck },
   'cnc:access': { icon: Eye },
   'cnc:class': { icon: Layers },
