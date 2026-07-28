@@ -488,9 +488,10 @@ def test_roles(check, root):
     check("bores are reported", len(stats["bores"]) >= 1,
           f"{[round(b['diameter'], 2) for b in stats['bores']]}")
     check("the turned section carries an internal contour",
-          len(stats["inner_profile"]) >= 2,
-          f"{len(stats['inner_profile'])} points")
-    inner_max = max((r for _, r in stats["inner_profile"]), default=0.0)
+          sum(len(run) for run in stats["inner_profiles"]) >= 2,
+          f"{len(stats['inner_profiles'])} run(s)")
+    inner_max = max((r for run in stats["inner_profiles"] for _, r in run),
+                    default=0.0)
     check("internal contour reaches the counterbore radius",
           abs(inner_max - 18.0) < 1.5, f"r_max {inner_max:.2f}")
     del ids

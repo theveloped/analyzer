@@ -127,9 +127,15 @@ function sectionLines(result: ResultEntry): {
   const profile = (s.profile ?? []) as [number, number][];
   const zLo = profile.length ? profile[0][0] : 0;
   const zHi = profile.length ? profile[profile.length - 1][0] : 0;
+  // one polyline per contiguous bored run, concatenated into a single line
+  // buffer: a part bored from both ends has solid material between, and
+  // joining those runs would draw a line straight through it
+  const runs = (s.inner_profiles ?? []) as [number, number][][];
+  const inner: number[] = [];
+  for (const run of runs) inner.push(...mirrored(run));
   return {
     outer: mirrored(profile),
-    inner: mirrored((s.inner_profile ?? []) as [number, number][]),
+    inner: new Float32Array(inner),
     axis: new Float32Array([...at(zLo, 0, 1), ...at(zHi, 0, 1)]),
   };
 }

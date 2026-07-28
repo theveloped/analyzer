@@ -52,14 +52,32 @@ is radial at the chord midpoint azimuth while the centroid sits at the 1/3
 azimuth, giving ~``phi/6`` of azimuthal error (about 2 degrees at typical
 deflections) that no length slack fixes — hence the STL default of 5 degrees.
 
+**The turned state is a REGION, not just a silhouette.** ``outer_profile``
+gives its outer boundary and ``inner_profile`` the inner one — the smallest
+radius carrying material at each height, which the normals decide (material
+lies inside an outward-facing surface and outside an inward-facing one, so the
+innermost surface tells a bore from a solid shaft). A lathe only ever cuts the
+boundary of that region, so where a face sits relative to it is what says
+whether it can be turned at all, and through which side. A bolt-hole
+counterbore floor is a perfectly good annulus about its own axis but lies
+strictly inside the region, and no tool reaches it.
+
+That test is applied to RADIAL faces only. Whether a FACING cut is reachable
+is an axial visibility question, and the region answers a different one: its
+outer boundary is a maximum over azimuth, so one interrupted feature — a
+scalloped rim, a single boss — inflates it all the way round and buries an
+annulus that is in fact wide open. The boundary still decides which SIDE a
+facing cut is on, just not whether it exists; annularity carries the rest.
+
 Roles are decided per EFFECTIVE face, never per triangle. A facing surface
 spanning a wide radial band has triangles on both sides of any radius
 threshold, so a per-triangle test splits the face and the vote then lands
 wherever the tessellation happens to weigh more. Only the *participation* test
-— is this triangle a surface of revolution at all — is local, and that is what
-drives the needs-split flag: a face that is part turned and part not gets
-``brep_default = CONFLICT_ROLE`` and paints its two parts separately, so a user
-cut can resolve it.
+is local, and that is what drives the needs-split flag: a face that is part
+turned and part not gets ``brep_default = CONFLICT_ROLE`` and paints its two
+parts separately, so a user cut can resolve it. A cylinder running on under a
+flange — exposed over part of its length, buried over the rest — is the case
+that wants a cut, and it is found exactly this way.
 
 Known limitations, all deliberate in this phase:
 
@@ -70,8 +88,11 @@ Known limitations, all deliberate in this phase:
   for the needs-split flag — without the latter every flag on a real part is one
   of these artifacts. An STL part has no BREP faces to aggregate over and will
   show speckle there.
-- A revolution-compatible face shadowed by an axial overhang (a true undercut)
-  is filed as an ID role.
+- Reachability is positional only: a face on the boundary of the turned state
+  counts as turnable without asking whether a tool of any particular shape
+  fits. A deep narrow groove passes.
+- A facing cut is never rejected for being blocked, for the azimuthal reason
+  above, so a recessed annulus under an interrupted rim is reported as facing.
 - The binned profile over-estimates on steep tapers by up to one bin of taper.
   Conservative in the right direction for a stock envelope; reported as
   ``stats["profile_error"]``.
@@ -141,6 +162,16 @@ SWING_TOLLERANCE = 0.1
 #                     A genuine patch is EXACTLY compatible and scores 1.0, so
 #                     the bar is high: off-axis cones are tangential rather than
 #                     transversal zeros and still reach 0.80.
+#   SPAN_TOLLERANCE   how much of the full turn a facing cut must span. A
+#                     counterbore floor on a bolt circle is a perfect annulus
+#                     about ITS OWN axis and barely swings over the few
+#                     azimuths it occupies, so only this rejects it. Set well
+#                     below half a turn: a real facing cut interrupted by
+#                     milled slots arrives as several part-annuli (a NIST test
+#                     part has one split in two at 0.42 a side) and those are
+#                     still turned — the slot is a later operation. Bolt-circle
+#                     counterbores sit at 0.08.
+SPAN_TOLLERANCE = 0.25
 SPLIT_FLOOR = 0.05
 SPLIT_STABILITY = 0.85
 CONFLICT_ROLE = 254  # brep_default sentinel, as molding.DEFAULT_CONFLICT
@@ -598,31 +629,104 @@ def outer_profile(verts, faces, axis, *, bins=512):
 
 
 @log_execution_time
-def inner_profile(verts, faces, axis, grouping, id_faces, low, step, count):
-    """``R_in`` per bin: the innermost material radius, or 0 where solid.
+def inner_profile(rho, axial, radial_dot, low, step, count, *, rho_floor):
+    """``R_in`` per bin: the innermost radius the turned state reaches.
 
-    Taken over the faces that bound the part from the inside, because a plain
-    "minimum radius per bin" is 0 wherever the section is solid and would say
-    nothing. Bins with no ID face stay 0, which reads correctly as "no bore
-    here" when the meridian is drawn.
+    The maximal turned state is the union of all rotations of the part, so at
+    height ``z`` it covers every radius some azimuth has material at. Its inner
+    boundary is therefore the SMALLEST radius carrying material anywhere at
+    that height — 0 wherever the axis itself runs through material.
+
+    Which of those two it is, is a local question the normal already answers.
+    Material lies inside an outward-facing surface and outside an inward-facing
+    one, so if the innermost surface at a height faces outward the material
+    continues to the axis and there is no bore; if it faces inward it IS the
+    bore wall. That is why this reads the normals rather than taking a plain
+    minimum over surface points, which cannot tell a bore from a solid shaft.
+
+    Deliberately independent of the role assignment: the roles are decided by
+    comparing against this profile, so deriving it FROM them (the first
+    version took a minimum over the faces already called internal) is circular
+    — a single misfiled face moved the boundary that judged every other one.
     """
-    if not np.any(id_faces):
-        return np.zeros(count)
-    mask = id_faces[grouping]
-    picked = faces[mask]
-    if not len(picked):
-        return np.zeros(count)
-
-    point = np.asarray(axis.point, dtype=np.float64)
-    direction = np.asarray(axis.direction, dtype=np.float64)
-    local = verts[np.unique(picked)] - point
-    axial = local @ direction
-    radial = np.linalg.norm(local - np.outer(axial, direction), axis=1)
-
     index = np.clip(((axial - low) / step).astype(np.int64), 0, count - 1)
-    inner = np.full(count, np.inf)
-    np.minimum.at(inner, index, radial)
-    return np.where(np.isfinite(inner), inner, 0.0)
+    inward = radial_dot < 0.0
+    outward = radial_dot > 0.0
+
+    def smallest(mask):
+        out = np.full(count, np.inf)
+        if mask.any():
+            np.minimum.at(out, index[mask], rho[mask])
+        return out
+
+    inner, solid = smallest(inward), smallest(outward)
+    # innermost surface faces outward => material runs to the axis => no bore
+    bore = np.isfinite(inner) & (inner < solid) & (inner > rho_floor)
+    return np.where(bore, inner, 0.0)
+
+
+def boundary_membership(rho, axial, axial_dot, low, step, outer, inner,
+                        margin, face_cos):
+    """``(on_outer, on_inner)`` per triangle — is it on the turned boundary?
+
+    A lathe only ever cuts the boundary of the turned state. A face buried
+    strictly inside it cannot be turned at all, whatever its normals do: the
+    material outboard of it belongs to the part, so no tool reaches it. That
+    is what makes a bolt-hole counterbore floor milled rather than internal
+    facing, and it is the same test that decides OD from ID — the outer
+    boundary is reachable from outside, the inner one only through a bore.
+
+    The two face kinds probe the profile at different heights, and that
+    difference is the whole subtlety. A RADIAL face follows the profile, so it
+    is on the boundary where its own radius meets it. A FACING cut is a
+    VERTICAL segment of the meridian — it spans a band of radii at one height
+    — so testing it at its own height asks the wrong question and rejects
+    every facing surface but its outermost rim. What makes it turnable is that
+    nothing blocks the approach, so the probe steps one bin ALONG ITS OWN
+    OUTWARD NORMAL and asks whether the turned region still covers that radius
+    there. Past the end of the part the region is empty, which is what makes a
+    part's end face turnable.
+    """
+    count = len(outer)
+
+    def window(profile, combine):
+        """The profile over each bin AND its two neighbours, most permissive.
+
+        A single bin routinely straddles a shoulder and keeps only the extreme
+        radius, so testing a bin against itself makes every junction fail: the
+        bin where a cylinder meets a flange belongs entirely to the flange,
+        and the bin holding a bore's floor reports no bore. Widening by one
+        bin either way costs nothing — a face genuinely buried inside the
+        turned state is buried by far more than one bin of profile.
+        """
+        shifted = [profile]
+        if count > 1:
+            shifted.append(np.r_[profile[0], profile[:-1]])
+            shifted.append(np.r_[profile[1:], profile[-1]])
+        return combine(shifted, axis=0)
+
+    # outer is tested from below and inner from above, so "permissive" is the
+    # minimum of the window for one and the maximum for the other
+    outer_win = window(outer, np.minimum.reduce)
+    inner_win = window(inner, np.maximum.reduce)
+
+    # Sampled at a BIN, never interpolated. Interpolation smooths over exactly
+    # the steps this has to detect: a flange top would be measured half-way up
+    # the boss standing on it, and a bore wall half-way through its own floor.
+    facing = np.abs(axial_dot) >= face_cos
+    own = np.clip(np.floor((axial - low) / step), 0, count - 1).astype(np.int64)
+    beyond = own + np.where(axial_dot >= 0, 1, -1)
+    # a facing cut probes one bin ALONG ITS OWN NORMAL: what makes it turnable
+    # is that nothing blocks the approach. Past the end of the part the turned
+    # region is empty, which is what makes a part's end face turnable.
+    outside = facing & ((beyond < 0) | (beyond >= count))
+    sample = np.where(facing, np.clip(beyond, 0, count - 1), own)
+
+    r_out = np.where(outside, 0.0, outer_win[sample])
+    r_in = np.where(outside, 0.0, inner_win[sample])
+    on_outer = rho >= r_out - margin
+    on_inner = (r_in > 0.0) & (rho <= r_in + margin)
+    return on_outer, on_inner
 
 
 def sample_profile(profile, low, step, axial):
@@ -692,8 +796,8 @@ def mesh_volume(verts, faces):
 
 
 def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
-                 face_ids, n_faces, *, sin_tol, slack, rho_floor,
-                 azimuth_bins=24):
+                 face_ids, n_faces, *, sin_tol, slack, rho_floor, face_cos,
+                 on_outer=None, on_inner=None, azimuth_bins=24):
     """Per-effective-face geometry, area-weighted, all by ``np.bincount``.
 
     Every turning decision is taken at this granularity, never per triangle.
@@ -717,7 +821,27 @@ def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
     """
     face_ids = np.asarray(face_ids, dtype=np.int64)
     band = sin_tol * rho + slack
-    inlier = (np.abs(residual) <= band) | (rho <= rho_floor)
+    revolved = (np.abs(residual) <= band) | (rho <= rho_floor)
+    if on_outer is None:
+        on_outer = np.ones(len(rho), dtype=bool)
+        on_inner = np.zeros(len(rho), dtype=bool)
+
+    # A RADIAL triangle takes part in turning only if it is also on the
+    # boundary of the turned state: being a surface of revolution is not
+    # enough when the material outboard of it belongs to the part. This is
+    # what catches a cylinder that runs on under a flange — exposed over part
+    # of its length, buried over the rest, and wanting a cut between them.
+    #
+    # A FACING triangle is deliberately NOT held to that test. Whether a
+    # facing cut is reachable is an axial visibility question, and the
+    # axisymmetric envelope answers a different one: it is a maximum over
+    # azimuth, so a single interrupted feature — a scalloped rim, one boss —
+    # inflates it all the way round and buries an annulus that is in fact
+    # wide open. On a NIST test part that rejected four fifths of the flange
+    # faces. The boundary still decides which SIDE a facing cut is on, just
+    # not whether it exists.
+    facing = np.abs(normals @ np.asarray(axis.direction)) >= face_cos
+    inlier = revolved & (facing | on_outer | on_inner)
     # the same test at half the tolerance. A genuinely revolved patch keeps
     # essentially all of its area; a measure-zero artifact — the hairline
     # stripe down an offset plane, the mid-plane ring of a cross-hole — is a
@@ -725,7 +849,8 @@ def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
     # to the tolerance and it loses about half. That ratio is what separates
     # "this face is part turned and part milled" from "this face is milled and
     # the residual happens to pass through zero along a line".
-    inlier_half = (np.abs(residual) <= 0.5 * band) | (rho <= rho_floor)
+    inlier_half = ((np.abs(residual) <= 0.5 * band) | (rho <= rho_floor))
+    inlier_half &= facing | on_outer | on_inner
     weights = areas * inlier
 
     direction = np.asarray(axis.direction, dtype=np.float64)
@@ -751,6 +876,8 @@ def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
         "area": area_total,
         "inlier_fraction": area_inlier / area_total,
         "stability": total(areas * inlier_half) / safe,
+        "outer_share": total(areas * revolved * on_outer) / area_total,
+        "inner_share": total(areas * revolved * on_inner) / area_total,
         "axial_dot": total(np.abs(axial_dot) * weights) / safe,
         "radial_dot": total(radial_dot * weights) / safe,
         "r_min": extreme(rho, np.minimum.at, np.inf),
@@ -793,61 +920,56 @@ def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
     return metrics, inlier
 
 
-def classify_effective_faces(metrics, profile, low, step, *, face_cos,
-                             margin, rho_floor, swing_tollerance):
+def classify_effective_faces(metrics, *, face_cos, rho_floor,
+                             swing_tollerance, span_tollerance):
     """``role u1[n_faces]`` — the turning role every effective face would take.
 
-    Computed from the face's revolution-COMPATIBLE area alone (``face_metrics``
-    weights the normal components by it), and deliberately ungated: a face that
-    is only partly compatible still has a well-defined role for the part that
-    is. Applying the coverage gate here would collapse that to "milled" and
-    throw away exactly what the needs-split presentation has to show — which
-    part of the face is turned and which was cut away by a second operation.
-    The caller applies the gate.
+    Computed from the face's TURNABLE area alone (``face_metrics`` weights the
+    normal components by it), and deliberately ungated: a face that is only
+    partly turnable still has a well-defined role for the part that is.
+    Applying the coverage gate here would collapse that to "milled" and throw
+    away exactly what the needs-split presentation has to show. The caller
+    applies the gate.
     """
     n_faces = len(metrics["area"])
     role = np.full(n_faces, ROLE_OTHER, dtype=np.uint8)
 
-    revolved = np.ones(n_faces, dtype=bool)
     axialish = metrics["axial_dot"] >= face_cos
-    r_max = metrics["r_max"]
 
-    # a facing cut must be a true annulus: same radial band at every azimuth
-    annular = metrics["radius_swing"] <= swing_tollerance
+    # A facing cut has to be a true annulus, and that takes BOTH tests. The
+    # radial band must not vary with azimuth (radius_swing) and it must run
+    # all the way round (theta_span). Neither alone is enough: a square boss
+    # top spans every azimuth but swings, while a counterbore floor on a bolt
+    # circle is a perfect annulus about ITS OWN axis and so barely swings at
+    # all over the few azimuths it occupies. Checking only the swing is what
+    # filed all eight bolt-hole counterbores on a NIST test part as internal
+    # facing.
+    annular = ((metrics["radius_swing"] <= swing_tollerance)
+               & (metrics["theta_span"] >= span_tollerance))
 
-    # the outer envelope over the face's own axial extent, from the RAW bins.
-    # Sampling the Douglas-Peucker polyline instead loses exactly the short
-    # runs that matter (it reports ~0 for a part's end face).
-    # a retired parent id (split away, no triangles left) keeps the +/-inf
-    # identities from the extreme reduction — cast those to int and the result
-    # is undefined, so clamp to the bin range BEFORE the cast, not after
-    last = len(profile) - 1
-    def bin_of(values):
-        scaled = np.where(np.isfinite(values), (values - low) / step, 0.0)
-        return np.clip(np.floor(scaled), 0, last).astype(np.int64)
-
-    lo, hi = bin_of(metrics["z_min"]), bin_of(metrics["z_max"])
-    envelope = np.zeros(n_faces)
-    for index in range(n_faces):  # effective faces: hundreds, not millions
-        envelope[index] = profile[lo[index]:hi[index] + 1].max()
-
-    on_envelope = r_max >= envelope - margin
-
-    # radial faces: the side is the SIGN of the radial normal component.
-    # Material sits inside an OD surface and outside an ID one, so this is a
-    # purely local test — a chamfer at a diameter step is outward-facing
-    # whether or not it reaches the widest radius at its own station.
-    radial = revolved & ~axialish
+    # Which boundary of the turned state the face lies on decides the side.
+    # For a RADIAL face the sign of the radial normal component says it
+    # directly and locally — material is inside an OD surface and outside an
+    # ID one — which is what makes it right for a chamfer at a diameter step,
+    # outward-facing whether or not it reaches the widest radius there.
+    outer, inner = metrics["outer_share"], metrics["inner_share"]
+    radial = ~axialish
     role[radial & (metrics["radial_dot"] > 0)] = ROLE_OD_TURN
     role[radial & (metrics["radial_dot"] <= 0)] = ROLE_ID_TURN
 
-    # facing cuts: the normal carries no radial information, so the side comes
-    # from whether the face reaches the outer envelope over its own z range
-    facing = revolved & axialish & annular
-    role[facing & on_envelope] = ROLE_OD_FACE
-    role[facing & ~on_envelope] = ROLE_ID_FACE
+    # A FACING cut's normal carries no radial information at all, so the side
+    # comes from which boundary its area actually sits on. "Reaches the outer
+    # envelope" was too crude: it called every annulus that fell a few mm
+    # short — a flange underside against a slightly larger rim — internal.
+    facing = axialish & annular
+    role[facing & (outer >= inner)] = ROLE_OD_FACE
+    role[facing & (outer < inner)] = ROLE_ID_FACE
 
-    role[revolved & (r_max <= rho_floor)] = ROLE_ON_AXIS
+    # nothing on either boundary is reachable by a lathe, whatever its normals
+    # do: the material outboard of it belongs to the part
+    role[np.maximum(outer, inner) <= 0.0] = ROLE_OTHER
+
+    role[metrics["r_max"] <= rho_floor] = ROLE_ON_AXIS
     return role
 
 
@@ -1105,26 +1227,33 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
     else:
         grouping, group_count = face_ids, n_faces
 
+    # the turned state's INNER boundary, then which boundary each triangle sits
+    # on. Both come before the roles because the roles are decided by them —
+    # deriving the bore profile from the faces already called internal was
+    # circular, and one misfiled face moved the boundary judging all the rest.
+    direction = np.asarray(best.direction, dtype=np.float64)
+    radial_dot = ((np.einsum('ij,ij->i', normals, centroids - best.point)
+                   - axial * (normals @ direction))
+                  / np.maximum(rho, rho_floor))
+    inner = inner_profile(rho, axial, radial_dot, low, step, len(profile),
+                          rho_floor=rho_floor)
+    on_outer, on_inner = boundary_membership(
+        rho, axial, normals @ direction, low, step, profile, inner, margin,
+        face_cos)
+
     metrics, inlier = face_metrics(
         centroids, normals, areas, best, residual, rho, axial, grouping,
-        group_count, sin_tol=sin_tol, slack=slack, rho_floor=rho_floor)
+        group_count, sin_tol=sin_tol, slack=slack, rho_floor=rho_floor,
+        face_cos=face_cos, on_outer=on_outer, on_inner=on_inner)
     role_guess = classify_effective_faces(
-        metrics, profile, low, step, face_cos=face_cos, margin=margin,
-        rho_floor=rho_floor, swing_tollerance=SWING_TOLLERANCE)
+        metrics, face_cos=face_cos, rho_floor=rho_floor,
+        swing_tollerance=SWING_TOLLERANCE, span_tollerance=SPAN_TOLLERANCE)
     role_out, role_face, mixed, brep_valid, brep_default = split_state(
         role_guess, inlier, grouping, group_count, metrics["inlier_fraction"],
         metrics["stability"], compat_fraction=COMPAT_FRACTION,
         split_floor=SPLIT_FLOOR, split_stability=SPLIT_STABILITY)
     if face_ids is not None:
         splits.sanitize_retired(brep_valid, brep_default, grouping)
-
-    # the ID meridian: the innermost material radius per bin, over the faces
-    # already known to bound the part from the inside. Without this the drawn
-    # section is only the outer silhouette and every internal feature — bores,
-    # counterbores, ID facing — is invisible in it.
-    inner = inner_profile(verts, faces, best, grouping,
-                          np.isin(role_face, ID_ROLES), low, step,
-                          len(profile))
 
     pairs = _edge_pairs(workdir, group_count) if face_ids is not None else None
     milled = face_regions(pairs, role_face == ROLE_OTHER, group_count)
@@ -1168,14 +1297,22 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
     polyline = np.vstack([[low, 0.0], polyline, [envelope["high"], 0.0]])
     polyline = simplify_profile(polyline, simplify_tol)
 
-    # the internal contour is emitted as its own polyline rather than folded
+    # The internal contour is emitted as its own polylines rather than folded
     # into the outer one: the meridian of a bored part is a region with holes,
-    # not a single closed curve, and the viewer draws the two separately
+    # not a single closed curve. One polyline per CONTIGUOUS bored run, because
+    # a part can be bored from both ends with solid material between — joining
+    # those into one curve draws a line straight through the solid, which is
+    # what made the section wander on a real part.
     bored = inner > 0
-    inner_polyline = np.zeros((0, 2))
+    inner_runs = []
     if bored.any():
-        inner_polyline = simplify_profile(
-            np.column_stack([centres[bored], inner[bored]]), simplify_tol)
+        edges = np.flatnonzero(np.diff(bored.astype(np.int8)))
+        for begin, end in zip(np.r_[0, edges + 1], np.r_[edges + 1, len(bored)]):
+            if not bored[begin]:
+                continue
+            run = np.column_stack([centres[begin:end], inner[begin:end]])
+            if len(run) >= 2:
+                inner_runs.append(simplify_profile(run, simplify_tol))
 
     residual_deg = np.degrees(np.arcsin(np.clip(
         np.abs(residual) / np.maximum(rho, rho_floor), 0.0, 1.0)))
@@ -1202,7 +1339,9 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
         # along stats["axis"]["direction"], so a world point is
         # point + z * direction + r * (any unit vector perpendicular to it)
         "profile": [[float(z), float(r)] for z, r in polyline],
-        "inner_profile": [[float(z), float(r)] for z, r in inner_polyline],
+        # a LIST of polylines, one per contiguous bored run
+        "inner_profiles": [[[float(z), float(r)] for z, r in run]
+                           for run in inner_runs],
         "profile_step": float(step),
         "profile_gap_bins": int(envelope["gap_bins"]),
         "milled_regions": regions,
