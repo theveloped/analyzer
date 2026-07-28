@@ -1310,9 +1310,19 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
         for begin, end in zip(np.r_[0, edges + 1], np.r_[edges + 1, len(bored)]):
             if not bored[begin]:
                 continue
-            run = np.column_stack([centres[begin:end], inner[begin:end]])
+            run = [(centres[i], inner[i]) for i in range(begin, end)]
+            # Cap the run wherever the bore STOPS INSIDE the material: that
+            # end is a floor, and the contour has to come back to the axis to
+            # close. An end that reaches the outside is left open, because the
+            # outer contour closes it there. The three cases fall out of it —
+            # a through hole caps at neither end, a blind hole at one, a fully
+            # internal cavity at both.
+            if begin > 0:
+                run.insert(0, (low + begin * step, 0.0))
+            if end < len(bored):
+                run.append((low + end * step, 0.0))
             if len(run) >= 2:
-                inner_runs.append(simplify_profile(run, simplify_tol))
+                inner_runs.append(simplify_profile(np.array(run), simplify_tol))
 
     residual_deg = np.degrees(np.arcsin(np.clip(
         np.abs(residual) / np.maximum(rho, rho_floor), 0.0, 1.0)))
