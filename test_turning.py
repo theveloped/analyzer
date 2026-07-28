@@ -422,6 +422,22 @@ def boss_on_flange():
     return _fuse(shape, _box(24.0, 24.0, 6.0, (-12.0, -12.0, 80.0)))
 
 
+# A rib standing on the flange top at ONE azimuth, kept in its own fixture so
+# it cannot shadow the chamfer the previous one checks. This is the only way a
+# facing cut ends up partly blocked on a clean solid: material sitting
+# directly on a face trims that face away, so the blocker has to be somewhere
+# else around the turn.
+RIB = (30.0, 50.0, 8.0)  # inner x, outer x, half width
+
+
+def flange_with_rib():
+    """A flanged hub with one radial rib on the flange top."""
+    inner, outer, half = RIB
+    shape = _fuse(_cylinder(75.0, 20.0), _cylinder(20.0, 50.0))
+    return _fuse(shape, _box(outer - inner, 2 * half, 15.0,
+                             (inner, -half, 20.0)))
+
+
 def test_roles(check, root):
     print("\nfixture 7: boss on a flange — the reported role defects")
     workdir = build_workdir(boss_on_flange(), root, "boss", resolution=1.5)
@@ -495,6 +511,60 @@ def test_roles(check, root):
     check("internal contour reaches the counterbore radius",
           abs(inner_max - 18.0) < 1.5, f"r_max {inner_max:.2f}")
     del ids
+
+
+def test_shadowed_facing(check, root):
+    """A facing cut a lathe can only partly make, and the cut that fixes it.
+
+    The turned state is a maximum over azimuth, so one rib shadows the whole
+    annulus out to its own radius even though the face is wide open at every
+    other azimuth. The lathe leaves the WHOLE turned state and the milling
+    comes afterwards, so that is the right blocker: the ring outside the rib
+    can be faced, the annulus inside it cannot, and the face wants a cut
+    between them.
+    """
+    print("\nfixture 9: a facing cut blocked by a rib at one azimuth")
+    workdir = build_workdir(flange_with_rib(), root, "ribbed", resolution=1.5)
+    result, params = run(workdir)
+
+    import splits
+    from processes import resolver
+    from processes.base import load_result_arrays
+
+    arrays = load_result_arrays(workdir, "cnc", "turning",
+                                resolver.cache_key(workdir, "cnc/turning",
+                                                   params))
+    roles = arrays["turn_role"]
+    default = arrays["brep_default"]
+    verts, faces = pipeline.load_mesh_arrays(workdir)
+    normals = pipeline.load_face_normals(workdir)
+    centroids = verts[faces].mean(axis=1)
+    radius = np.hypot(centroids[:, 0], centroids[:, 1])
+    ids = splits.effective_face_ids(workdir)[0]
+
+    inner, outer, half = RIB
+    reach = math.hypot(outer, half)  # the rib's corner radius
+    top = ((normals @ [0.0, 0, 1.0] > 0.99)
+           & (np.abs(centroids[:, 2] - 20.0) < 0.4) & (radius > 22.0))
+    check("the flange top has faces to test", top.sum() > 50,
+          f"{int(top.sum())}")
+
+    ids_top = np.unique(ids[top])
+    check("the shadowed facing cut is flagged for a cut",
+          all(default[i] == turning.CONFLICT_ROLE for i in ids_top),
+          f"{[int(default[i]) for i in ids_top]}")
+
+    clear = top & (radius > reach + 4.0)
+    blocked = top & (radius < reach - 6.0)
+    check("the ring outside the rib is OD facing",
+          bool((roles[clear] == turning.ROLE_OD_FACE).all()),
+          f"reach {reach:.1f}, roles {sorted(set(roles[clear].tolist()))}")
+    check("the annulus the rib shadows is milled, not faced",
+          bool((roles[blocked] == turning.ROLE_OTHER).all()),
+          f"roles {sorted(set(roles[blocked].tolist()))}")
+    check("the part still reads as turned overall",
+          result.stats["verdict"] in ("turned", "turn_mill"),
+          result.stats["verdict"])
 
 
 def test_split_state(check):
@@ -698,6 +768,7 @@ def main():
         test_turn_mill(check, root)
         test_oblique(check, root)
         test_roles(check, root)
+        test_shadowed_facing(check, root)
         test_split_state(check)
         test_split_roundtrip(check, root)
         test_negatives(check, root)

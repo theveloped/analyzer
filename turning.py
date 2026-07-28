@@ -62,12 +62,12 @@ whether it can be turned at all, and through which side. A bolt-hole
 counterbore floor is a perfectly good annulus about its own axis but lies
 strictly inside the region, and no tool reaches it.
 
-That test is applied to RADIAL faces only. Whether a FACING cut is reachable
-is an axial visibility question, and the region answers a different one: its
-outer boundary is a maximum over azimuth, so one interrupted feature — a
-scalloped rim, a single boss — inflates it all the way round and buries an
-annulus that is in fact wide open. The boundary still decides which SIDE a
-facing cut is on, just not whether it exists; annularity carries the rest.
+That the outer boundary is a maximum over azimuth is a FEATURE, not an
+approximation to apologise for. A lathe leaves the whole turned state and the
+milling comes afterwards, so one rib standing on a flange really does block
+the facing cut all the way round, even where the face is wide open. Such a
+face is not milled outright — it comes out MIXED, and the cut divides it into
+the ring a lathe can face and the annulus a mill has to take.
 
 Roles are decided per EFFECTIVE face, never per triangle. A facing surface
 spanning a wide radial band has triangles on both sides of any radius
@@ -91,8 +91,8 @@ Known limitations, all deliberate in this phase:
 - Reachability is positional only: a face on the boundary of the turned state
   counts as turnable without asking whether a tool of any particular shape
   fits. A deep narrow groove passes.
-- A facing cut is never rejected for being blocked, for the azimuthal reason
-  above, so a recessed annulus under an interrupted rim is reported as facing.
+- Blocking is judged one bin along the normal, so a distant overhang that
+  clears the immediate neighbourhood is not seen.
 - The binned profile over-estimates on steep tapers by up to one bin of taper.
   Conservative in the right direction for a stock envelope; reported as
   ``stats["profile_error"]``.
@@ -826,22 +826,22 @@ def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
         on_outer = np.ones(len(rho), dtype=bool)
         on_inner = np.zeros(len(rho), dtype=bool)
 
-    # A RADIAL triangle takes part in turning only if it is also on the
-    # boundary of the turned state: being a surface of revolution is not
-    # enough when the material outboard of it belongs to the part. This is
-    # what catches a cylinder that runs on under a flange — exposed over part
-    # of its length, buried over the rest, and wanting a cut between them.
+    # A triangle takes part in turning only if it is also on the boundary of
+    # the turned state: being a surface of revolution is not enough when the
+    # material outboard of it belongs to the part. Two shapes of that:
     #
-    # A FACING triangle is deliberately NOT held to that test. Whether a
-    # facing cut is reachable is an axial visibility question, and the
-    # axisymmetric envelope answers a different one: it is a maximum over
-    # azimuth, so a single interrupted feature — a scalloped rim, one boss —
-    # inflates it all the way round and buries an annulus that is in fact
-    # wide open. On a NIST test part that rejected four fifths of the flange
-    # faces. The boundary still decides which SIDE a facing cut is on, just
-    # not whether it exists.
-    facing = np.abs(normals @ np.asarray(axis.direction)) >= face_cos
-    inlier = revolved & (facing | on_outer | on_inner)
+    #   radial  a cylinder that runs on under a flange — exposed over part of
+    #           its length, buried over the rest, wanting a cut between them
+    #   facing  a flange top with a boss standing on it. The annulus outside
+    #           the boss can be faced; the part under it cannot, because the
+    #           lathe leaves the WHOLE turned state and the boss is part of
+    #           it. Milling comes afterwards, so the axisymmetric envelope is
+    #           the right blocker even though it is a maximum over azimuth.
+    #
+    # Neither becomes "milled" outright — a face that is partly on the
+    # boundary comes out MIXED, and the cut divides it into the piece a lathe
+    # makes and the piece a mill has to.
+    inlier = revolved & (on_outer | on_inner)
     # the same test at half the tolerance. A genuinely revolved patch keeps
     # essentially all of its area; a measure-zero artifact — the hairline
     # stripe down an offset plane, the mid-plane ring of a cross-hole — is a
@@ -850,7 +850,7 @@ def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
     # "this face is part turned and part milled" from "this face is milled and
     # the residual happens to pass through zero along a line".
     inlier_half = ((np.abs(residual) <= 0.5 * band) | (rho <= rho_floor))
-    inlier_half &= facing | on_outer | on_inner
+    inlier_half &= on_outer | on_inner
     weights = areas * inlier
 
     direction = np.asarray(axis.direction, dtype=np.float64)
