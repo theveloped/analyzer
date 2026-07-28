@@ -826,7 +826,31 @@ def boundary_membership(rho_hi, rho_lo, axial, axial_dot, low, step, outer,
 
     r_out = np.where(outside, 0.0, outer_win[sample])
     r_in = np.where(outside, 0.0, inner_win[sample])
+    # A steep surface is invisible to its own bin, the same way an edge-on
+    # wall is invisible to its own column in the z-map raster, and the fix is
+    # the one that solved it there: offer the sample SEVERAL positions and let
+    # the face take the best of them. Here the measurement axis is radial, so
+    # the lateral direction is the axial one, and a candidate steps along the
+    # normal's axial component -- proportional to it, so a cylinder does not
+    # move at all and an end round moves nearly a full bin.
+    #
+    # What it fixes: an end round turning over towards the axis crosses its
+    # bin while still widening, so the bin's MAXIMUM radius belongs to the
+    # part of it nearest the shoulder and the rest cannot reach it. A thin
+    # band down the middle of every such round came back milled. Its own bin
+    # still counts, so nothing that passes today stops passing.
+    #
+    # Facing cuts keep their own probe. They are the extreme of this rule --
+    # a full bin along a normal that is all axial -- but they take it as a
+    # fixed whole bin rather than a proportional step, and it is the blocking
+    # test for the approach rather than a sampling correction.
     on_outer = rho_hi >= r_out - margin
+    for reach in (1.0, 2.0):
+        moved = axial + reach * step * axial_dot
+        index = np.floor((moved - low) / step).astype(np.int64)
+        past = (index < 0) | (index >= count)
+        beside = np.where(past, 0.0, outer_win[np.clip(index, 0, count - 1)])
+        on_outer |= ~facing & (rho_hi >= beside - margin)
     # A radial surface can only be the INNER boundary if it faces the axis.
     # The turned state's bore wall has material outboard of it, so its normal
     # points inward; one pointing away has material on the far side and is an
