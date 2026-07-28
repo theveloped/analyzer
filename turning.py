@@ -751,7 +751,7 @@ def close_hairline_breaks(inner, widest):
 
 
 def boundary_membership(rho_hi, rho_lo, axial, axial_dot, low, step, outer,
-                        inner, margin, face_cos):
+                        inner, margin, face_cos, radial_dot):
     """``(on_outer, on_inner)`` per triangle — is it on the turned boundary?
 
     A lathe only ever cuts the boundary of the turned state. A face buried
@@ -827,7 +827,17 @@ def boundary_membership(rho_hi, rho_lo, axial, axial_dot, low, step, outer,
     r_out = np.where(outside, 0.0, outer_win[sample])
     r_in = np.where(outside, 0.0, inner_win[sample])
     on_outer = rho_hi >= r_out - margin
-    on_inner = (r_in > 0.0) & (rho_lo <= r_in + margin + sweep[sample])
+    # A radial surface can only be the INNER boundary if it faces the axis.
+    # The turned state's bore wall has material outboard of it, so its normal
+    # points inward; one pointing away has material on the far side and is an
+    # outer surface, buried or not. Without this a cylinder lying 1 mm under a
+    # corrugated OD passed as internal turning, because the sweep slack that
+    # exists for sloping chamfers is metres wide on a corrugated bore. Facing
+    # cuts are exempt: a counterbore floor is axial and its radial component
+    # says nothing either way.
+    faces_axis = facing | (radial_dot <= 0.0)
+    on_inner = (r_in > 0.0) & faces_axis & (rho_lo <= r_in + margin
+                                            + sweep[sample])
     return on_outer, on_inner
 
 
@@ -953,6 +963,7 @@ def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
     # the residual happens to pass through zero along a line".
     inlier_half = ((np.abs(residual) <= 0.5 * band) | (rho <= rho_floor))
     inlier_half &= on_outer | on_inner
+
     weights = areas * inlier
 
     direction = np.asarray(axis.direction, dtype=np.float64)
@@ -1356,9 +1367,10 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
 
     inner = inner_profile(rho_lo, radial_dot, lo_bin, hi_bin, len(profile),
                           rho_floor=rho_floor)
+    axial_dot_all = normals @ direction
     on_outer, on_inner = boundary_membership(
-        rho_hi, rho_lo, axial, normals @ direction, low, step, profile, inner,
-        margin, face_cos)
+        rho_hi, rho_lo, axial, axial_dot_all, low, step, profile, inner,
+        margin, face_cos, radial_dot)
 
     metrics, inlier = face_metrics(
         centroids, normals, areas, best, residual, rho, axial, grouping,
