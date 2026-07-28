@@ -3,6 +3,7 @@
 
 import { useStore } from '../../state/store';
 import { SetupsControls } from './setups';
+import { TurningControls } from './turning';
 import { cncSources } from './sources';
 
 const EMPTY: Record<string, any> = {};
@@ -20,6 +21,9 @@ export function CncControls() {
 
   // the setups mode works on the setups result, not the tool-field caches
   if (modeId === 'setups') return <SetupsControls />;
+
+  // the turning roles view offers the same face-splitting interaction
+  if (modeId === 'turning') return <TurningControls />;
 
   // thin span reads the direction-free stiffness proxy result, not the
   // per-direction tool fields

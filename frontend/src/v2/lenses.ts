@@ -1,8 +1,8 @@
 import {
-  ArrowUpFromLine, Axis3d, Box, Compass, Crosshair, Drill, Droplets, Expand,
-  Eye, Frame, Grid3x3, Highlighter, Layers, ListOrdered, MoveVertical,
-  Network, Palette, Pin, Play, Radius, Ratio, Ruler, Scissors, Shapes,
-  ShieldCheck, Snowflake, Spline, TrendingUp, Waves, type LucideIcon,
+  ArrowUpFromLine, Axis3d, Box, CircleDot, Compass, Crosshair, Disc3, Drill,
+  Droplets, Expand, Eye, Frame, Grid3x3, Highlighter, Layers, ListOrdered,
+  MoveVertical, Network, Palette, Pin, Play, Radius, Ratio, Ruler, Scissors,
+  Shapes, ShieldCheck, Snowflake, Spline, TrendingUp, Waves, type LucideIcon,
 } from 'lucide-react';
 import { PROCESS_PLUGINS } from '../registry';
 
@@ -118,6 +118,17 @@ const CURATION: Record<string, Curation> = {
   },
   'cnc:setups': { icon: Axis3d },
   'cnc:features': { icon: Drill },
+  'cnc:turning': {
+    icon: Disc3,
+    blurb: 'Faces a lathe can produce — OD turning, facing and boring — with '
+      + 'the maximal turned state as a section, and the milled remainder.',
+  },
+  'cnc:turning_residual': {
+    icon: CircleDot,
+    advanced: true,
+    blurb: 'How far each face is from being a surface of revolution about the '
+      + 'turning axis.',
+  },
   'cnc:hull': {
     icon: Box,
     blurb: 'Faces on the convex hull — machinable from outside with an infinitely large tool.',

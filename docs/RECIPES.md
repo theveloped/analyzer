@@ -20,6 +20,7 @@ in docs/CODEMAP.md; background in APPROACH.md.
 | `step_import.py` PMI/GD&T extraction (dimensions/tolerances/datums) | `python test_pmi.py` |
 | `step_export.py`, `pmi_support.py` (AP242 GD&T export round-trip) | `python test_pmi_roundtrip.py` |
 | `machining_features.py`, `cnc/features` | `python test_features.py` |
+| `turning.py`, `cnc/turning` | `python test_turning.py` |
 | `pipeline.convex_hull_faces`, `cnc/hull` | `python test_hull.py` |
 | `sheet.py`, `unfold.py`, `dxfexport.py`, sheet_metal process | `python test_sheet.py` |
 | `tube.py`, tube_laser process | `python test_tube.py` |

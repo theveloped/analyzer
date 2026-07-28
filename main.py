@@ -148,6 +148,15 @@ if __name__ == "__main__":
     parser_features.add_argument("--no_pockets", help="skip best-effort pocket emission", action="store_true")
     parser_features.add_argument("--serve", help="serve results in browser", action="store_true")
 
+    # Create the parser for the "turning" command
+    parser_turning = subparsers.add_parser("turning", help="recognize the turning axis, the maximal turned state and per-face turning roles (OD / facing / boring)")
+    parser_turning.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_turning.add_argument("--tollerance", help="revolution angle tolerance in degrees (default: 1 for STEP, 5 for STL)", type=float, default=None)
+    parser_turning.add_argument("--profile_bins", help="profile bins along the axis (default: 512)", type=int, default=512)
+    parser_turning.add_argument("--sample_faces", help="faces sampled for the axis search, 0 = all (default: 100000)", type=int, default=100000)
+    parser_turning.add_argument("--axis", help="force the turning axis", type=float, nargs=6, default=None, metavar=("PX", "PY", "PZ", "DX", "DY", "DZ"))
+    parser_turning.add_argument("--serve", help="serve results in browser", action="store_true")
+
     # Create the parser for the "options" command
     parser_options = subparsers.add_parser("options", help="rank mold orientations (plate pair + slides)")
     parser_options.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
@@ -561,6 +570,61 @@ if __name__ == "__main__":
             logger.info(f"  #{feature['id']} {feature['type']} {size} "
                         f"depth {feature['depth']:.2f} "
                         f"({len(feature['faces'])} faces)")
+
+        if args.serve:
+            serve_workdir(args.directory)
+
+    elif args.command == "turning":
+        import numpy as np
+
+        import pipeline
+        import processes
+        from processes import resolver
+        from processes.base import apply_defaults, load_result_arrays
+
+        analysis = processes.get_analysis("cnc", "turning")
+        merged = apply_defaults(analysis, {
+            "tollerance": args.tollerance,
+            "profile_bins": args.profile_bins,
+            "sample_faces": args.sample_faces,
+            "axis_override": list(args.axis) if args.axis else [],
+        })
+        result = analysis.run(args.directory, merged, None)
+        stats = result.stats
+
+        axis = stats["axis"]
+        logger.info(f"Verdict: {stats['verdict']}")
+        for reason in stats["reasons"]:
+            logger.info(f"  reason: {reason}")
+        logger.info(f"Axis: dir {[round(v, 6) for v in axis['direction']]} "
+                    f"through {[round(v, 4) for v in axis['point']]} "
+                    f"(from {axis['source']})")
+        logger.info(f"Maximal turned state: D{stats['max_diameter']:.3f} x "
+                    f"{stats['length']:.3f} mm, envelope "
+                    f"{stats['envelope_volume']:.0f} mm3 of "
+                    f"{stats['stock_volume']:.0f} mm3 bar stock")
+        logger.info(f"Turned {100 * stats['turned_area_fraction']:.1f}% of the "
+                    f"area ({100 * stats['radial_area_fraction']:.1f}% swept), "
+                    f"milled {100 * stats['milled_area_fraction']:.1f}%")
+        for name, area in stats["role_areas"].items():
+            if area > 0:
+                logger.info(f"  {name:15s} {area:10.1f} mm2")
+        for bore in stats["bores"]:
+            logger.info(f"  bore D{bore['diameter']:.2f} z "
+                        f"{bore['z_min']:.1f}..{bore['z_max']:.1f}"
+                        f"{' (through)' if bore['through'] else ''}")
+        for region in stats["milled_regions"]:
+            logger.info(f"  milled region #{region['id']}: "
+                        f"{region['area']:.1f} mm2, {region['faces']} face(s), "
+                        f"z {region['z_min']:.1f}..{region['z_max']:.1f}")
+
+        arrays = load_result_arrays(
+            args.directory, "cnc", "turning",
+            resolver.cache_key(args.directory, "cnc/turning", merged))
+        if arrays is not None:
+            milled = np.flatnonzero(arrays["turn_role"] == 0).tolist()
+            pipeline.write_highlights(args.directory, milled)
+            logger.info(f"Highlighted {len(milled)} milled faces")
 
         if args.serve:
             serve_workdir(args.directory)
