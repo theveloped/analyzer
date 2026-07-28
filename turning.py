@@ -715,7 +715,39 @@ def inner_profile(rho, radial_dot, lo_bin, hi_bin, count, *, rho_floor):
     inner, solid = smallest(inward), smallest(outward)
     # innermost surface faces outward => material runs to the axis => no bore
     bore = np.isfinite(inner) & (inner < solid) & (inner > rho_floor)
-    return np.where(bore, inner, 0.0)
+    return close_hairline_breaks(np.where(bore, inner, 0.0),
+                                 int(np.percentile(hi_bin - lo_bin, 99.0)) + 2)
+
+
+def close_hairline_breaks(inner, widest):
+    """Rejoin a bore across interruptions too narrow to be real.
+
+    Where a rib crosses a bore, the station it occupies reports material at a
+    small radius and the bore test fails for exactly the bins the rib touches.
+    On a real part that is one or two bins -- a through cavity came back as
+    three, meeting at z -0.66 and -0.57, a 0.09 mm break -- and it splits one
+    cavity into several in both the section and the bore list.
+
+    A break NARROWER THAN ONE TRIANGLE cannot separate two cavities, because
+    no surface spans it to close the bore off. Wider breaks are left, which is
+    what keeps a part bored from both ends with solid between it reading as
+    two bores rather than one line drawn through the middle.
+    """
+    bored = inner > 0.0
+    if not bored.any():
+        return inner
+    out = inner.copy()
+    edges = np.flatnonzero(np.diff(bored.astype(np.int8)))
+    spans = list(zip(np.r_[0, edges + 1], np.r_[edges + 1, len(bored)]))
+    for begin, end in spans:
+        if bored[begin] or begin == 0 or end == len(bored):
+            continue
+        if end - begin > widest:
+            continue
+        out[begin:end] = np.interp(np.arange(begin, end),
+                                   [begin - 1, end], [inner[begin - 1],
+                                                      inner[end]])
+    return out
 
 
 def boundary_membership(rho_hi, rho_lo, axial, axial_dot, low, step, outer,
