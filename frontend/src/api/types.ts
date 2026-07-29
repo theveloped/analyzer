@@ -4,7 +4,9 @@ export interface Part {
   id: string;
   name: string;
   source: string | null;
-  status: 'raw' | 'meshed';
+  /** 'preview' = the first-load bundle landed (renderable and inspectable)
+   * but the fine mesh, which every result field indexes into, is not built */
+  status: 'raw' | 'preview' | 'meshed';
   counts: { verts: number; faces: number } | null;
   has_directions: boolean;
   created: string | null;
@@ -15,7 +17,10 @@ export type FieldRole = 'scalar' | 'mask' | 'category' | 'lines' | 'data'
 
 export interface FieldDescriptor {
   id: string;
-  association: 'vertex' | 'face' | 'none' | 'graph';
+  /** 'brep_face' is indexed by BREP face id, not by mesh face: such a
+   * field is valid against the coarse preview as well as the fine mesh,
+   * and the viewer joins it through the BREP id map. */
+  association: 'vertex' | 'face' | 'brep_face' | 'none' | 'graph';
   dtype: 'f4' | 'u1' | 'u4';
   role: FieldRole;
   units?: string;
@@ -134,6 +139,11 @@ export interface DirectionSource {
     | 'face_normal' | 'average_normal' | 'manual';
   label: string;
   detail: Record<string, any>;
+  /** Area-weighted share of the part visible from this direction, computed
+   * with the accessibility rows so a per-direction overview needs no field
+   * fetches (absent on sets built before this was stored). */
+  accessible_area?: number;
+  accessible_fraction?: number;
 }
 
 /** A geometric candidate axis the client can add to the direction set live
@@ -175,6 +185,31 @@ export interface PlanCheck {
   /** Preferred inspection lens key ("processId:modeId"). */
   lens?: string;
   visible?: boolean;
+}
+
+/** One option in a decision's candidate set (plans.py decision slots). */
+export interface Candidate {
+  id: string;
+  /** Row index into the artifact the study indexes by (directions.npy). */
+  index?: number;
+  label?: string;
+  source?: string;
+  /** Hidden from the table without renumbering the underlying artifact. */
+  suppressed?: boolean;
+  [key: string]: any;
+}
+
+/** A curated candidate set plus its selection: propose → compare → commit.
+ * `value` is DERIVED server-side from `selected` (plans.normalize_decisions)
+ * — it is the stable path checks bind to via {"$plan": …}. */
+export interface DecisionSlot {
+  kind: string;
+  /** The params that produced the candidates (re-runnable). */
+  generator?: Record<string, any>;
+  candidates: Candidate[];
+  selected: string[] | string;
+  value?: Record<string, any>;
+  state?: 'provisional' | 'selected' | 'locked';
 }
 
 export interface Plan {
@@ -248,8 +283,6 @@ export interface Manifest {
   mesh: MeshLevel | null;
   /** cheap display preview available before the fine mesh (first-load bundle) */
   coarse_mesh?: CoarseMesh | null;
-  /** the coarse preview is showing while the fine mesh is still pending */
-  fine_pending?: boolean;
   directions: number[][];
   /** where each direction came from (uniform, axis, hole, manual, …) */
   direction_sources?: DirectionSource[];

@@ -129,8 +129,11 @@ export async function opReach(
 const pct = (part: number, whole: number) =>
   whole > 0 ? `${((100 * part) / whole).toFixed(1)}%` : '—';
 
-/** Latest non-stale cnc/features feature_id field (0 = not a feature) —
- * the declarative "this operation produces these features" scoping. */
+/** Latest non-stale cnc/features feature_id per FINE face (0 = not a
+ * feature) — the declarative "this operation produces these features"
+ * scoping. The result is stored per BREP face (so it can be recognized and
+ * shown without a fine mesh), so it is broadcast here; reach masks are
+ * fine-indexed and a reach study implies the fine mesh exists. */
 export async function fetchFeatureMask(
   ctx: ReachCtx,
 ): Promise<Uint32Array | null> {
@@ -140,7 +143,15 @@ export async function fetchFeatureMask(
   if (!result) return null;
   const desc = ctx.manifest.fields.find(
     (f) => f.id === `results.cnc.features.${result.hash}.feature_id`);
-  return desc ? await ctx.getField(desc) as Uint32Array : null;
+  const brepDesc = ctx.manifest.fields.find((f) => f.id === 'brep_faces');
+  if (!desc || !brepDesc) return null;
+  const [byBrep, brepIds] = await Promise.all([
+    ctx.getField(desc) as Promise<Uint32Array>,
+    ctx.getField(brepDesc) as Promise<Uint32Array>,
+  ]);
+  const out = new Uint32Array(ctx.faceCount);
+  for (let f = 0; f < out.length; f++) out[f] = byBrep[brepIds[f]] ?? 0;
+  return out;
 }
 
 export const reachStudyMode: ViewMode = {

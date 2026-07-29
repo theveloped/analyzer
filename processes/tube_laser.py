@@ -6,7 +6,7 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             load_cached_result, store_result)
 
 # keep in sync with frontend/src/processes/tubelaser/index.ts
-TUBE_SCHEMA = 2
+TUBE_SCHEMA = 3
 
 
 def run_profile(workdir, params, progress):
@@ -43,7 +43,8 @@ PROCESS = ProcessDef(
                         "the largest face; report section dimensions and "
                         "optionally unroll the outer shell into the flat "
                         "cut pattern.",
-            requires=["prep/mesh", "prep/aag"],
+            # roles are per BREP face — no fine mesh needed
+            requires=["prep/mesh_coarse", "prep/aag"],
             params=[
                 Param("unroll", "bool", default=True,
                       label="Unroll the outer shell (cut pattern)"),

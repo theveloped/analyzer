@@ -242,6 +242,38 @@ export function buildDirections(setup: DirectionSetup, geom: DirGeometry): Gener
 // arrow tooltip and the plugin's click handler can resolve an arrow/facet
 // without recomputing. Set during the mode's paint().
 export let currentDirections: GeneratedDir[] = [];
+/** Exactly the arrows that were DRAWN, in draw order. Scene3D stamps each
+ * helper with its position in this array, so anything resolving an arrow
+ * click must index THIS and not `currentDirections` — the two differ whenever
+ * the mode paints a subset (the study shows only the selected directions). */
+export let currentArrows: GeneratedDir[] = [];
 export let currentBrepIds: Uint32Array | null = null;
-export function setCurrentDirections(dirs: GeneratedDir[]) { currentDirections = dirs; }
+
+/** Bumped whenever the set is regenerated, so a panel outside the paint loop
+ * (the directions study table) can re-read it. Same shape as the bend
+ * sequence's playhead: a version + listeners, subscribed via
+ * useSyncExternalStore. */
+export const directionsVersion = {
+  n: 0,
+  listeners: new Set<() => void>(),
+};
+
+export function setCurrentDirections(dirs: GeneratedDir[]) {
+  currentDirections = dirs;
+  directionsVersion.n += 1;
+  for (const listener of directionsVersion.listeners) listener();
+}
+
+export function setCurrentArrows(dirs: GeneratedDir[]) { currentArrows = dirs; }
+
+/** The arrows to draw for a candidate set: all of them, or just the keys a
+ * caller asked for. `null` (the plain lens) means all — an empty ARRAY means
+ * none, which is how the study opens on a bare model. */
+export function arrowsFor(
+  dirs: GeneratedDir[], keys: string[] | null | undefined,
+): GeneratedDir[] {
+  if (!Array.isArray(keys)) return dirs;
+  const want = new Set(keys);
+  return dirs.filter((d) => want.has(d.key));
+}
 export function setCurrentBrepIds(ids: Uint32Array | null) { currentBrepIds = ids; }

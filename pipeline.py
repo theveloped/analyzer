@@ -358,13 +358,24 @@ def auto_subdivide(diagonal):
 
 def part_resolution(workdir):
     """The analysis resolution the part was meshed at (None for legacy
-    workdirs that predate mesh_meta.json)."""
-    meta_path = os.path.join(workdir, MESH_META_FILE)
-    if not os.path.exists(meta_path):
-        return None
-    with open(meta_path) as f:
-        resolution = json.load(f).get("resolution")
-    return float(resolution) if resolution else None
+    workdirs that predate mesh_meta.json).
+
+    Falls back to the coarse preview's sidecar so first-load stages resolve
+    the SAME number the fine mesh will: both derive it from the shape
+    diagonal via ``auto_subdivide``. Without the fallback, a stage that runs
+    in the first-load bundle (prep/aag) silently picks a different default
+    than the identical stage run after prep/mesh, and the two artifacts
+    disagree.
+    """
+    for name in (MESH_META_FILE, COARSE_META_FILE):
+        meta_path = os.path.join(workdir, name)
+        if not os.path.exists(meta_path):
+            continue
+        with open(meta_path) as f:
+            resolution = json.load(f).get("resolution")
+        if resolution:
+            return float(resolution)
+    return None
 
 
 def part_deflection(workdir):
@@ -703,9 +714,22 @@ def compute_directions(workdir, *, count=64, axes=False, bbox_axes=False,
     logger.debug(f"Storing accessibility at: {accessibility_path}")
     np.save(accessibility_path, accessibility)
 
+    # Per-direction accessible AREA share, stored alongside the provenance so
+    # a per-direction overview costs no field fetches. Area-weighted, like
+    # every other coverage number in the pipeline — counting triangles would
+    # let a finely tessellated fillet outvote a big flat face.
+    import machining
+    weights = machining.face_areas(verts, faces)
+    total_area = float(weights.sum()) or 1.0
+    accessible_area = accessibility.astype(np.float64) @ weights
+
     # provenance sidecar, index-aligned to directions.npy rows
     with open(os.path.join(workdir, DIRECTIONS_SOURCES_FILE), "w") as f:
-        json.dump([{**s, "index": i} for i, s in enumerate(sources)], f)
+        json.dump([{**s, "index": i,
+                    "accessible_area": round(float(accessible_area[i]), 3),
+                    "accessible_fraction": round(
+                        float(accessible_area[i]) / total_area, 6)}
+                   for i, s in enumerate(sources)], f)
 
     # which mesh the accessibility rows index — the manifest flags the
     # directions stale when the workdir is re-meshed afterwards
@@ -721,6 +745,7 @@ def compute_directions(workdir, *, count=64, axes=False, bbox_axes=False,
     return {
         "directions": int(directions.shape[0]),
         "faces": int(face_count),
+        "total_area": round(total_area, 3),
         "sources": by_source,
     }
 

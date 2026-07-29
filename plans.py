@@ -65,6 +65,85 @@ PLAN_ASSETS_DIR = "plan_assets"
 
 DISPOSITION_STATES = ("open", "accepted", "customer_approval", "resolved")
 
+# A DECISION SLOT is a curated candidate set plus a selection: the "propose ->
+# evaluate -> compare -> commit" shape (directions today, stock and bend order
+# later). Only slots carrying a "kind" are validated as one — a decision
+# without it stays the free-form dict it has always been.
+#
+#   decisions.<slot> = {
+#     "kind": "direction_set",         # dispatches validation + the projection
+#     "candidates": [{"id": "d4", "index": 4, "label": "+Z", ...}, ...],
+#     "selected": ["d4"] | "d4",       # ids drawn from candidates
+#     "value": {...},                  # DERIVED — see normalize_decisions
+#     "state": "provisional",
+#   }
+DECISION_STATES = ("provisional", "selected", "locked")
+
+
+def _direction_set_value(selected):
+    """Projection for a direction_set: the row indices into directions.npy.
+
+    Checks bind to `decisions.<slot>.value.direction_indices`, never to a
+    candidate position, because $plan paths are literal — there is no
+    candidates[$selected] indirection. Keeping the projection here (rather
+    than letting the client write `value`) is what guarantees the binding
+    target and the selection can never drift apart.
+    """
+    indices = [int(c["index"]) for c in selected if c.get("index") is not None]
+    return {"direction_index": indices[0] if indices else None,
+            "direction_indices": indices}
+
+
+DECISION_PROJECTIONS = {"direction_set": _direction_set_value}
+
+
+def _selected_ids(decision):
+    selected = decision.get("selected")
+    if selected is None:
+        return []
+    return list(selected) if isinstance(selected, (list, tuple)) else [selected]
+
+
+def selected_candidates(plan, slot):
+    """The candidate dicts a decision slot currently selects, in order."""
+    decision = plan.get("decisions", {}).get(slot) or {}
+    by_id = {c.get("id"): c for c in decision.get("candidates", [])}
+    return [by_id[i] for i in _selected_ids(decision) if i in by_id]
+
+
+def normalize_decisions(plan):
+    """Recompute every kind-bearing decision's derived `value` in place."""
+    for slot, decision in (plan.get("decisions") or {}).items():
+        if not isinstance(decision, dict):
+            continue
+        project = DECISION_PROJECTIONS.get(decision.get("kind"))
+        if project is None:
+            continue
+        decision["value"] = project(selected_candidates(plan, slot))
+    return plan
+
+
+def _validate_decision(slot, decision):
+    if decision.get("kind") not in DECISION_PROJECTIONS:
+        raise ValueError(
+            f"decision {slot}: unknown kind {decision.get('kind')!r} — "
+            f"known kinds: {', '.join(sorted(DECISION_PROJECTIONS))}")
+    candidates = decision.get("candidates", [])
+    if not isinstance(candidates, list):
+        raise ValueError(f"decision {slot}: candidates must be a list")
+    ids = [c.get("id") for c in candidates]
+    if len(ids) != len(set(ids)) or not all(ids):
+        raise ValueError(
+            f"decision {slot}: candidate ids must be unique and non-empty")
+    unknown = [i for i in _selected_ids(decision) if i not in set(ids)]
+    if unknown:
+        raise ValueError(
+            f"decision {slot}: selected {unknown} not among the candidates")
+    state = decision.get("state", "provisional")
+    if state not in DECISION_STATES:
+        raise ValueError(f"decision {slot}: state must be one of "
+                         f"{', '.join(DECISION_STATES)}")
+
 
 class RevisionConflictError(Exception):
     """The plan was modified since the revision the caller edited."""
@@ -91,6 +170,11 @@ def validate_plan(plan):
     for key, kind in (("decisions", dict), ("operations", list), ("checks", list)):
         if not isinstance(plan.get(key), kind):
             raise ValueError(f"plan.{key} must be a {kind.__name__}")
+    # only slots that declare a kind are candidate-set decisions; anything
+    # else stays the free-form dict a decision has always been
+    for slot, decision in plan["decisions"].items():
+        if isinstance(decision, dict) and "kind" in decision:
+            _validate_decision(slot, decision)
     op_ids = [op.get("id") for op in plan["operations"]]
     if len(op_ids) != len(set(op_ids)) or not all(op_ids):
         raise ValueError("operation ids must be unique and non-empty")
@@ -127,6 +211,9 @@ def save_plan(workdir, plan, expected_revision):
     stored["schema"] = PLAN_SCHEMA
     stored["revision"] = current["revision"] + 1
     validate_plan(stored)
+    # `value` is derived, never authored: recompute it here so a client that
+    # only moved the selection cannot leave the binding target stale
+    normalize_decisions(stored)
 
     path = os.path.join(workdir, PLAN_FILE)
     with open(path, "w") as f:
@@ -250,6 +337,10 @@ def impact_preview(workdir, patch):
         if key in patch:
             patched[key] = patch[key]
     validate_plan(patched)
+    # same derivation as save_plan, so the preview keys the plan the caller
+    # would actually get — a patch that only moves `selected` still re-keys
+    # every check bound to the slot's derived value
+    normalize_decisions(patched)
 
     report = {}
     for check in patched["checks"]:

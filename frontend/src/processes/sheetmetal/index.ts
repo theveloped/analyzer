@@ -3,15 +3,15 @@
 
 import type { ResultEntry } from '../../api/types';
 import {
-  brepFacesMode, COL, faceAttrsMode, FocusTracker, highlightsMode,
-  paintCategory, rampColor,
+  brepFacesMode, COL, faceAttrsMode, fetchFaceField, FocusTracker,
+  highlightsMode, paintCategory, rampColor,
 } from '../../colorizers/core';
 import type {
   ProcessPlugin, RGB, ViewCtx, ViewMode,
 } from '../../registry/types';
 
 // keep in sync with SHEET_SCHEMA in processes/sheet_metal.py
-export const SHEET_SCHEMA = 2;
+export const SHEET_SCHEMA = 3;
 
 const ROLE_LABELS = ['other', 'base skin', 'opposite skin', 'bend', 'wall / cut edge', 'feature'];
 const ROLE_COLORS: RGB[] = [
@@ -35,7 +35,8 @@ async function sheetField(
   const desc = ctx.manifest.fields.find(
     (f) => f.id === `results.sheet_metal.${result.analysis}.${result.hash}.${name}`);
   if (!desc) throw new Error(`sheet field ${name} missing — re-run the analysis`);
-  return await ctx.getField(desc) as Uint8Array | Float32Array;
+  // roles are stored per BREP face, so they paint on the coarse preview too
+  return await fetchFaceField(ctx, desc) as Uint8Array | Float32Array;
 }
 
 function verdictLine(result: ResultEntry): string {

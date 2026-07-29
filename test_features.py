@@ -127,16 +127,23 @@ def main():
 
         print("=== fields ===")
         from processes.base import load_cached_result, load_result_arrays
-        cache_params = {**merged, "schema": 1,
-                        "mesh": pipeline.mesh_fingerprint(workdir),
-                        "aag": pipeline.aag_fingerprint(workdir)}
+        from processes import resolver
+        cache_params = resolver.cache_key(workdir, "cnc/features", merged)
         arrays = load_result_arrays(workdir, "cnc", "features", cache_params)
         category = arrays["feature_category"]
         feature_id = arrays["feature_id"]
-        fine_count = len(np.load(os.path.join(workdir, "fine_faces.npy")))
-        check("per-face fields cover the fine mesh",
-              len(category) == fine_count and len(feature_id) == fine_count,
-              f"{fine_count} faces")
+        # per BREP FACE, not per fine triangle: recognition is a BREP question,
+        # and storing it that way is what lets the lens paint on the coarse
+        # preview instead of waiting for the fine remesh
+        import json
+        with open(os.path.join(workdir, "brep_meta.json")) as f:
+            brep_count = json.load(f)["face_count"]
+        check("fields are indexed by BREP face",
+              len(category) == brep_count and len(feature_id) == brep_count,
+              f"{brep_count} BREP faces")
+        check("the fine mesh is not needed to key the result",
+              "mesh" not in cache_params,
+              f"{sorted(cache_params)}")
         check("categories match the feature list",
               set(np.unique(category)) == {0, 1, 2, 3, 4},
               f"codes {sorted(set(int(c) for c in np.unique(category)))}")

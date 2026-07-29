@@ -353,16 +353,20 @@ def detect_sheet(workdir, *, min_thickness=0.1, max_thickness=None,
     logger.info(f"sheet detect: {verdict} thickness {thickness:.2f} "
                 f"({counts})")
 
-    brep_ids = np.load(os.path.join(workdir, pipeline.BREP_FACES_FILE))
+    # per BREP FACE, not broadcast onto the fine mesh: recognition is a BREP
+    # question, and the broadcast was the only thing making it wait for the
+    # slow remesh. The viewer joins BREP ids to whichever mesh it shows.
+    common = {"association": "brep_face", "length": int(graph.face_count),
+              "count": int(graph.face_count)}
     arrays = {
-        "face_role": roles[brep_ids].astype("<u1"),
-        "bend_radius": bend_radius[brep_ids].astype("<f4"),
+        "face_role": roles.astype("<u1"),
+        "bend_radius": bend_radius.astype("<f4"),
     }
     field_meta = {
-        "face_role": {"kind": "sheet_face_role", "association": "face",
+        "face_role": {**common, "kind": "sheet_face_role",
                       "role": "category", "dtype": "u1",
                       "labels": ROLE_NAMES},
-        "bend_radius": {"kind": "sheet_bend_radius", "association": "face",
+        "bend_radius": {**common, "kind": "sheet_bend_radius",
                         "role": "scalar", "dtype": "f4", "units": "mm"},
     }
     if progress is not None:
@@ -540,7 +544,6 @@ def flat_pattern(workdir, *, k_factor=0.5, combine_bends=True,
     roles, _ = _component_roles(graph, base_index, opposite_index)
     for feature in features:
         roles[feature["faces"]] = ROLE_FEATURE
-    brep_ids = np.load(os.path.join(workdir, pipeline.BREP_FACES_FILE))
     outline = _segments_from_points([contour["points"] - origin])
     hole_lines = _segments_from_points(
         [hole["points"] - origin for hole in holes])
@@ -554,7 +557,7 @@ def flat_pattern(workdir, *, k_factor=0.5, combine_bends=True,
         "hole_lines": hole_lines,
         "bend_lines": bend_lines,
         "engraving_lines": engraving_lines,
-        "face_role": roles[brep_ids].astype("<u1"),
+        "face_role": roles.astype("<u1"),
     }
     field_meta = {
         "outline_lines": {"kind": "flat_pattern", "association": "none",
@@ -573,8 +576,10 @@ def flat_pattern(workdir, *, k_factor=0.5, combine_bends=True,
                             "role": "lines", "dtype": "f4",
                             "length": int(engraving_lines.size),
                             "segments": int(engraving_lines.size // 6)},
-        "face_role": {"kind": "sheet_face_role", "association": "face",
+        "face_role": {"kind": "sheet_face_role", "association": "brep_face",
                       "role": "category", "dtype": "u1",
+                      "length": int(graph.face_count),
+                      "count": int(graph.face_count),
                       "labels": ROLE_NAMES},
     }
 

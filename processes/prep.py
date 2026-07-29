@@ -62,12 +62,26 @@ def mesh_current(workdir, params):
 
 
 def aag_current(workdir, params):
-    """The AAG artifact exists and indexes the current mesh."""
+    """The AAG artifact exists and was built from the current source BREP.
+
+    Gated on the SOURCE, not the mesh: the graph is rebuilt from the STEP and
+    its face/edge ids are deterministic for the same bytes, so it is valid
+    before the fine mesh exists and stays valid once it is built. Gating on
+    the mesh fingerprint instead discarded the first-load graph the moment
+    prep/mesh landed — and the rebuild picked a different edge deflection
+    (part_resolution was None at first load), so aag_fingerprint changed and
+    orphaned every result salted on it.
+    """
     import aag
+    from utils import file_fingerprint
     meta = _read_json(workdir, pipeline.AAG_META_FILE)
     if meta is None or meta.get("schema") != aag.AAG_SCHEMA:
         return False
-    return meta.get("mesh_fingerprint") == pipeline.mesh_fingerprint(workdir)
+    source = find_source(workdir)
+    if source is None or meta.get("source_sha") is None:
+        # legacy artifact without source tracking — fall back to the old gate
+        return meta.get("mesh_fingerprint") == pipeline.mesh_fingerprint(workdir)
+    return meta["source_sha"] == file_fingerprint(source)
 
 
 def directions_current(workdir, params):

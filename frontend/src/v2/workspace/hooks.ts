@@ -104,7 +104,12 @@ export function useActiveFieldLens(): FieldLensDef | null {
 /** A field lens materializes itself: when it's active with nothing cached
  * and no job in flight, the backing analysis runs with plain defaults.
  * One attempt per (part, analysis) per session — a failed job surfaces in
- * the rail instead of looping. */
+ * the rail instead of looping.
+ *
+ * Gated on the FINE mesh, not on `meshReady`: the coarse preview also sets
+ * meshReady, and every field lens needs `prep/mesh`, so firing here would
+ * make merely opening the app kick off the heaviest build in the repo and
+ * lock the part (one job per part) before the user has asked for anything. */
 const autoRunAttempted = new Set<string>();
 export function useAutoRunFieldLens() {
   const def = useActiveFieldLens();
@@ -113,7 +118,7 @@ export function useAutoRunFieldLens() {
   const manifest = useStore((s) => s.manifest);
   const jobs = useStore((s) => s.jobs);
   useEffect(() => {
-    if (!def || !partId || !meshReady) return;
+    if (!def || !partId || !meshReady || !manifest?.mesh) return;
     const existing = latestResult(manifest, def);
     if (existing && !existing.stale) return;
     const busy = jobs.some((j) => j.part_id === partId
@@ -185,7 +190,7 @@ export function useSelectedPlanCheck():
   return check ? { check, status: section.checks[check.id] } : null;
 }
 
-async function storePlan(plan: Plan, revision: number) {
+export async function storePlan(plan: Plan, revision: number) {
   const partId = useStore.getState().partId;
   if (!partId) return;
   try {

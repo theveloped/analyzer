@@ -39,9 +39,24 @@ export interface V2State {
   measure: MeasureState;
   /** The section controls rail (right side, like the measure rail). */
   sectionRailOpen: boolean;
+  /** The open study (v2/studies.ts) — a comparison surface over many
+   * candidates, opened from the left rail and rendered in the right one.
+   * Orthogonal to the active lens and check, like the viewport. */
+  activeStudy: string | null;
+  /** Right-rail width per rail id — the study table wants far more room than
+   * a settings panel, so one shared number would over-widen everything.
+   * Survives reload (the only other persisted state is the direction setup). */
+  railWidths: Record<string, number>;
+  /** Optimistic view of the direction selection, so a row click lands on the
+   * frame it happened rather than a plan round trip later. The plan write
+   * follows behind; `part` guards against showing another part's selection. */
+  selection: { part: string | null; keys: string[] };
 
   setAdvanced: (advanced: boolean) => void;
   setSectionRailOpen: (open: boolean) => void;
+  setActiveStudy: (id: string | null) => void;
+  setRailWidth: (id: string, width: number) => void;
+  setSelection: (part: string | null, keys: string[]) => void;
   toggleTheme: () => void;
   setCompute: (analysisId: string, key: string, value: unknown) => void;
   setActiveCheck: (id: string | null) => void;
@@ -59,6 +74,27 @@ const initialCompute = Object.fromEntries(
   ANALYSES.map((a) => [a.id, defaultCompute(a)]),
 );
 
+// Rail widths are the one piece of v2 chrome worth surviving a reload — a
+// panel snapping back to its default every time is a papercut. Same
+// hand-rolled localStorage shape as the direction setup; the store has no
+// persist middleware and this is not enough state to justify adding one.
+const RAIL_WIDTHS_KEY = 'v2-rail-widths';
+
+function loadRailWidths(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(RAIL_WIDTHS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {}; // malformed or unavailable storage — defaults still work
+  }
+}
+
+function saveRailWidths(widths: Record<string, number>): void {
+  try {
+    localStorage.setItem(RAIL_WIDTHS_KEY, JSON.stringify(widths));
+  } catch { /* storage full / unavailable — the in-memory width still works */ }
+}
+
 export const useV2 = create<V2State>()((set) => ({
   advanced: false,
   theme: 'light',
@@ -68,9 +104,19 @@ export const useV2 = create<V2State>()((set) => ({
   viewport: DEFAULT_VIEWPORT,
   measure: { active: false, a: null, b: null, frame: 'xyz' },
   sectionRailOpen: false,
+  activeStudy: null,
+  railWidths: loadRailWidths(),
+  selection: { part: null, keys: [] },
 
   setAdvanced: (advanced) => set({ advanced }),
   setSectionRailOpen: (sectionRailOpen) => set({ sectionRailOpen }),
+  setActiveStudy: (activeStudy) => set({ activeStudy }),
+  setRailWidth: (id, width) => set((s) => {
+    const railWidths = { ...s.railWidths, [id]: width };
+    saveRailWidths(railWidths);
+    return { railWidths };
+  }),
+  setSelection: (part, keys) => set({ selection: { part, keys } }),
   setViewport: (patch) =>
     set((s) => ({ viewport: { ...s.viewport, ...patch } })),
   setMeasureActive: (active) =>

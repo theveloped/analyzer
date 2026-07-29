@@ -117,6 +117,14 @@ def cache_key(workdir, target_id, params):
     if "splits" in analysis.salts:
         import pipeline
         key["splits"] = pipeline.splits_fingerprint(workdir)
+    if "mesh" in analysis.salts:
+        # for an analysis that does not REQUIRE the fine mesh but produces
+        # more when one exists (sheet_metal/bend_plan's fold mesh): keying on
+        # the fingerprint — None included — keeps the coarse-only result and
+        # the full one as separate entries instead of one masquerading as the
+        # other forever
+        import pipeline
+        key["mesh"] = pipeline.mesh_fingerprint(workdir)
     if analysis.key_extra:
         key.update(analysis.key_extra)
     return key

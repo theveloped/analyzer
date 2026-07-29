@@ -331,11 +331,13 @@ def analyse_profile(workdir, *, unroll=True, k_factor=0.5, progress=None):
             logger.warning(f"unroll failed: {exc}")
             reasons.append(f"unroll failed ({exc})")
 
-    brep_ids = np.load(os.path.join(workdir, pipeline.BREP_FACES_FILE))
-    arrays["face_role"] = roles[brep_ids].astype("<u1")
+    # per BREP FACE (see sheet.detect_sheet): classification is a BREP
+    # question, so it does not wait for the fine mesh
+    arrays["face_role"] = roles.astype("<u1")
     field_meta["face_role"] = {
-        "kind": "tube_face_role", "association": "face",
-        "role": "category", "dtype": "u1", "labels": ROLE_NAMES}
+        "kind": "tube_face_role", "association": "brep_face",
+        "role": "category", "dtype": "u1", "labels": ROLE_NAMES,
+        "length": int(graph.face_count), "count": int(graph.face_count)}
 
     stats = {"verdict": verdict, "reasons": reasons, **stats}
     if entities is not None:

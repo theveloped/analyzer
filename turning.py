@@ -548,13 +548,210 @@ def score_axis(areas, residual, rho, normals, axis, *, sin_tol, slack,
     candidate axis is trivially a surface of revolution about it, so a plain
     box scores ~0.55 on inliers alone and a drilled plate ~0.91.
     """
+    return axis_roles(areas, residual, rho, normals, axis, sin_tol=sin_tol,
+                      slack=slack, rho_floor=rho_floor, face_cos=face_cos)[1]
+
+
+# per-face role about one candidate axis (the scan's paintable field)
+AXIS_ROLES = ["off-axis", "revolution-compatible", "swept"]
+(AXIS_ROLE_OFF, AXIS_ROLE_COMPATIBLE, AXIS_ROLE_SWEPT) = range(3)
+
+
+def axis_roles(areas, residual, rho, normals, axis, *, sin_tol, slack,
+               rho_floor, face_cos):
+    """``(role[F] uint8, score)`` for one axis.
+
+    One function behind both the picture and the numbers: `score_axis`'s two
+    masks ARE roles 1 and 2, so a painted area share cannot drift from the
+    reported fraction.
+    """
     inliers = np.abs(residual) <= sin_tol * rho + slack
     inliers &= rho > rho_floor
-    total = float(areas.sum()) or 1.0
     radial = inliers & (np.abs(normals @ axis.direction) < face_cos)
-    return {"inlier_fraction": float(areas[inliers].sum() / total),
-            "radial_fraction": float(areas[radial].sum() / total),
-            "inlier_area": float(areas[inliers].sum())}
+    role = np.zeros(len(areas), dtype=np.uint8)
+    role[inliers] = AXIS_ROLE_COMPATIBLE
+    role[radial] = AXIS_ROLE_SWEPT
+    total = float(areas.sum()) or 1.0
+    return role, {"inlier_fraction": float(areas[inliers].sum() / total),
+                  "radial_fraction": float(areas[radial].sum() / total),
+                  "inlier_area": float(areas[inliers].sum())}
+
+
+def _face_geometry(workdir, *, tollerance=None):
+    """Mesh arrays plus the per-face tolerance model.
+
+    Shared by the full analysis and the cheap axis scan so the two can never
+    disagree about what counts as revolution-compatible.
+
+    Tolerance: analytic STEP normals are evaluated at the very centroids used
+    here, so their residual is exact and needs no slack; freeform STEP faces
+    need a length slack the size of the chord error; STL facet normals carry
+    ~2 degrees of azimuthal error that no length slack can absorb.
+    """
+    import json
+    import os
+
+    verts, faces = pipeline.load_mesh_arrays(workdir)
+    verts = verts.astype(np.float64)
+    normals = pipeline.load_face_normals(workdir).astype(np.float64)
+    areas = machining.face_areas(verts, faces)
+    # a column at a time, not verts[faces].mean(axis=1): the latter gathers a
+    # float64 (F, 3, 3) temporary, 200 MB on a 3M-face part
+    centroids = (verts[faces[:, 0]] + verts[faces[:, 1]]
+                 + verts[faces[:, 2]]) / 3.0
+    diagonal = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
+
+    surface_params = None
+    meta_path = os.path.join(workdir, pipeline.BREP_META_FILE)
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            surface_params = json.load(f)["surface_params"]
+    brep_path = os.path.join(workdir, pipeline.BREP_FACES_FILE)
+    brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
+
+    deflection = pipeline.part_deflection(workdir)
+    if tollerance is None:
+        tollerance = 1.0 if deflection > 0 else 5.0
+    chord_slack = float(deflection) + 1e-6 * diagonal
+    if surface_params is not None and brep_ids is not None:
+        analytic = np.array([bool(p) for p in surface_params])
+        slack = np.where(analytic[brep_ids], 1e-6 * diagonal, chord_slack)
+    else:
+        slack = np.full(len(faces), chord_slack)
+    return {
+        "verts": verts, "faces": faces, "normals": normals, "areas": areas,
+        "centroids": centroids, "diagonal": diagonal,
+        "surface_params": surface_params, "brep_ids": brep_ids,
+        "deflection": deflection, "tollerance": float(tollerance),
+        "chord_slack": chord_slack, "slack": slack,
+        "sin_tol": math.sin(math.radians(float(tollerance))),
+        "face_cos": math.cos(math.radians(FACE_NORMAL_TOL_DEG)),
+        "rho_floor": max(1e-4 * diagonal, 2.0 * chord_slack),
+    }
+
+
+def _best_line_along(direction, centroids, normals, areas, origin, *,
+                     cross_cn=None):
+    """The best-fitting turning LINE in a fixed direction.
+
+    A candidate direction is a direction, not a line, and scoring the line
+    through the part centroid would under-report every part whose axis of
+    revolution is off-centre (a bore near one edge, a boss on a plate). The
+    azimuthal moment ``r(p) = (c x n).d - n.(d x p)`` is LINEAR in the point,
+    so with ``p = origin + a*e1 + b*e2`` over the plane perpendicular to d
+    this is one area-weighted 2x2 least squares — still O(F), no iteration.
+    """
+    d = _unit(direction)
+    if d is None:
+        return None
+    helper = np.array([0.0, 1.0, 0.0]) if abs(d[0]) > 0.9 \
+        else np.array([1.0, 0.0, 0.0])
+    e1 = _unit(np.cross(d, helper))
+    e2 = np.cross(d, e1)
+
+    cross_cn = np.cross(centroids, normals) if cross_cn is None else cross_cn
+    r0 = cross_cn @ d - normals @ np.cross(d, origin)
+    # d x e1 == e2 and d x e2 == -e1, so n.(d x u) = a*(n.e2) - b*(n.e1)
+    design = np.stack([-(normals @ e2), normals @ e1], axis=1)
+    weighted = design * areas[:, None]
+    normal_eq = design.T @ weighted
+    rhs = -(weighted.T @ r0)
+    try:
+        offset = np.linalg.solve(normal_eq + 1e-12 * np.eye(2), rhs)
+    except np.linalg.LinAlgError:  # degenerate support — keep the origin line
+        offset = np.zeros(2)
+    return _canonical_axis(origin + offset[0] * e1 + offset[1] * e2, d, origin,
+                           source="candidate")
+
+
+def scan_axes(workdir, *, axis_vectors=(), tollerance=None, progress=None):
+    """Score candidate directions as turning axes — the cheap scan.
+
+    Per axis this is `azimuthal_residual` + `axis_roles`: pure O(F) numpy over
+    (centroid, normal, area, axis), with the axis-independent `c x n` and
+    `|c|^2` hoisted out of the loop. Sub-second per axis even on a 3M-triangle
+    part, against ~7 s for a full `analyse_turning` run with `axis_override` —
+    which is why this exists rather than a loop over full runs.
+
+    Runs at FULL resolution and stores `axis_role_<k>` per fine face, so the
+    painted picture is the reported number rather than an estimate of it. (An
+    earlier version scored a subsample; once a per-face field has to be stored
+    the whole pass is paid for anyway.)
+
+    Two numbers per axis, never one: `inlier_fraction` is the share of area
+    that is revolution-COMPATIBLE, `radial_fraction` the share actually SWEPT.
+    Every plane perpendicular to any axis is trivially a surface of revolution
+    about it, so a plain box scores ~0.55 on inliers alone and a drilled plate
+    ~0.91 — the second number is what separates a lathe part from a plate.
+
+    Neither is `cnc/turning`'s `turned_area_fraction`: this scan does not know
+    about boundary membership, annularity or per-face coverage, so it reads
+    high. It ranks candidates; it does not certify one.
+
+    Takes VECTORS, not indices into directions.npy: scoring an axis needs
+    nothing but the mesh, so making it wait for an accessibility run would
+    have made a cheap answer expensive to ask for.
+    """
+    vectors = np.asarray(axis_vectors, dtype=np.float64).reshape(-1, 3)
+    if not len(vectors):
+        raise ValueError("axis_vectors is empty — pass the candidate "
+                         "directions to score, as x y z triples")
+
+    _report(progress, 0.05, "loading mesh")
+    geom = _face_geometry(workdir, tollerance=tollerance)
+    centroids, normals, areas = (geom["centroids"], geom["normals"],
+                                 geom["areas"])
+    origin = geom["verts"].mean(axis=0)
+    total_faces = len(geom["faces"])
+
+    # c x n and |c|^2 are axis-independent, so hoisting them turns each
+    # residual evaluation into three matrix-vector products
+    cross_cn = np.cross(centroids, normals)
+    sq_norms = np.einsum('ij,ij->i', centroids, centroids)
+
+    axes, arrays, field_meta = [], {}, {}
+    for step, vector in enumerate(vectors):
+        _report(progress, 0.1 + 0.85 * step / max(len(vectors), 1),
+                f"scoring axis {step + 1}/{len(vectors)}")
+        axis = _best_line_along(vector, centroids, normals, areas, origin,
+                                cross_cn=cross_cn)
+        if axis is None:
+            continue
+        residual, rho, _ = azimuthal_residual(centroids, normals, axis,
+                                              cross_cn=cross_cn,
+                                              sq_norms=sq_norms)
+        role, score = axis_roles(areas, residual, rho, normals, axis,
+                                 sin_tol=geom["sin_tol"], slack=geom["slack"],
+                                 rho_floor=geom["rho_floor"],
+                                 face_cos=geom["face_cos"])
+        name = f"axis_role_{len(axes)}"
+        arrays[name] = role
+        field_meta[name] = {"kind": "axis_role", "association": "face",
+                            "role": "category", "dtype": "u1",
+                            "labels": AXIS_ROLES, "axis": len(axes)}
+        axes.append({
+            # the direction as GIVEN, so a caller can join its own candidate
+            # list back onto these rows without depending on any index space
+            "vector": [float(c) for c in _unit(vector)],
+            "field": name,
+            "inlier_fraction": round(score["inlier_fraction"], 6),
+            "radial_fraction": round(score["radial_fraction"], 6),
+            # the same gate the full analysis applies, so scan and full run
+            # agree on which axes are even plausible
+            "qualified": bool(score["radial_fraction"] >= MIN_RADIAL_FRACTION),
+            "axis": axis.as_dict(),
+        })
+
+    stats = {
+        "tollerance": geom["tollerance"],
+        "face_count": int(total_faces),
+        "total_area": round(float(areas.sum()), 3),
+        "min_radial_fraction": MIN_RADIAL_FRACTION,
+        "roles": AXIS_ROLES,
+        "axes": axes,
+    }
+    _report(progress, 1.0, "axis scan done")
+    return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
 
 
 @log_execution_time
@@ -1222,41 +1419,16 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
     import os
 
     _report(progress, 0.02, "loading mesh")
-    verts, faces = pipeline.load_mesh_arrays(workdir)
-    verts = verts.astype(np.float64)
-    normals = pipeline.load_face_normals(workdir).astype(np.float64)
-    areas = machining.face_areas(verts, faces)
-    # a column at a time, not verts[faces].mean(axis=1): the latter gathers a
-    # float64 (F, 3, 3) temporary, 200 MB on a 3M-face part
-    centroids = (verts[faces[:, 0]] + verts[faces[:, 1]]
-                 + verts[faces[:, 2]]) / 3.0
-    diagonal = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
-
-    surface_params = None
-    meta_path = os.path.join(workdir, pipeline.BREP_META_FILE)
-    if os.path.exists(meta_path):
-        with open(meta_path) as f:
-            surface_params = json.load(f)["surface_params"]
+    geom = _face_geometry(workdir, tollerance=tollerance)
+    verts, faces = geom["verts"], geom["faces"]
+    normals, areas, centroids = geom["normals"], geom["areas"], geom["centroids"]
+    diagonal, slack = geom["diagonal"], geom["slack"]
+    sin_tol, face_cos, rho_floor = (geom["sin_tol"], geom["face_cos"],
+                                    geom["rho_floor"])
+    tollerance = geom["tollerance"]
+    surface_params, brep_ids = geom["surface_params"], geom["brep_ids"]
+    chord_slack = geom["chord_slack"]
     face_ids, n_faces, _ = splits.effective_face_ids(workdir)
-    brep_path = os.path.join(workdir, pipeline.BREP_FACES_FILE)
-    brep_ids = np.load(brep_path) if os.path.exists(brep_path) else None
-
-    # tolerance: analytic STEP normals are evaluated at the very centroids used
-    # here, so their residual is exact and needs no slack; freeform STEP faces
-    # need a length slack the size of the chord error; STL facet normals carry
-    # ~2 degrees of azimuthal error that no length slack can absorb
-    deflection = pipeline.part_deflection(workdir)
-    if tollerance is None:
-        tollerance = 1.0 if deflection > 0 else 5.0
-    chord_slack = float(deflection) + 1e-6 * diagonal
-    if surface_params is not None and brep_ids is not None:
-        analytic = np.array([bool(p) for p in surface_params])
-        slack = np.where(analytic[brep_ids], 1e-6 * diagonal, chord_slack)
-    else:
-        slack = np.full(len(faces), chord_slack)
-    sin_tol = math.sin(math.radians(float(tollerance)))
-    face_cos = math.cos(math.radians(FACE_NORMAL_TOL_DEG))
-    rho_floor = max(1e-4 * diagonal, 2.0 * chord_slack)
 
     # -- candidate axes ---------------------------------------------------
     # both seeding and scoring run on a deterministic subsample (a seed only

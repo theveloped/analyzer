@@ -217,12 +217,24 @@ function latestFeatures(manifest: Manifest) {
   return list[list.length - 1] ?? null;
 }
 
+/** feature_id per FINE face. The result is stored per BREP face — recognition
+ * never needed the fine mesh — so it is broadcast here, against the same
+ * index space the reach masks use. */
 async function featureMaskOf(manifest: Manifest): Promise<Uint32Array | null> {
   const result = latestFeatures(manifest);
-  if (!result) return null;
+  const faceCount = manifest.part.counts?.faces;
+  if (!result || !faceCount) return null;
   const desc = manifest.fields.find(
     (f) => f.id === `results.cnc.features.${result.hash}.feature_id`);
-  return desc ? await fetchField(desc) as Uint32Array : null;
+  const brepDesc = manifest.fields.find((f) => f.id === 'brep_faces');
+  if (!desc || !brepDesc) return null;
+  const [byBrep, brepIds] = await Promise.all([
+    fetchField(desc) as Promise<Uint32Array>,
+    fetchField(brepDesc) as Promise<Uint32Array>,
+  ]);
+  const out = new Uint32Array(faceCount);
+  for (let f = 0; f < out.length; f++) out[f] = byBrep[brepIds[f]] ?? 0;
+  return out;
 }
 
 /** Cached-or-launch: returns the memoized evaluation, or kicks the async

@@ -71,7 +71,7 @@ export function PmiEditor({ onDone }: { onDone: () => void }) {
     }
   }
 
-  const container = 'flex h-full w-80 shrink-0 flex-col gap-4 overflow-auto border-l border-zinc-950/5 bg-white p-4 dark:border-white/10 dark:bg-zinc-900';
+  const container = 'flex min-h-full flex-col gap-4 p-4';
 
   return (
     <div className={container}>

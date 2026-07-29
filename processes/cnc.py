@@ -7,9 +7,10 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             load_cached_result, store_result)
 
 SETUPS_SCHEMA = 3  # result schema version, salted into the cache key
-FEATURES_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/features.ts
+FEATURES_SCHEMA = 2  # keep in sync with frontend/src/processes/cnc/features.ts
 REACH_STUDY_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/reach.ts
 TURNING_SCHEMA = 2  # keep in sync with frontend/src/processes/cnc/turning.ts
+TURNING_SCAN_SCHEMA = 2  # keep in sync with frontend/src/v2/decisions/columns.ts
 HULL_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/hull.ts
 
 # default library: 3 flat endmills + 2 ball mills, each at its longest
@@ -106,6 +107,24 @@ def run_turning(workdir, params, progress):
                           fields=list(result["arrays"]))
 
 
+def run_turning_scan(workdir, params, progress):
+    cache_params = resolver.cache_key(workdir, "cnc/turning_scan", params)
+    cached = load_cached_result(workdir, "cnc", "turning_scan", cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    import turning
+    result = turning.scan_axes(
+        workdir, axis_vectors=params["axis_vectors"] or [],
+        tollerance=params["tollerance"], progress=progress)
+
+    store_result(workdir, "cnc", "turning_scan", cache_params, result["stats"],
+                 arrays=result["arrays"], field_meta=result["field_meta"])
+    return AnalysisResult(stats=result["stats"],
+                          fields=list(result["arrays"]))
+
+
 def run_reach_study(workdir, params, progress):
     cache_params = resolver.cache_key(workdir, "cnc/reach_study", params)
     cached = load_cached_result(workdir, "cnc", "reach_study", cache_params)
@@ -192,12 +211,14 @@ PROCESS = ProcessDef(
         AnalysisDef(
             id="features",
             label="Feature recognition",
-            # broadcasts BREP-face results onto the fine mesh (brep_faces.npy)
+            # results are per BREP FACE, so this needs the BREP and nothing
+            # else — the coarse preview is enough to see them on, and the
+            # viewer joins the ids to whichever mesh it is showing
             description="Rule-based machining features from the BREP "
                         "adjacency graph: through/blind holes, counterbores, "
                         "countersinks (coaxial cylinder/cone stacks) and "
                         "best-effort pockets, with diameters, depths and axes.",
-            requires=["prep/mesh", "prep/aag"],
+            requires=["prep/mesh_coarse", "prep/aag"],
             params=[
                 Param("axis_angle_tol", "number", default=1.0, unit="deg",
                       min=0, label="Coaxiality angle tolerance"),
@@ -241,6 +262,27 @@ PROCESS = ProcessDef(
             # roles are voted per EFFECTIVE face, so a user cut changes the
             # answer and must orphan the old result (as cnc/setups does)
             salts=("splits",),
+        ),
+        AnalysisDef(
+            id="turning_scan",
+            label="Turnability by axis",
+            description="Score candidate directions as turning axes: the "
+                        "share of area that is revolution-compatible and the "
+                        "share actually swept. Ranks candidates for the "
+                        "directions overview — it does not certify one; "
+                        "cnc/turning is the full answer for a chosen axis.",
+            # vectors in, so this needs nothing but the mesh — asking whether
+            # an axis is turnable must not wait on an accessibility run
+            requires=["prep/mesh"],
+            params=[
+                Param("axis_vectors", "vector_list", default=[],
+                      label="Candidate axes (x:y:z, …)"),
+                Param("tollerance", "number", default=None, unit="deg", min=0,
+                      label="Revolution angle tolerance "
+                            "(blank = 1° STEP / 5° STL)"),
+            ],
+            run=run_turning_scan,
+            schema=TURNING_SCAN_SCHEMA,
         ),
         AnalysisDef(
             id="hull",

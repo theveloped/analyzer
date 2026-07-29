@@ -2,14 +2,14 @@
 // from the latest cnc/features result and lists every dimensioned feature
 // as a click-to-fly legend entry.
 
-import { COL, FocusTracker } from '../../colorizers/core';
+import { COL, fetchFaceField, FocusTracker } from '../../colorizers/core';
 import type { ResultEntry } from '../../api/types';
 import type {
   LegendEntry, RGB, ViewCtx, ViewMode,
 } from '../../registry/types';
 
 // keep in sync with FEATURES_SCHEMA in processes/cnc.py
-export const FEATURES_SCHEMA = 1;
+export const FEATURES_SCHEMA = 2;
 
 // index == backend category code (machining_features.FEATURE_TYPES)
 const TYPE_CODES = [
@@ -40,16 +40,23 @@ export function featureLabel(feature: any): string {
   return `${size}${extra} ${feature.type.replace('_', ' ')} · depth ${feature.depth.toFixed(1)}`;
 }
 
+/** Feature arrays, broadcast from BREP faces onto whatever mesh is loaded.
+ *
+ * Recognition is a BREP question, so the result is stored per BREP face —
+ * which is what lets this lens work on the coarse preview, before the fine
+ * remesh exists. `loadBrepFaceIds` hands back the fine map when there is one
+ * and the coarse map otherwise, so the join is the same either way. */
 async function featureFields(ctx: ViewCtx, result: ResultEntry) {
   const find = (name: string) => ctx.manifest.fields.find(
     (f) => f.id === `results.cnc.features.${result.hash}.${name}`);
   const categoryDesc = find('feature_category');
   const idDesc = find('feature_id');
   if (!categoryDesc || !idDesc) throw new Error('feature fields missing — re-run cnc/features');
-  return {
-    category: await ctx.getField(categoryDesc) as Uint8Array,
-    ids: await ctx.getField(idDesc) as Uint32Array,
-  };
+  const [category, ids] = await Promise.all([
+    fetchFaceField(ctx, categoryDesc) as Promise<Uint8Array>,
+    fetchFaceField(ctx, idDesc) as Promise<Uint32Array>,
+  ]);
+  return { category, ids };
 }
 
 export const featuresMode: ViewMode = {

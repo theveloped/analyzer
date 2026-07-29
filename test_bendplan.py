@@ -17,6 +17,7 @@ import tempfile
 
 import numpy as np
 
+import aag
 import pipeline
 from pressbrake import adapter
 from test_sheet import make_l_bracket, make_u_channel, write_step
@@ -199,17 +200,18 @@ def fixture_analysis(check, tmp):
           feasible_actions
           and feasible_actions[0]["display"]["required_segments"], "")
 
-    cache_params = {**merged, "schema": BENDPLAN_SCHEMA,
-                    "mesh": pipeline.mesh_fingerprint(workdir),
-                    "aag": pipeline.aag_fingerprint(workdir)}
+    from processes import resolver
+    cache_params = resolver.cache_key(workdir, "sheet_metal/bend_plan", merged)
     arrays = load_result_arrays(workdir, "sheet_metal", "bend_plan",
                                 cache_params)
-    fine_count = len(np.load(os.path.join(workdir, "fine_faces.npy")))
+    # panel_id is per BREP FACE: the partition is a BREP one, so the plan
+    # (and its lens) do not wait for the fine remesh — only the fold mesh does
+    brep_count = aag.load_aag(workdir).face_count
     check("analysis: line arrays + panel field stored",
           arrays["outline_lines"].size > 0
           and arrays["bend_axis_lines"].size > 0
           and arrays["required_lines"].size > 0
-          and len(arrays["panel_id"]) == fine_count
+          and len(arrays["panel_id"]) == brep_count
           and set(np.unique(arrays["panel_id"])) == {0, 1, 2}, "")
 
     # cache round-trip: identical stats, no recompute

@@ -723,6 +723,113 @@ def test_negatives(check, root):
           f"{100 * stats['radial_area_fraction']:.1f}%")
 
 
+def test_scan_math(check):
+    """_best_line_along must recover the offset, not just the direction.
+
+    A candidate direction is a direction, not a line. Scoring the line through
+    the part centroid would under-report every part whose axis of revolution
+    is off-centre, so the scan solves for the perpendicular offset.
+    """
+    print("\nfixture 7: the axis scan's offset fit")
+    rng = np.random.default_rng(3)
+    point = np.array([13.0, -7.0, 5.0])
+    direction = np.array([0.0, 0.0, 1.0])
+    centroids, normals = _synthetic_revolution(point, direction, rng)
+    areas = np.ones(len(centroids))
+    # deliberately NOT on the axis: this is what the fit has to undo
+    origin = centroids.mean(axis=0) + np.array([25.0, -18.0, 0.0])
+
+    fitted = turning._best_line_along(direction, centroids, normals, areas,
+                                      origin)
+    truth = turning._canonical_axis(point, direction, origin)
+    offset = float(np.linalg.norm(
+        (fitted.point - truth.point)
+        - ((fitted.point - truth.point) @ truth.direction) * truth.direction))
+    check("scan recovers the off-centre axis line", offset < 1e-6,
+          f"{offset:.3e} mm off")
+
+    naive = turning._canonical_axis(origin, direction, origin)
+    residual, _, _ = turning.azimuthal_residual(centroids, normals, naive)
+    check("the centroid line alone would have missed it",
+          np.abs(residual).max() > 1.0,
+          f"max |r| = {np.abs(residual).max():.2f}")
+
+
+def test_scan(check, root):
+    print("\nfixture 8: cnc/turning_scan over candidate directions")
+    import processes
+    from processes import resolver
+    from processes.base import apply_defaults, params_hash
+
+    def scan(workdir, **params):
+        analysis = processes.get_analysis("cnc", "turning_scan")
+        merged = apply_defaults(analysis, params)
+        return analysis.run(workdir, merged, None).stats, merged
+
+    AXES = [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+
+    # the scan takes VECTORS, so it needs nothing but the mesh — no
+    # accessibility run stands between a candidate and its turnability
+    workdir = build_workdir(_cylinder(15.0, 50.0), root, "scan_cyl")
+    stats, merged = scan(workdir, axis_vectors=AXES)
+    by_dir = {tuple(round(c) for c in a["vector"]): a for a in stats["axes"]}
+    check("scan scores every candidate axis", len(by_dir) == 3,
+          f"{sorted(by_dir)}")
+
+    z, x = by_dir[(0, 0, 1)], by_dir[(1, 0, 0)]
+    check("cylinder: its own axis is revolution-compatible",
+          z["inlier_fraction"] > 0.95, f"{100 * z['inlier_fraction']:.1f}%")
+    check("cylinder: its own axis is mostly swept",
+          z["radial_fraction"] > 0.5, f"{100 * z['radial_fraction']:.1f}%")
+    check("cylinder: its own axis qualifies", z["qualified"], "")
+    check("cylinder: a perpendicular axis does not",
+          not x["qualified"],
+          f"swept {100 * x['radial_fraction']:.1f}%")
+
+    # the plate is why two numbers are reported and not one: every plane
+    # perpendicular to a candidate axis is trivially a surface of revolution
+    plate = _cut(_box(100.0, 100.0, 5.0, (-50, -50, 0)), _cylinder(10.0, 5.0))
+    plate_dir = build_workdir(plate, root, "scan_plate")
+    pz = scan(plate_dir, axis_vectors=[[0, 0, 1]])[0]["axes"][0]
+    check("plate: reads high on revolution-compatible area",
+          pz["inlier_fraction"] > 0.8, f"{100 * pz['inlier_fraction']:.1f}%")
+    check("plate: fails the swept-area gate anyway",
+          not pz["qualified"], f"swept {100 * pz['radial_fraction']:.1f}%")
+
+    # one axis at a time is its own cache entry, which is what lets the
+    # overview fill a single missing cell instead of recomputing everything
+    single = scan(workdir, axis_vectors=[[0, 0, 1]])[1]
+    check("a different candidate set is a different cache key",
+          params_hash(resolver.cache_key(workdir, "cnc/turning_scan", merged))
+          != params_hash(resolver.cache_key(workdir, "cnc/turning_scan",
+                                            single)), "")
+
+    # the painted field IS the reported number — that is what running at full
+    # resolution buys, and what lets the overview union roles across axes
+    import machining
+    from processes.base import load_result_arrays
+    key = resolver.cache_key(workdir, "cnc/turning_scan", merged)
+    stored = load_result_arrays(workdir, "cnc", "turning_scan", key)
+    verts, faces = pipeline.load_mesh_arrays(workdir)
+    areas = machining.face_areas(verts, faces)
+    total = float(areas.sum())
+    for row in stats["axes"]:
+        role = stored[row["field"]]
+        tag = f"axis {tuple(round(c) for c in row['vector'])}"
+        check(f"{tag}: role array covers every fine face",
+              role.shape == (len(faces),), f"{role.shape} vs {len(faces)}")
+        check(f"{tag}: role codes are in range",
+              bool(((role >= 0) & (role <= 2)).all()), "")
+        compatible = float(areas[role >= 1].sum()) / total
+        swept = float(areas[role == 2].sum()) / total
+        check(f"{tag}: painted compatible area == inlier_fraction",
+              abs(compatible - row["inlier_fraction"]) < 1e-5,
+              f"{compatible:.6f} vs {row['inlier_fraction']}")
+        check(f"{tag}: painted swept area == radial_fraction",
+              abs(swept - row["radial_fraction"]) < 1e-5,
+              f"{swept:.6f} vs {row['radial_fraction']}")
+
+
 def test_fields_and_cache(check, workdir):
     print("\nfixture 6: stored fields and the cache round-trip")
     from processes import resolver
@@ -772,6 +879,8 @@ def main():
         test_split_state(check)
         test_split_roundtrip(check, root)
         test_negatives(check, root)
+        test_scan_math(check)
+        test_scan(check, root)
         test_fields_and_cache(check, shaft)
     finally:
         shutil.rmtree(root, ignore_errors=True)

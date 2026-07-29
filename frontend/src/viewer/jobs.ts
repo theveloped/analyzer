@@ -2,7 +2,9 @@
 // controls (e.g. the flow-fill "Compute fill" button). The watched set is
 // module-level so remounts and multiple callers never double-poll a job.
 
-import { fetchJob, reprocessPart as reprocessPartApi, submitJob } from '../api/client';
+import {
+  fetchJob, reprocessPart as reprocessPartApi, submitJob, uploadPart,
+} from '../api/client';
 import type { Job } from '../api/types';
 import { useStore } from '../state/store';
 import {
@@ -25,6 +27,22 @@ export async function reprocessPart(partId: string): Promise<void> {
   }
 }
 
+/** Upload a STEP/STL file, select the new part and — for STEP — watch the
+ * first-load bundle so the coarse preview appears on its own. Without the
+ * watch nothing ever polls: `selectPart` runs while the bundle is still
+ * queued, so the manifest has no coarse mesh yet and only a manual reload
+ * would surface it. Lives here rather than in the controller because
+ * `watchJob` calls back into the controller. */
+export async function uploadAndSelect(file: File): Promise<void> {
+  const { part, job } = await uploadPart(file);
+  await refreshParts();
+  await selectPart(part.id);
+  if (job) {
+    useStore.getState().set({ jobs: [job, ...useStore.getState().jobs] });
+    void watchJob(job);
+  }
+}
+
 /** Submit an analysis job, register it in the store and start watching.
  * `onDone` runs after a successful job's manifest refresh (e.g. carrying
  * assignment overrides forward to the recomputed result). */
@@ -36,6 +54,22 @@ export async function runAnalysisJob(
   useStore.getState().set({ jobs: [job, ...useStore.getState().jobs] });
   void watchJob(job, onDone);
   return job;
+}
+
+/** prep/bundle keeps going when one of its stages fails, so that a broken
+ * AAG still leaves a usable preview — which means a failed stage arrives in
+ * a job whose status is `done`. Surface it, or a part that never renders
+ * looks like a success. */
+function reportBundleErrors(job: Job): void {
+  const bundle = job.result?.stats?.bundle as
+    Record<string, { error?: string }> | undefined;
+  if (!bundle) return;
+  const failed = Object.entries(bundle)
+    .filter(([, stage]) => typeof stage?.error === 'string')
+    .map(([target, stage]) => `${target} — ${stage.error}`);
+  if (failed.length) {
+    useStore.getState().set({ error: `first-load: ${failed.join(' · ')}` });
+  }
 }
 
 /** Poll a queued/running job until it settles; refresh the manifest and
@@ -65,6 +99,7 @@ export async function watchJob(
       });
     }
     if (current.status === 'done') {
+      reportBundleErrors(current);
       await refreshParts();
       await refreshManifest();
       await onDone?.();

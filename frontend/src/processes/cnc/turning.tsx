@@ -290,6 +290,117 @@ export const turningResidualMode: ViewMode = {
   },
 };
 
+// keep in sync with TURNING_SCAN_SCHEMA in processes/cnc.py
+export const TURNING_SCAN_SCHEMA = 2;
+
+// index == backend category code (turning.AXIS_ROLES)
+const AXIS_ROLE_LABELS = ['off-axis', 'revolution-compatible', 'swept'];
+const AXIS_ROLE_COLORS: RGB[] = [
+  COL.inaccess,          // off-axis — the milled remainder
+  [0.55, 0.75, 0.93],    // compatible but not swept (faces perpendicular)
+  [0.30, 0.55, 0.85],    // actually swept by the lathe
+];
+
+/**
+ * One candidate axis from `cnc/turning_scan`, painted per face.
+ *
+ * A separate mode from `turning_residual` rather than a parameterization of
+ * it: that one is hardcoded to the `cnc/turning` result and its stats line
+ * reads keys (verdict, stock, profile) the scan does not have. Pinned by
+ * `scanHash` + `scanAxis` because per-cell runs leave many small results and
+ * "the latest" is not the one the clicked cell reported.
+ */
+export const axisRoleMode: ViewMode = {
+  id: 'axis_role',
+  label: 'Turnability about one axis',
+  async paint(ctx) {
+    const hash = ctx.params.scanHash;
+    const which = Number(ctx.params.scanAxis) || 0;
+    const result = ctx.manifest.results.find(
+      (r) => r.process === 'cnc' && r.analysis === 'turning_scan'
+        && r.hash === hash);
+    if (!result) {
+      throw new Error('no turnability scan for this axis — compute it from '
+        + 'the directions study');
+    }
+    const axis = ((result.stats as any).axes ?? [])[which];
+    if (!axis) throw new Error(`the scan has no axis ${which}`);
+    const desc = ctx.manifest.fields.find(
+      (f) => f.id === `results.cnc.turning_scan.${result.hash}.${axis.field}`);
+    if (!desc) throw new Error(`scan field "${axis.field}" missing — re-run it`);
+    const roles = await ctx.getField(desc) as Uint8Array;
+
+    const counts = [0, 0, 0];
+    ctx.paintFaces((f) => {
+      counts[roles[f]] = (counts[roles[f]] ?? 0) + 1;
+      return AXIS_ROLE_COLORS[roles[f]] ?? COL.inaccess;
+    });
+    ctx.setFindings((f) => roles[f] === 0);
+
+    const vector = (axis.vector ?? []).map((c: number) => c.toFixed(2)).join(', ');
+    return {
+      legend: AXIS_ROLE_LABELS.map((label, i) => ({
+        color: AXIS_ROLE_COLORS[i], label: `${label} (${counts[i]})`,
+      })),
+      stats: `axis [${vector}] · `
+        + `${(100 * axis.inlier_fraction).toFixed(1)}% revolvable, `
+        + `${(100 * axis.radial_fraction).toFixed(1)}% swept`
+        + (axis.qualified ? '' : ' — below the swept-area gate'),
+    };
+  },
+};
+
+/**
+ * The UNION of several per-face masks — what a set of directions covers
+ * together, which is the one thing per-pair stats cannot answer (they
+ * overlap). Driven entirely by viewer params so the directions study can point
+ * it at any column's fields without a mode per column:
+ * `coverageFields` (manifest field ids), `coverageRule` (how that field
+ * encodes "covered") and `coverageLabel` (what to call it in the legend).
+ */
+export const coverageMode: ViewMode = {
+  id: 'coverage',
+  label: 'Combined coverage',
+  async paint(ctx) {
+    const ids: string[] = ctx.params.coverageFields ?? [];
+    const rule: string = ctx.params.coverageRule ?? 'nonzero';
+    const label: string = ctx.params.coverageLabel ?? 'covered';
+    if (!ids.length) {
+      throw new Error('no combined coverage selected — pick rows in the '
+        + 'directions study and click its total');
+    }
+    const hit = (v: number) => (rule === 'ge1' ? v >= 1
+      : rule === 'eq2' ? v === 2 : v !== 0);
+
+    const union = new Uint8Array(ctx.faceCount);
+    let missing = 0;
+    for (const id of ids) {
+      const desc = ctx.manifest.fields.find((f) => f.id === id);
+      if (!desc) { missing++; continue; }
+      const mask = await ctx.getField(desc) as Uint8Array;
+      for (let f = 0; f < union.length; f++) if (hit(mask[f])) union[f] = 1;
+    }
+
+    let n = 0;
+    ctx.paintFaces((f) => {
+      if (!union[f]) return COL.inaccess;
+      n++;
+      return COL.ok;
+    });
+    ctx.setFindings((f) => !union[f]);
+
+    return {
+      legend: [
+        { color: COL.ok, label: `${label} (${n})` },
+        { color: COL.inaccess, label: `not ${label} (${ctx.faceCount - n})` },
+      ],
+      stats: `${ids.length - missing} of ${ids.length} contributing`
+        + ` · ${n} of ${ctx.faceCount} faces ${label}`
+        + (missing ? ` · ${missing} not computed` : ''),
+    };
+  },
+};
+
 /** Inspect lines for one clicked face (appended by the cnc plugin). */
 export async function inspectTurning(face: number,
                                      ctx: ViewCtx): Promise<string[]> {

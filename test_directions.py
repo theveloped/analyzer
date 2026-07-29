@@ -170,6 +170,25 @@ def step_end_to_end(check):
               access.shape[0] == dirs.shape[0],
               f"{access.shape[0]} / {dirs.shape[0]}")
 
+        # the per-direction accessible AREA share rides in the sidecar so a
+        # per-direction overview costs no field fetches — it must agree with
+        # the accessibility rows it was derived from
+        import machining
+        verts, faces = pipeline.load_mesh_arrays(wd)
+        weights = machining.face_areas(verts, faces)
+        total = float(weights.sum())
+        expected = (access.astype(float) @ weights) / total
+        stored = np.array([s["accessible_fraction"] for s in sources])
+        check("end-to-end: accessible fractions match the rows",
+              np.allclose(stored, expected, atol=1e-5),
+              f"max |d| = {np.abs(stored - expected).max():.2e}")
+        check("end-to-end: accessible fractions are shares",
+              bool(((stored >= 0) & (stored <= 1)).all()),
+              f"{stored.min():.3f}..{stored.max():.3f}")
+        check("end-to-end: total area reported",
+              abs(stats["total_area"] - total) < 1e-3,
+              f"{stats['total_area']} vs {total:.3f}")
+
 
 def main():
     failures = []

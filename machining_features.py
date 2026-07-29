@@ -300,8 +300,11 @@ def recognize_features(workdir, *, axis_angle_tol=1.0, axis_dist_tol=1e-2,
     for index, feature in enumerate(features):
         feature["id"] = index + 1
 
-    # broadcast to fine faces
-    brep_ids = np.load(os.path.join(workdir, pipeline.BREP_FACES_FILE))
+    # Stored per BREP FACE, not broadcast onto the fine mesh. Recognition is
+    # entirely a BREP/AAG question, so broadcasting here was the only thing
+    # that made it wait for the slow remesh — and the viewer already joins
+    # BREP ids to whichever mesh it is showing (`loadBrepFaceIds`), coarse
+    # preview included. Consumers that need fine faces broadcast themselves.
     category_by_face = np.zeros(graph.face_count, dtype=np.uint8)
     id_by_face = np.zeros(graph.face_count, dtype=np.uint32)
     for feature in features:
@@ -310,14 +313,16 @@ def recognize_features(workdir, *, axis_angle_tol=1.0, axis_dist_tol=1e-2,
             category_by_face[face] = code
             id_by_face[face] = feature["id"]
     arrays = {
-        "feature_category": category_by_face[brep_ids].astype("<u1"),
-        "feature_id": id_by_face[brep_ids].astype("<u4"),
+        "feature_category": category_by_face.astype("<u1"),
+        "feature_id": id_by_face.astype("<u4"),
     }
+    common = {"association": "brep_face", "length": int(graph.face_count),
+              "count": int(graph.face_count)}
     field_meta = {
-        "feature_category": {"kind": "feature_category", "association": "face",
+        "feature_category": {**common, "kind": "feature_category",
                              "role": "category", "dtype": "u1",
                              "types": FEATURE_TYPES},
-        "feature_id": {"kind": "feature_id", "association": "face",
+        "feature_id": {**common, "kind": "feature_id",
                        "role": "data", "dtype": "u4"},
     }
 

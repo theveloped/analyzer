@@ -4,10 +4,10 @@
 
 import {
   fetchCatalog, fetchConfig, fetchHighlights, fetchManifest,
-  fetchOverrides, fetchParts, uploadPart,
+  fetchOverrides, fetchParts,
 } from '../api/client';
 import type { Manifest } from '../api/types';
-import { brepFacesOf, currentDirections } from '../processes/directions/build';
+import { brepFacesOf, currentArrows } from '../processes/directions/build';
 import { clearFieldCache, fetchBin, fetchField } from '../fields/fields';
 import { getPlugin } from '../registry';
 import type { LegendFocus, ViewCtx } from '../registry/types';
@@ -74,7 +74,9 @@ export function attach(container: HTMLElement) {
   scene.onPickArrow = (index, screen) => {
     const store = useStore.getState();
     if (store.processId !== 'directions') return false;
-    const dir = index >= 0 ? currentDirections[index] : null;
+    // currentArrows, not currentDirections: Scene3D stamps the arrow's
+    // position in the DRAWN list, which is a subset while a study is open
+    const dir = index >= 0 ? currentArrows[index] : null;
     store.setViewerParam('directions', 'selectedArrow',
       dir ? { index, x: screen[0], y: screen[1] } : null);
     store.setViewerParam('directions', 'highlightBrep', dir ? brepFacesOf(dir) : []);
@@ -100,7 +102,9 @@ async function boot() {
     store.set({ catalog, parts });
     const preload = config.preload && parts.find((p) => p.id === config.preload)
       ? config.preload
-      : parts.find((p) => p.status === 'meshed')?.id ?? parts[0]?.id ?? null;
+      : parts.find((p) => p.status === 'meshed')?.id
+        ?? parts.find((p) => p.status === 'preview')?.id
+        ?? parts[0]?.id ?? null;
     if (preload) await selectPart(preload);
   } catch (err) {
     store.set({ error: String(err) });
@@ -109,13 +113,6 @@ async function boot() {
 
 export async function refreshParts() {
   useStore.getState().set({ parts: await fetchParts() });
-}
-
-/** Upload a STEP/STL file, refresh the part list and select the new part. */
-export async function uploadAndSelect(file: File) {
-  const part = await uploadPart(file);
-  await refreshParts();
-  await selectPart(part.id);
 }
 
 /** Fly the camera to a legend entry's face group. */
@@ -393,8 +390,17 @@ export async function selectPart(partId: string) {
     // part is visible (and pickable) immediately after the first-load bundle
     const meshSrc = manifest.mesh ?? manifest.coarse_mesh ?? null;
     if (!meshSrc) {
+      // right after an upload the first-load bundle is still queued — that is
+      // the normal case, so say what is happening instead of telling the user
+      // to run something (there is nothing to run, and nothing to run it from)
+      const preparing = useStore.getState().jobs.some(
+        (job) => job.part_id === partId && job.process === 'prep'
+          && (job.status === 'queued' || job.status === 'running'));
       useStore.getState().set({
-        stats: 'part not meshed yet — run prep/mesh below', legend: [],
+        stats: preparing
+          ? 'preparing preview…'
+          : 'no preview yet — reprocess the part to rebuild it from its source',
+        legend: [],
       });
       return;
     }
