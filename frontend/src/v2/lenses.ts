@@ -1,5 +1,5 @@
 import {
-  ArrowUpFromLine, Axis3d, Box, CircleDot, Compass, Crosshair, Disc3, Drill,
+  ArrowUpFromLine, Axis3d, Box, Boxes, CircleDot, Compass, Crosshair, Disc3, Drill,
   Droplets, Expand, Eye, Frame, Grid3x3, Highlighter, Layers, ListOrdered,
   MoveVertical, Network, Palette, Pin, Play, Radius, Ratio, Ruler, Scissors,
   Shapes, ShieldCheck, Snowflake, Spline, TrendingUp, Waves, type LucideIcon,
@@ -157,6 +157,12 @@ const CURATION: Record<string, Curation> = {
     icon: Box,
     analysis: { process: 'cnc', analysis: 'hull' },
     blurb: 'Faces on the convex hull — machinable from outside with an infinitely large tool.',
+  },
+  'cnc:roughing': {
+    icon: Boxes,
+    analysis: { process: 'cnc', analysis: 'roughing' },
+    blurb: 'Material still to cut once the stock is roughed down to the convex '
+      + 'hull, split into pockets with volumes and the tool each one needs.',
   },
   'cnc:unified': { icon: ShieldCheck },
   'cnc:access': { icon: Eye },

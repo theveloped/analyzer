@@ -10,6 +10,7 @@ import {
 import { reachAggregateMode, reachOpMode, reachStudyMode } from './reach';
 import { featuresMode, inspectFeature } from './features';
 import { hullMode } from './hull';
+import { inspectRoughing, roughingMode } from './roughing';
 import {
   axisRoleMode, coverageMode, inspectTurning, turningResidualMode,
   turningRolesMode, turningSplitHost,
@@ -21,6 +22,7 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
   const lines: string[] = [];
   lines.push(...await inspectFeature(face, ctx));
   lines.push(...await inspectTurning(face, ctx));
+  lines.push(...await inspectRoughing(face, ctx));
 
   try {
     const data = await loadSetups(ctx);
@@ -73,7 +75,7 @@ export const cncPlugin: ProcessPlugin = {
   label: 'CNC machining',
   modes: [setupsMode, featuresMode, turningRolesMode, turningResidualMode,
           axisRoleMode, coverageMode,
-          hullMode, unifiedMode, accessMode,
+          hullMode, roughingMode, unifiedMode, accessMode,
           classMode, gapMode, stickoutMode, thinSpanMode, reachStudyMode,
           reachOpMode, reachAggregateMode, brepFacesMode, faceAttrsMode,
           highlightsMode],

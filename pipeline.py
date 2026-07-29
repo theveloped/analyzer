@@ -103,6 +103,13 @@ def _report(progress, fraction, message):
         progress(fraction, message)
 
 
+def _scaled(progress, lo, hi):
+    """Remap a sub-step's 0..1 progress into the [lo, hi] slice of its caller."""
+    if progress is None:
+        return None
+    return lambda f, m: progress(lo + (hi - lo) * f, m)
+
+
 def parse_tips(specs):
     """Parse tool tip specs 'diameter:corner_radius' into (D, rc) tuples."""
     tips = []
@@ -1350,7 +1357,24 @@ def reach_study(workdir, *, directions=(), tools=(), tollerance=0.1,
 HULL_EDGE_ANGLE_DEG = 10.0  # hull crease edges kept for the viewer overlay
 
 
-def convex_hull_faces(workdir, *, tollerance=None, progress=None):
+def part_convex_hull(points):
+    """The convex hull of a point set, joggling degenerate input.
+
+    Near-planar vertex sets make qhull fail outright; ``QJ`` perturbs the
+    points just enough to build a hull. Shared so the hull the on-hull mask
+    is measured against is the same one ``hull_roughing`` carves its residual
+    out of — two hulls of the same part would disagree at the eps boundary.
+    """
+    from scipy.spatial import ConvexHull, QhullError
+
+    try:
+        return ConvexHull(points)
+    except QhullError:
+        # near-planar/degenerate input: joggle the points
+        return ConvexHull(points, qhull_options="QJ")
+
+
+def convex_hull_faces(workdir, *, tollerance=None, hull=None, progress=None):
     """Per-face 'lies on the convex hull' mask: the surface an infinitely
     large mill can machine directly from outside.
 
@@ -1361,19 +1385,18 @@ def convex_hull_faces(workdir, *, tollerance=None, progress=None):
     the part extent along that normal. ``tollerance`` overrides eps; the
     default scales with the tessellation chord error (curved facets sit
     chord-sag below the true hull).
+
+    ``hull`` accepts an already-built hull so a caller that needs the hull
+    itself does not pay for a second qhull pass.
     """
     import machining
-    from scipy.spatial import ConvexHull, QhullError
 
     verts, faces = load_mesh_arrays(workdir)
     points = verts.astype(np.float64)
 
     _report(progress, 0.0, "convex hull")
-    try:
-        hull = ConvexHull(points)
-    except QhullError:
-        # near-planar/degenerate input: joggle the points
-        hull = ConvexHull(points, qhull_options="QJ")
+    if hull is None:
+        hull = part_convex_hull(points)
     hull_pts = points[hull.vertices]
 
     diagonal = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
@@ -1443,6 +1466,336 @@ def convex_hull_faces(workdir, *, tollerance=None, progress=None):
     logger.info(f"convex hull: {stats['on_hull_faces']}/{stats['face_count']} "
                 f"faces on hull ({100 * stats['area_fraction']:.1f}% of area, "
                 f"eps {eps:.4g} mm)")
+    return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
+
+
+ROUGHING_TARGET_CELLS = 4_000_000  # bbox cells; keeps the volume error ~1%
+
+
+def roughing_voxel_size(workdir, voxel=None):
+    """Voxel size for the roughing residual — finer than ``_flow_voxel_size``.
+
+    That one is sized to resolve a wall a few voxels through its thickness;
+    this one integrates a VOLUME, whose error scales with voxel size times
+    pocket surface area. On a 90 mm part the analysis-resolution default lands
+    ~25% off the exact ``hull_volume - part_volume``; spreading roughly
+    ``ROUGHING_TARGET_CELLS`` over the bounding box holds it near 1%. Callers
+    that want the grid shared with the injection flow stages pass ``voxel``
+    explicitly to force the two onto the same one.
+    """
+    if voxel is not None:
+        return float(voxel)
+    verts, _ = load_mesh_arrays(workdir)
+    extent = (verts.max(axis=0).astype(np.float64)
+              - verts.min(axis=0).astype(np.float64))
+    bbox = float(np.prod(np.maximum(extent, 1e-9)))
+    h = (bbox / ROUGHING_TARGET_CELLS) ** (1.0 / 3.0)
+    return float(np.clip(h, 0.05, 2.0))
+
+
+def _hull_mesh(hull, points):
+    """(verts, faces) of the hull polyhedron, every triangle facing outward.
+
+    qhull's simplices carry no consistent winding, so each one is flipped to
+    agree with its own facet plane normal. Vertices are compacted because
+    meshlib rejects a mesh whose vertex array is mostly unreferenced.
+    """
+    simplices = np.asarray(hull.simplices, dtype=np.int64).copy()
+    tri = points[simplices]
+    normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    flip = np.einsum('ij,ij->i', normals, hull.equations[:, :3]) < 0.0
+    simplices[flip] = simplices[flip][:, ::-1]
+
+    used = np.unique(simplices)
+    remap = np.full(len(points), -1, dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return points[used], remap[simplices]
+
+
+def _distance_volume(verts, faces, origin, h, dims, diagonal):
+    """Signed distance of every cell of an explicit grid (negative inside).
+
+    The grid is passed in rather than derived so this lands cell-for-cell on
+    the shared ``prep/voxels`` grid — the two fields are only comparable if
+    they share an origin, voxel size and dimensions.
+    """
+    from meshlib import mrmeshpy as mm
+    from meshlib import mrmeshnumpy as mn
+
+    mesh = mn.meshFromFacesVerts(np.ascontiguousarray(faces, dtype=np.int32),
+                                 np.ascontiguousarray(verts, dtype=np.float64))
+    params = mm.MeshToDistanceVolumeParams()
+    params.vol.origin = mm.Vector3f(*(float(c) for c in origin))
+    params.vol.voxelSize = mm.Vector3f(h, h, h)
+    params.vol.dimensions = mm.Vector3i(*(int(d) for d in dims))
+    params.dist.signMode = mm.SignDetectionMode.HoleWindingRule
+    params.dist.maxDistSq = max(diagonal ** 2, 1.0)
+    volume = mm.meshToDistanceVolume(mesh, params)
+    sdf = np.ascontiguousarray(mn.getNumpy3Darray(volume),
+                               dtype=np.float32).ravel()
+    del volume, mesh
+    return sdf
+
+
+def hull_roughing(workdir, *, voxels, grid, voxels_hash=None, tollerance=None,
+                  film_voxels=1, min_volume=None, directions=(), tools=(),
+                  reach_tollerance=0.1, wall_tollerance=1.0, pixel=None,
+                  window=0.3, progress=None):
+    """Material left after roughing the stock down to the part's convex hull.
+
+    Rough to the hull first and that cut is unobstructed by construction — the
+    hull is convex, so nothing shadows it and the biggest tool in the library
+    applies throughout. What survives is exactly ``hull - part``, and that
+    residual falls apart into disjoint pockets, each bounded by a connected
+    patch of off-hull faces. Those are the expensive pockets: each has to be
+    entered with a tool small enough to reach *all* of its faces, and that tool
+    caps how fast the pocket can be cleared.
+
+    The residual is carved on the shared ``prep/voxels`` grid rather than with a
+    solid boolean. Hull and part share coplanar faces wherever the part touches
+    its own hull — the classic boolean degeneracy — STL input has no BREP to
+    cut, and boolean output would have to be mapped back onto the stable
+    fine-face indexing. Volumes are therefore discrete: ``volume_error``
+    reports the deviation from the exact ``hull_volume - part_volume``, and is
+    the number to read when judging whether ``voxel`` was fine enough.
+
+    Two consequences worth knowing. Anything shallower than ``film_voxels``
+    voxels is erased by the erosion that separates the pockets (for a *roughing*
+    estimate there is nothing there to rough). And a convex part has an empty
+    residual and reports zero pockets, which is correct rather than a failure.
+    """
+    import machining
+    from scipy import ndimage
+
+    verts, faces = load_mesh_arrays(workdir)
+    points = verts.astype(np.float64)
+
+    _report(progress, 0.0, "convex hull")
+    hull = part_convex_hull(points)
+    hull_result = convex_hull_faces(workdir, tollerance=tollerance, hull=hull)
+    on_hull = hull_result["arrays"]["on_hull"].astype(bool)
+
+    origin = np.asarray(grid["origin"], dtype=np.float64)
+    h = float(grid["voxel"])
+    nx, ny, nz = (int(d) for d in grid["dims"])
+    diagonal = float(np.linalg.norm(points.max(axis=0) - points.min(axis=0)))
+
+    _report(progress, 0.15, "hull distance field")
+    hull_verts, hull_faces = _hull_mesh(hull, points)
+    d_hull = _distance_volume(hull_verts, hull_faces, origin, h, (nx, ny, nz),
+                              diagonal)
+
+    # prep/voxels stores the interior cells, so "outside the part" is its
+    # complement — no second signed-distance pass for the part itself
+    inside_part = np.zeros(nx * ny * nz, dtype=bool)
+    inside_part[voxels["voxel_index"].astype(np.int64)] = True
+    residual = ((d_hull < 0.0) & ~inside_part).reshape(nx, ny, nz)
+    del inside_part
+
+    _report(progress, 0.45, "residual components")
+    # Where the part touches its own hull the two surfaces coincide, so
+    # rounding leaves a ~1-voxel film of residual draped over the whole part.
+    # Left alone that film shorts every pocket into one blob: erode it away,
+    # label, then grow the labels back so the erosion costs no volume.
+    structure = ndimage.generate_binary_structure(3, 1)  # 6-connectivity
+    film = max(int(film_voxels), 0)
+    core = (ndimage.binary_erosion(residual, structure=structure,
+                                   iterations=film) if film else residual)
+    labels, count = ndimage.label(core, structure=structure)
+    for _ in range(film):
+        grown = ndimage.grey_dilation(labels, footprint=structure)
+        labels = np.where((labels == 0) & residual, grown, labels)
+
+    voxel_volume = h ** 3
+    sizes = np.bincount(labels.ravel(), minlength=count + 1)
+    sizes[0] = 0
+    volumes = sizes.astype(np.float64) * voxel_volume
+    if min_volume is None:
+        # smaller than a 4-voxel cube is surface noise, not a pocket to rough:
+        # the erode/regrow pass can shed a few stray voxels off a rim, and
+        # every one of those would otherwise become a legend entry
+        min_volume = 64.0 * voxel_volume
+    keep = np.flatnonzero(volumes >= max(float(min_volume), voxel_volume))
+    keep = keep[keep != 0]
+    order = keep[np.argsort(-volumes[keep], kind="stable")]
+
+    relabel = np.zeros(count + 1, dtype=np.uint32)
+    relabel[order] = np.arange(1, len(order) + 1, dtype=np.uint32)
+    labels = relabel[labels]
+    dropped_pockets = int((sizes > 0).sum() - len(order))
+    dropped_volume = float(volumes.sum() - volumes[order].sum())
+
+    # how far below the hull surface each pocket reaches — the honest depth,
+    # and a stickout proxy. (The per-face hull_gap is a SUPPORT gap along the
+    # face normal, so on a pocket wall it measures the part's width, not depth.)
+    depths = (ndimage.maximum(-d_hull, labels=labels.ravel(),
+                              index=np.arange(1, len(order) + 1))
+              if len(order) else np.zeros(0))
+    depths = np.atleast_1d(depths)
+    del d_hull
+
+    _report(progress, 0.6, "mapping faces to pockets")
+    import molding
+
+    normals = load_face_normals(workdir).astype(np.float64)
+    centroids = points[faces].mean(axis=1)
+    off = ~on_hull
+    n_off = int(off.sum())
+    pocket_id = np.zeros(len(faces), dtype=np.uint32)
+    unassigned = 0
+
+    if n_off:
+        # Per face, not per connected patch: one patch of off-hull faces can
+        # bound several different residual pockets (on a thin-walled part the
+        # whole surface is one patch), so the void a face actually faces is
+        # the only thing that can name its pocket. The part's outward normal
+        # points INTO that void, so stepping off the face along it lands in
+        # the face's own residual component.
+        dims64 = np.array([nx, ny, nz], dtype=np.int64)
+        flat = labels.ravel()
+        rows = np.flatnonzero(off)
+        found = np.zeros(n_off, dtype=np.int64)
+        todo = np.arange(n_off)
+        for probe in (1.5, 2.5, 4.0):
+            if not len(todo):
+                break
+            here = rows[todo]
+            ijk = np.floor((centroids[here] + normals[here] * (probe * h)
+                            - origin) / h).astype(np.int64)
+            ok = ((ijk >= 0) & (ijk < dims64)).all(axis=1)
+            lin = np.clip((ijk[:, 0] * ny + ijk[:, 1]) * nz + ijk[:, 2],
+                          0, nx * ny * nz - 1)
+            hit = np.where(ok, flat[lin], 0)
+            found[todo] = hit
+            todo = todo[hit == 0]
+
+        # A face on a pocket rim steps into a voxel straddling the hull
+        # surface and probes nothing. Fill those from edge-adjacent faces that
+        # did hit — a neighbour across an edge bounds the same void locally.
+        # Only edges touching a still-empty face are visited, so this stays
+        # cheap however big the mesh is.
+        pairs, _ = molding.face_adjacency(faces)
+        compact = np.full(len(faces), -1, dtype=np.int64)
+        compact[off] = np.arange(n_off)
+        both = off[pairs[:, 0]] & off[pairs[:, 1]]
+        u, v = compact[pairs[both, 0]], compact[pairs[both, 1]]
+        missing = found == 0
+        for _ in range(16):
+            touch = missing[u] | missing[v]
+            if not (missing.any() and touch.any()):
+                break
+            uu, vv = u[touch], v[touch]
+            filled = np.zeros(n_off, dtype=np.int64)
+            np.maximum.at(filled, uu, found[vv])
+            np.maximum.at(filled, vv, found[uu])
+            gained = missing & (filled > 0)
+            if not gained.any():
+                break
+            found[gained] = filled[gained]
+            missing = found == 0
+
+        pocket_id[off] = found.astype(np.uint32)
+        unassigned = int(missing.sum())
+
+    tool_specs = list(tools or [])
+    any_dir, selected = [], list(directions or [])
+    if tool_specs:
+        _report(progress, 0.7, "reachability")
+        study = reach_study(workdir, directions=selected, tools=tool_specs,
+                            tollerance=reach_tollerance,
+                            wall_tollerance=wall_tollerance, pixel=pixel,
+                            window=window,
+                            progress=_scaled(progress, 0.7, 0.95))
+        selected = list(study["stats"]["directions"])
+        for t in range(len(tool_specs)):
+            mask = np.zeros(len(faces), dtype=bool)
+            for d in selected:
+                mask |= study["arrays"][f"reach_{d}_{t}"].astype(bool)
+            any_dir.append(mask)
+
+    _report(progress, 0.95, "per-pocket summary")
+    areas = machining.face_areas(verts, faces)
+    pockets, unreachable_volume = [], 0.0
+    for rank in range(1, len(order) + 1):
+        members = np.flatnonzero(pocket_id == rank)
+        volume = float(volumes[order[rank - 1]])
+        area = float(areas[members].sum())
+        entry = {
+            "id": rank,
+            "volume": round(volume, 3),
+            "face_count": int(len(members)),
+            "area": round(area, 3),
+            "max_depth": round(float(depths[rank - 1]), 3),
+        }
+        if any_dir and len(members):
+            fractions, covering = {}, []
+            for t, mask in enumerate(any_dir):
+                reached = mask[members]
+                fractions[str(t)] = round(
+                    float(areas[members][reached].sum() / max(area, 1e-30)), 4)
+                if reached.all():
+                    covering.append(t)
+            best = (max(covering, key=lambda t: tool_specs[t]["diameter"])
+                    if covering else None)
+            entry["tool_area_fraction"] = fractions
+            entry["best_tool"] = best
+            entry["best_tool_diameter"] = (float(tool_specs[best]["diameter"])
+                                           if best is not None else None)
+            entry["fully_reachable"] = best is not None
+            if best is None:
+                unreachable_volume += volume
+        elif any_dir:
+            # a sliver no face probed into: reachability was never tested, so
+            # say so rather than folding it into the unmachinable total
+            entry["best_tool"] = None
+            entry["best_tool_diameter"] = None
+            entry["fully_reachable"] = None
+        pockets.append(entry)
+
+    part_volume = abs(machining.mesh_volume(points, faces))
+    hull_volume = float(hull.volume)
+    residual_volume = hull_volume - part_volume
+    labeled_volume = float(volumes[order].sum()) if len(order) else 0.0
+
+    arrays = {"pocket_id": pocket_id.astype("<u4")}
+    field_meta = {
+        "pocket_id": {"association": "face", "role": "data",
+                      "kind": "pocket_id", "dtype": "u4",
+                      "count": int(len(faces))},
+    }
+    stats = {
+        "part_volume": round(part_volume, 3),
+        "hull_volume": round(hull_volume, 3),
+        "residual_volume": round(residual_volume, 3),
+        "labeled_volume": round(labeled_volume, 3),
+        # a convex part has no residual at all, so scale the error by the
+        # voxel floor rather than dividing by ~zero
+        "volume_error": round(abs(labeled_volume - residual_volume)
+                              / max(residual_volume, 8.0 * voxel_volume), 4),
+        "voxel": h,
+        "grid_dims": [nx, ny, nz],
+        "cells": int(nx * ny * nz),
+        "voxels_hash": voxels_hash,
+        "film_voxels": film,
+        "min_volume": float(min_volume),
+        "pocket_count": int(len(order)),
+        "dropped_pockets": dropped_pockets,
+        "dropped_volume": round(dropped_volume, 3),
+        "unassigned_faces": unassigned,
+        "off_hull_faces": n_off,
+        "pockets_without_faces": sum(1 for p in pockets if not p["face_count"]),
+        "unreachable_volume": round(unreachable_volume, 3),
+        "tollerance": hull_result["stats"]["tollerance"],
+        "directions": selected,
+        "tools": tool_specs,
+        "pockets": pockets,
+    }
+    logger.info(
+        f"hull roughing: {len(order)} pocket(s), "
+        f"{labeled_volume:.1f} of {residual_volume:.1f} mm3 residual "
+        f"({100 * stats['volume_error']:.1f}% off) at {h:.3f} mm voxels"
+        + (f", {unreachable_volume:.1f} mm3 no tool reaches"
+           if unreachable_volume else ""))
     return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
 
 

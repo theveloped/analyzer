@@ -4,7 +4,8 @@ accessibility matrix, plus tool-field precompute and composition."""
 import pipeline
 from processes import resolver
 from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
-                            load_cached_result, store_result)
+                            load_cached_result, load_result_arrays,
+                            params_hash, store_result)
 
 SETUPS_SCHEMA = 3  # result schema version, salted into the cache key
 FEATURES_SCHEMA = 2  # keep in sync with frontend/src/processes/cnc/features.ts
@@ -12,6 +13,7 @@ REACH_STUDY_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/reach.ts
 TURNING_SCHEMA = 2  # keep in sync with frontend/src/processes/cnc/turning.ts
 TURNING_SCAN_SCHEMA = 2  # keep in sync with frontend/src/v2/decisions/columns.ts
 HULL_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/hull.ts
+ROUGHING_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/roughing.ts
 
 # default library: 3 flat endmills + 2 ball mills, each at its longest
 # practical reach (stickout 5xD) with the shank as the holder cylinder
@@ -163,6 +165,45 @@ def run_hull(workdir, params, progress):
                           fields=list(result["arrays"]))
 
 
+def run_roughing(workdir, params, progress):
+    cache_params = resolver.cache_key(workdir, "cnc/roughing", params)
+    cached = load_cached_result(workdir, "cnc", "roughing", cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    def scaled(lo, hi):
+        if progress is None:
+            return None
+        return lambda f, m: progress(lo + (hi - lo) * f, m)
+
+    # the voxel grid is a cache-aware sub-run of the shared prep/voxels stage:
+    # same voxel size -> same grid, reused across processes. Resolve "auto"
+    # here rather than letting prep/voxels pick: its default is sized to
+    # resolve wall thickness, which is far too coarse to integrate a volume.
+    voxel = {"voxel": pipeline.roughing_voxel_size(workdir, params["voxel"])}
+    voxel_result = resolver.ensure(workdir, "prep/voxels", voxel,
+                                   scaled(0.0, 0.3))
+    voxel_cache = resolver.cache_key(workdir, "prep/voxels", voxel)
+    voxels = load_result_arrays(workdir, "prep", "voxels", voxel_cache)
+
+    result = pipeline.hull_roughing(
+        workdir, voxels=voxels, grid=voxel_result.stats["grid"],
+        voxels_hash=params_hash(voxel_cache),
+        tollerance=params["tollerance"], film_voxels=params["film_voxels"],
+        min_volume=params["min_volume"],
+        directions=[int(i) for i in params["direction_indices"] or []],
+        tools=pipeline.parse_tools(params["tools"]),
+        reach_tollerance=params["reach_tollerance"],
+        wall_tollerance=params["wall_tollerance"], pixel=params["pixel"],
+        window=params["window"], progress=scaled(0.3, 1.0))
+
+    store_result(workdir, "cnc", "roughing", cache_params, result["stats"],
+                 arrays=result["arrays"], field_meta=result["field_meta"])
+    return AnalysisResult(stats=result["stats"],
+                          fields=list(result["arrays"]))
+
+
 def _tips(params):
     """Accept tip specs as 'D:rc' strings or [D, rc] pairs."""
     tips = []
@@ -298,6 +339,43 @@ PROCESS = ProcessDef(
             ],
             run=run_hull,
             schema=HULL_SCHEMA,
+        ),
+        AnalysisDef(
+            id="roughing",
+            label="Hull roughing pockets",
+            description="Material left after roughing the stock down to the "
+                        "convex hull: the residual splits into disjoint "
+                        "pockets, each with its volume and the largest tool "
+                        "that reaches every one of its faces.",
+            # prep/directions pulls prep/mesh with it; the shared prep/voxels
+            # grid is driven internally so it can follow the voxel param
+            requires=["prep/directions"],
+            params=[
+                Param("voxel", "number", default=None, unit="mm", min=0.05,
+                      label="Voxel size (blank = auto from resolution)"),
+                Param("tollerance", "number", default=None, unit="mm", min=0,
+                      label="On-hull distance tolerance "
+                            "(blank = from mesh deflection)"),
+                Param("film_voxels", "int", default=1, min=0,
+                      label="Voxels eroded to separate touching pockets"),
+                Param("min_volume", "number", default=None, unit="mm³", min=0,
+                      label="Drop pockets below this volume "
+                            "(blank = 8 voxels)"),
+                Param("direction_indices", "int_list", default=[],
+                      label="Approach directions (blank = all sampled)"),
+                Param("tools", "tool_list", default=DEFAULT_TOOLS,
+                      label="Tool library (blank = geometry only, no reach)"),
+                Param("reach_tollerance", "number", default=0.1, unit="mm",
+                      min=0, label="Tip gap tolerance"),
+                Param("wall_tollerance", "number", default=1.0, unit="deg",
+                      min=0, label="Near-vertical wall tolerance"),
+                Param("pixel", "number", default=None, unit="mm", min=0,
+                      label="Z-map pixel (blank = auto)"),
+                Param("window", "number", default=0.3, unit="mm", min=0,
+                      label="Gap search window"),
+            ],
+            run=run_roughing,
+            schema=ROUGHING_SCHEMA,
         ),
         AnalysisDef(
             id="setups",

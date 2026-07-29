@@ -1097,26 +1097,6 @@ def simplify_profile(points, tollerance):
     return points[keep]
 
 
-def mesh_volume(verts, faces):
-    """Enclosed volume by the divergence theorem — exact on the mesh.
-
-    Indexed a column at a time rather than as ``verts[faces]``: that gathers a
-    float64 ``(F, 3, 3)``, which is 200 MB on a 3M-face part.
-    """
-    first = verts[faces[:, 0]]
-    second = verts[faces[:, 1]]
-    third = verts[faces[:, 2]]
-    # the scalar triple product written out per component: np.cross would
-    # allocate another (F, 3) just to be contracted away immediately
-    total = (first[:, 0] * (second[:, 1] * third[:, 2]
-                            - second[:, 2] * third[:, 1])
-             + first[:, 1] * (second[:, 2] * third[:, 0]
-                              - second[:, 0] * third[:, 2])
-             + first[:, 2] * (second[:, 0] * third[:, 1]
-                              - second[:, 1] * third[:, 0]))
-    return float(total.sum() / 6.0)
-
-
 def face_metrics(centroids, normals, areas, axis, residual, rho, axial,
                  face_ids, n_faces, *, sin_tol, slack, rho_floor, face_cos,
                  on_outer=None, on_inner=None, azimuth_bins=24):
@@ -1600,7 +1580,7 @@ def analyse_turning(workdir, *, tollerance=None, profile_bins=512,
         reasons.append(f"only {100 * turned_share:.0f}% of the area is a "
                        f"surface of revolution about the best axis")
 
-    part_volume = abs(mesh_volume(verts, faces))
+    part_volume = abs(machining.mesh_volume(verts, faces))
     envelope_volume = float(math.pi * (profile ** 2 * envelope["widths"]).sum())
     stock_volume = float(math.pi * r_max ** 2 * length)
 

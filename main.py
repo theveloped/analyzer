@@ -203,6 +203,17 @@ if __name__ == "__main__":
     parser_verdict.add_argument("--min_setup_area", help="minimum area (mm^2) a setup must gain (default: 0.1%% of the part)", type=float, default=None)
     parser_verdict.add_argument("--serve", help="serve results in browser", action="store_true")
 
+    # Create the parser for the "roughing" command
+    parser_roughing = subparsers.add_parser("roughing", help="volumes left to rough after cutting the part down to its convex hull")
+    parser_roughing.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
+    parser_roughing.add_argument("--voxel", help="voxel size in mm (default: the part's analysis resolution; finer = more accurate volumes)", type=float, default=None)
+    parser_roughing.add_argument("--tollerance", help="on-hull distance tolerance in mm (default: from mesh deflection)", type=float, default=None)
+    parser_roughing.add_argument("--film_voxels", help="voxels eroded to separate pockets that meet at the hull", type=int, default=None)
+    parser_roughing.add_argument("--min_volume", help="drop pockets below this volume in mm^3 (default: 8 voxels)", type=float, default=None)
+    parser_roughing.add_argument("--direction_indices", help="approach direction indices (default: all sampled)", nargs="*", type=int, default=None)
+    parser_roughing.add_argument("--tools", help="tools as D[:rc[:stickout[:holder_radius]]]; pass none for geometry only (default: builtin library)", nargs="*", type=str, default=None)
+    parser_roughing.add_argument("--serve", help="serve results in browser", action="store_true")
+
     # Create the parser for the "options" command
     parser_serve = subparsers.add_parser("serve", help="find injection molding options")
     parser_serve.add_argument("directory", help="working directory", type=PathType(type='dir', dash_ok=True, exists=True))
@@ -766,6 +777,50 @@ if __name__ == "__main__":
             f"coverage {option['coverage'] * 100:.1f}% "
             f"(visibility {verdict['base_coverage'] * 100:.1f}%)  [{setups}]  "
             f"lost to tooling {verdict['lost']:.0f}mm2")
+
+        if args.serve:
+            serve_workdir(args.directory)
+
+    elif args.command == "roughing":
+        logger.info("Computing hull roughing pockets")
+
+        import processes
+        from processes.base import apply_defaults
+
+        analysis = processes.get_analysis("cnc", "roughing")
+        params = {"voxel": args.voxel, "tollerance": args.tollerance}
+        if args.film_voxels is not None:
+            params["film_voxels"] = args.film_voxels
+        if args.min_volume is not None:
+            params["min_volume"] = args.min_volume
+        if args.direction_indices is not None:
+            params["direction_indices"] = args.direction_indices
+        if args.tools is not None:
+            params["tools"] = args.tools
+        merged = apply_defaults(analysis, params)
+        result = analysis.run(args.directory, merged, None)
+
+        stats = result.stats
+        logger.info(
+            f"part {stats['part_volume']:.0f}mm3  hull {stats['hull_volume']:.0f}mm3  "
+            f"residual {stats['residual_volume']:.0f}mm3 "
+            f"(voxels found {stats['labeled_volume']:.0f}mm3, "
+            f"{stats['volume_error'] * 100:.1f}% off at {stats['voxel']:.3f}mm)")
+        for pocket in stats["pockets"]:
+            tool = pocket.get("best_tool_diameter")
+            reach = ("no tool reaches it" if "best_tool" in pocket and tool is None
+                     else f"D{tool:g}" if tool is not None else "not checked")
+            logger.info(
+                f"  pocket {pocket['id']}  {pocket['volume']:.1f}mm3  "
+                f"{pocket['face_count']} faces  "
+                f"{pocket['max_depth']:.2f}mm below hull  {reach}")
+        if stats["dropped_pockets"]:
+            logger.info(f"  dropped {stats['dropped_pockets']} pocket(s) below "
+                        f"{stats['min_volume']:.3f}mm3 "
+                        f"({stats['dropped_volume']:.1f}mm3 total)")
+        if stats["unreachable_volume"]:
+            logger.warning(f"{stats['unreachable_volume']:.1f}mm3 in pockets no "
+                           f"tool in the library fully reaches")
 
         if args.serve:
             serve_workdir(args.directory)

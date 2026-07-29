@@ -449,6 +449,67 @@ them from a real turned part is the **swept** area — inliers that are off-axis
 and not perpendicular to it — which is ~0% for the box and 1.4% for the plate.
 Both fractions are area-weighted, never triangle counts.
 
+### Stage 3e — `hull` / `roughing`: what is left after the easy cut
+
+The convex hull is the milling analogue of the maximal turned state below: the
+smallest *convex* solid containing the part, where turning takes the smallest
+solid of *revolution*. Both are the same move — bound the part by the shape the
+process makes cheaply, then look at the difference.
+
+`cnc/hull` answers it per face. A facet lies on the hull iff its own supporting
+plane supports the whole vertex set, i.e.
+
+```
+gap = support(hull verts, n_f) − support(facet's own verts, n_f) ≤ eps
+```
+
+Normal agreement comes for free: an inward-facing coplanar sliver has a flipped
+normal, so its gap is the part's whole extent along that normal rather than
+zero. The default `eps` scales with the tessellation chord error, because a
+facet on a curved hull sits a chord-sag below the true hull. Those faces are
+what an infinitely large mill reaches directly from outside.
+
+`cnc/roughing` turns that into volume. Rough the stock down to the hull first
+and the cut is unobstructed by construction — the hull is convex, so nothing
+shadows it and the biggest tool in the library applies throughout. What survives
+is exactly `hull − part`, and that residual falls apart into **disjoint
+pockets**, each bounded by a connected patch of off-hull faces. Those are the
+expensive pockets: each must be entered with a tool small enough to reach *all*
+of its faces, and that tool caps how fast it can be cleared. Per pocket the
+analysis reports the volume, the depth below the hull, and the largest tool from
+the library that reaches every one of its faces (from the same
+`zmap.tool_face_verdict` rule the rest of the CNC stack uses, OR-ed over the
+approach directions) — or flags that none does.
+
+The residual is carved on the shared `prep/voxels` grid, **not** with a solid
+boolean, which is the one place this stage departs from the recipe's step 2.
+Four reasons: hull and part share coplanar faces wherever the part touches its
+own hull, which is the classic boolean degeneracy; STL input has no BREP to cut;
+boolean output faces would have to be mapped back onto the stable `fine_faces`
+indexing; and the repo has no production boolean to lean on. Since `prep/voxels`
+already stores the part's interior cells, "outside the part" is just its
+complement, and only the hull needs a distance field of its own.
+
+Two details carry the method. Where the part touches its hull the two surfaces
+coincide, so rounding leaves a ~1-voxel *film* of residual draped over the whole
+part — left alone it shorts every pocket into one blob, so the residual is
+eroded, labelled, then the labels are grown back so the erosion costs no volume.
+And faces are mapped to pockets by probing along the outward normal, which
+points *into* the void; a face on a rim whose probe lands in a voxel straddling
+the hull inherits from an edge-adjacent face that hit. That mapping is per face,
+never per connected patch — on a thin-walled part the entire surface is one
+patch bounding many distinct pockets.
+
+Volumes are therefore discrete. `volume_error` compares the voxel sum against
+the exact `hull_volume − part_volume` (both known in closed form), so the
+discretisation error is measured rather than assumed — at the default grid
+(~4M cells over the bounding box) it runs ~0.4% on a 90 mm part, against ~26% if
+the grid is left at the mesh analysis resolution, which is sized to resolve wall
+thickness rather than to integrate a volume. The corollary is that anything
+shallower than `film_voxels` voxels is erased; for a *roughing* estimate there
+is nothing there to rough. A convex part has an empty residual and reports zero
+pockets, which is the right answer rather than a failure.
+
 ### Auxiliary — `thickness`
 
 Independent of tooling: `pipeline.compute_thickness` rolls meshlib's maximal

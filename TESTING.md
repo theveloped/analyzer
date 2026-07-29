@@ -57,6 +57,41 @@ deterministically as front-facing:
 python main.py directions testpart_42 --count 16 --axes
 ```
 
+## Roughing volumes (what is left after the convex hull)
+
+`roughing` answers the quoting question: once the stock has been roughed down
+to the part's convex hull — an unobstructed, biggest-tool cut by construction —
+how much material is left, where is it, and what tool has to take it. The
+residual `hull − part` is split into disjoint pockets, each with a volume, a
+depth below the hull, and the largest tool from the library that reaches *every*
+one of its faces.
+
+```bash
+python main.py roughing testpart_42 --direction_indices 4 5 --tools 6:0:30:3
+```
+
+Pass `--tools` with no values for a geometry-only run (volumes and pockets, no
+reachability) — that needs no warm zcache and is much faster. Leaving
+`--direction_indices` off checks every sampled direction, which is the honest
+default but wants a zcache per direction.
+
+The one knob that matters is `--voxel`. The residual is carved on the shared
+`prep/voxels` grid, so pocket volumes are discrete; the default spreads ~4M
+cells over the bounding box, which lands within ~1%. The analysis measures its
+own error rather than assuming it — `volume_error` in the stats compares the
+voxel sum against the exact `hull_volume − part_volume`, and the CLI prints it:
+
+```
+part 8118mm3  hull 28326mm3  residual 20208mm3 (voxels found 20137mm3, 0.4% off at 0.234mm)
+  pocket 1  19080.2mm3  33763 faces  10.85mm below hull  no tool reaches it
+  pocket 5     11.1mm3    507 faces   0.64mm below hull  D6
+```
+
+If that percentage is high, pass a finer `--voxel`. Note the flip side: a
+feature shallower than one voxel is erased by the pass that separates pockets
+where the part touches its own hull. For a roughing estimate there is nothing
+there to rough, but do not read this analysis as a finishing check.
+
 ## Testing a whole tool catalog
 
 Tool reachability runs on the Z-map engine (`zmap.py`, `precompute` +

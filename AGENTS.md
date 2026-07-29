@@ -76,7 +76,7 @@ cd frontend && npm install && npm run build && cd ..   # one-time viewer build (
 
 - CLI entry point: `python main.py <command>` — commands: `mesh`, `explode`,
   `export`, `aag`, `directions`, `options`, `thickness`, `sheet`, `bendplan`,
-  `tube`, `features`, `setups`, `verdict`, `precompute`, `compose`, `serve`,
+  `tube`, `features`, `setups`, `verdict`, `roughing`, `precompute`, `compose`, `serve`,
   `view`. `python main.py <command> -h` for flags; TESTING.md for workflows.
   (`export` re-authors a part's `pmi.json` GD&T onto its source BREP and writes
   AP242 — the inverse of `explode`; unsupported constructs warn, never block.)
@@ -112,6 +112,7 @@ python test_pmi_edit.py      # PMI editor write-path: validate/save + PUT /pmi e
 python test_features.py      # CNC feature recognition (holes family)
 python test_turning.py       # turning axis fit, maximal turned state, face roles
 python test_hull.py          # cnc/hull: convex-hull face mask on box/pocket/cylinder parts
+python test_roughing.py      # cnc/roughing: hull residual pockets, volumes, per-pocket tool
 python test_sheet.py         # sheet detect + K-factor unfold + DXF round-trip
 python test_tube.py          # tube/profile classification + unroll
 python test_pressbrake.py    # press-brake core: kinematics, envelopes, tooling, search
