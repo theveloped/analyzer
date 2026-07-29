@@ -19,8 +19,8 @@ import {
 } from './hooks';
 import { useBusy } from './run';
 import { runAnalysisJob } from '../../viewer/jobs';
+import { hintCls } from '../components/styles';
 
-const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 const sectionCls = 'text-xs/5 font-medium text-zinc-500 dark:text-zinc-400';
 
 /** The lens's compute payload: v2 store overrides on top of the defaults. */

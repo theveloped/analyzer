@@ -12,8 +12,9 @@ export interface Part {
   created: string | null;
 }
 
+/** Mirror of FIELD_ROLES in processes/base.py, which validates it at write time. */
 export type FieldRole = 'scalar' | 'mask' | 'category' | 'lines' | 'data'
-  | 'nodes' | 'radii' | 'edges' | 'vert_map';
+  | 'fold' | 'nodes' | 'radii' | 'edges' | 'vert_map';
 
 export interface FieldDescriptor {
   id: string;
@@ -163,8 +164,6 @@ export interface PlanOperation {
   /** Declarative workpiece-state annotation: what this operation produces
    * over the final-part face space (e.g. {features: "holes"}). */
   produces?: Record<string, any>;
-  /** Structured quotation inputs (setup count, bend count, …). */
-  outputs?: Record<string, any>;
 }
 
 export interface RouteSummary {
@@ -194,8 +193,6 @@ export interface Candidate {
   index?: number;
   label?: string;
   source?: string;
-  /** Hidden from the table without renumbering the underlying artifact. */
-  suppressed?: boolean;
   [key: string]: any;
 }
 
@@ -204,8 +201,6 @@ export interface Candidate {
  * — it is the stable path checks bind to via {"$plan": …}. */
 export interface DecisionSlot {
   kind: string;
-  /** The params that produced the candidates (re-runnable). */
-  generator?: Record<string, any>;
   candidates: Candidate[];
   selected: string[] | string;
   value?: Record<string, any>;

@@ -1204,7 +1204,12 @@ function InjectionControls() {
         iterations: Math.max(1, Math.round(num(params.flowIterations, 3))),
         neighborhood: String(params.flowNeighborhood ?? '26'),
       };
-    runAnalysisJob(partId, 'injection_molding', analysis, jobParams)
+    // the SDF grid is the shared prep/voxels stage; only the fill is an
+    // injection analysis (flowVoxelResults reads both, so older results in
+    // the retired injection_molding/flow_voxels location still load)
+    const [process, id] = analysis === 'flow_voxels'
+      ? ['prep', 'voxels'] : ['injection_molding', analysis];
+    runAnalysisJob(partId, process, id, jobParams)
       .then(() => set(analysis === 'flow_voxels' ? 'flowResult' : 'fillResult', -1))
       .catch((err) => useStore.getState().set({
         error: err instanceof Error ? err.message : String(err),

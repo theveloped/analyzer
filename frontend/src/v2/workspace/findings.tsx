@@ -6,8 +6,8 @@ import { refreshManifest } from '../../viewer/controller';
 import { dispositionOf, type Finding } from '../checks/evaluators';
 import { StatusBadge } from '../components/status';
 import { usePlanSection } from './hooks';
+import { hintCls } from '../components/styles';
 
-const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 
 const DISPOSITION_BADGE = {
   open: 'neutral', accepted: 'good',

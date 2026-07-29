@@ -9,9 +9,9 @@ import { PROVENANCE_LABELS } from '../../processes/directions/modes';
 import { provenanceCss } from '../../processes/directions/state';
 import { useDirectionSetup } from '../../processes/directions/useSetup';
 import { useStore } from '../../state/store';
+import { hintCls } from '../components/styles';
 
 const labelCls = 'text-sm/6 font-medium text-zinc-950 dark:text-white';
-const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 const num = (v: any) => { const n = parseFloat(v); return isFinite(n) ? n : NaN; };
 const sameSet = (a: number[], b: number[]) =>
   a.length === b.length && a.every((x, i) => x === b[i]);

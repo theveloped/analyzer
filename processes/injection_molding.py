@@ -341,13 +341,6 @@ def run_ejection_sticking(workdir, params, progress):
     return AnalysisResult(stats=stats, fields=list(arrays))
 
 
-def run_flow_voxels(workdir, params, progress):
-    """Thin forwarder to the shared prep/voxels stage (kept so the injection
-    plugin's existing flow_voxels submit still works, now backed by prep)."""
-    return resolver.ensure(workdir, "prep/voxels",
-                           {"voxel": params["voxel"]}, progress)
-
-
 def run_flow_fill(workdir, params, progress):
     if not params.get("gate"):
         raise ValueError("flow_fill needs a gate point: gate = [x, y, z] "
@@ -576,17 +569,6 @@ PROCESS = ProcessDef(
                       label="Weight: air-trap indicator"),
             ],
             run=run_sprue_proposals,
-        ),
-        AnalysisDef(
-            id="flow_voxels",
-            label="Flow voxels (SDF)",
-            description="Signed-distance voxelization of the part interior — the mesh-independent basis for fill, freeze-off and cooling estimates.",
-            requires=[],  # forwards to the shared prep/voxels stage (derived voxel param)
-            params=[
-                Param("voxel", "number", default=None, unit="mm", min=0.05,
-                      label="Voxel size (blank = auto from resolution)"),
-            ],
-            run=run_flow_voxels,
         ),
         AnalysisDef(
             id="flow_fill",

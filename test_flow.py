@@ -228,11 +228,12 @@ def main():
         from processes import resolver
         from processes.base import apply_defaults, params_hash
         from processes.injection_molding import PROCESS
+        from processes.prep import PROCESS as PREP
 
         def voxel_cache(wd, voxel_params):
             return resolver.cache_key(wd, "prep/voxels", voxel_params)
 
-        voxel_analysis = PROCESS.analysis("flow_voxels")
+        voxel_analysis = PREP.analysis("voxels")
         voxel_params = apply_defaults(voxel_analysis, {"voxel": 0.15})
         first = voxel_analysis.run(workdir, voxel_params, None)
         again = voxel_analysis.run(workdir, voxel_params, None)  # cache hit

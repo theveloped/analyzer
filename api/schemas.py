@@ -1,5 +1,7 @@
 """Pydantic request models for the API."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -59,7 +61,10 @@ class ReportPublishRequest(BaseModel):
 class DispositionRequest(BaseModel):
     """One human judgment on a finding (appended, never overwritten)."""
     finding_id: str
-    state: str  # open | accepted | customer_approval | resolved
+    # a Literal, not a str-with-a-comment: FastAPI then rejects a bad state at
+    # the request boundary with a field error, instead of letting it reach
+    # plans.append_disposition and surface as a generic 400
+    state: Literal["open", "accepted", "customer_approval", "resolved"]
     by: str
     why: str = ""
     evidence: dict = Field(default_factory=dict)

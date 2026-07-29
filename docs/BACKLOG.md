@@ -474,6 +474,107 @@ re-import → assert it round-trips), `test_pmi_roundtrip.py` stays green,
 feature on picked faces, Export AP242, re-import, confirm `pmi.json`
 carries it.
 
+## Tier 3 — defects the concept audit surfaced (docs/CONCEPTS.md, 2026-07-29)
+
+### 20. Saving a band on most field lenses writes an invisible check
+
+**Problem.** `v2/analyses.ts` `ANALYSES` has four entries; `FIELD_LENSES`
+has seven. `saveLensCheck` (`v2/workspace/hooks.ts`) happily writes a plan
+check for any of the seven, but `describeCheck`
+(`v2/checks/catalog.ts:83`) returns `null` unless the analysis is in the
+four-entry catalog, is `cnc/reach_study`, or carries a `stats` policy —
+and `PipelineRail.tsx` renders nothing for a null view. So "Save band as
+check" on `injection_molding:thinSpan`, `:thicknessAngle` or `:gapAngle`
+persists a plan revision that is invisible in the rail and cannot be
+deleted from it.
+
+**Evidence.** `ANALYSES` ids: thickness, gaps, rayThickness, rayGap.
+`FIELD_LENSES` keys add thicknessAngle, gapAngle, thinSpan. Reproduce:
+open the thin-span lens, set a band, Save band as check, reload — the
+plan revision bumped and no card appears.
+
+**Where to start.** Either gate the save (disable it when
+`catalogAnalysisFor` would return null, with the reason shown), or —
+better — make the catalog derivable so a field lens is checkable by
+construction. `ANALYSES` is really a *check preset* list, not an analysis
+list; the three orphans need only unit/threshold vocabulary, which
+`FieldLensDef` already carries.
+
+**Verify.** Save a band on each of the seven field lenses; each renders a
+card. `test_plan.py` gains a case asserting every `FIELD_LENSES` entry
+resolves through `describeCheck`. Frontend `npx tsc -b`, `npm test`.
+
+### 21. Schema mirrors are hand-maintained and already wrong
+
+**Problem.** Every cross-side schema int is duplicated by hand with a
+"keep in sync" comment and nothing asserts it. The two unread
+`TURNING_SCAN_SCHEMA` copies (which disagreed with each other) are gone;
+the remaining mirrors are read, so drift in them is a live bug rather than
+an invisible one. `DEFAULT_TOOLS` (`v2/checks/catalog.ts:29`) is a
+hand-copy of `processes/cnc.py` with no test.
+
+**Where to start.** Either serve the schema ints in `/api/processes`
+(they are already on `AnalysisDef.schema`) and read them, or add a test
+that parses both sides and asserts equality.
+
+**Verify.** A test that fails if any `*_SCHEMA` differs across the seam.
+
+### 22. Plan-layer prose that has no code behind it
+
+**Problem.** `docs/CONCEPTS.md` marks four plan-layer concepts
+**aspiration** because the docs describe behaviour that was never built:
+
+- **audience** (was "visibility") is documented as `internal/customer/report`
+  and implemented as `PlanCheck.visible: boolean`, read only by
+  `v2/report/publish.ts`.
+- **finding identity** is specified as `sha1(check_id + geometry ref + kind)`
+  and implemented as `check_id + ":" + code` — no geometry ref, so a
+  disposition anchors to "min below limit", not to *which faces*.
+- **policy hash** does not exist; checks pin their policy by value only.
+- **`PlanOperation.produces`** is write-only (the feature scoping it names
+  is actually driven by `policy.mask === 'features'`). Its neighbours
+  `PlanOperation.outputs`, `DecisionSlot.generator` and
+  `Candidate.suppressed` had no producer or consumer at all and have been
+  deleted.
+
+**Where to start.** Each is independently decidable: implement it, or cut
+the prose and the dead field. The finding-identity one matters most —
+without a geometry ref, dispositions cannot survive a change that moves
+which faces are at fault. The `produces` / `mask` split is the cheapest to
+close: make the evaluator read `produces` and delete the parallel key.
+
+**Verify.** `test_plan.py` for whichever lands; `docs/CONCEPTS.md` status
+column moves from *aspiration* to *modelled* for the ones implemented.
+
+### 23. Two authors for one thing: an operation's standard checks
+
+**Problem.** What checks an operation of a given kind brings along is written
+twice, in two languages, with nothing tying them together:
+`defaultChecksFor` (`v2/workspace/hooks.ts:282`) for hand-added operations,
+and the `checks:` blocks of each route template (`catalogue/routes/*.yaml`)
+for instantiated routes. Its own comment claims they match — "the same set
+the route templates seed, so hand-built routes behave identically" — and they
+already do not: the route's `cnc10` seeds `direction_indices: [4, 5]` and
+`produces: {features: holes}`, the hand-built one seeds `[]` and no
+`produces`. So the same operation kind evaluates differently depending on how
+it got into the plan.
+
+Every other vocabulary in this area now has one owner (stats rules, operation
+kinds, decision states, the study's columns). This one needs a decision
+rather than a refactor: **who owns a kind's defaults** — the catalogue (a
+`catalogue/kinds/<kind>.yaml` the route instantiator applies and the frontend
+reads through an endpoint), or the frontend (routes carry only overrides)?
+
+**Where to start.** The catalogue side is the better fit — routes already
+snapshot machine templates server-side, so kind defaults would resolve on the
+same path, and `plans.py` could then validate a plan's checks against the
+kinds it claims. It is a small API addition, not a refactor, which is why it
+is queued rather than done.
+
+**Verify.** `test_plan.py`: instantiating `laser_cnc_brake` and hand-adding
+one operation of each kind produce the same check sets. Frontend `npm test`,
+`npx tsc -b`.
+
 ## Meta
 
 - The port branch `claude/instapart-port` (10 commits) may still be

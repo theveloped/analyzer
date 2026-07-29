@@ -663,8 +663,7 @@ if __name__ == "__main__":
         from processes.base import apply_defaults
 
         if args.gate is None:
-            analysis = processes.get_analysis("injection_molding",
-                                              "flow_voxels")
+            analysis = processes.get_analysis("prep", "voxels")
             merged = apply_defaults(analysis, {"voxel": args.voxel})
             result = analysis.run(args.directory, merged, None)
             spec = result.stats["resolution"]

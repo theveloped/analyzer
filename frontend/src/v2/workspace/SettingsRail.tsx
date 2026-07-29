@@ -18,9 +18,9 @@ import {
   pinPolicy, useActiveAnalysis, useActivePlanCheck, useCheckState,
 } from './hooks';
 import { runAnalysis, runPlanCheck, useBusy } from './run';
+import { hintCls } from '../components/styles';
 
 const labelCls = 'text-sm/6 font-medium text-zinc-950 dark:text-white';
-const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 
 function ThresholdField({ a }: { a: Analysis }) {
   const params = useStore((s) => s.viewerParams[a.process]) ?? {};

@@ -3,9 +3,9 @@ import { Input } from '../../catalyst/input';
 import { Switch } from '../../catalyst/switch';
 import type { ComputeField } from '../analyses';
 import { useV2 } from '../store';
+import { hintCls } from '../components/styles';
 
 const labelCls = 'text-sm/6 font-medium text-zinc-950 dark:text-white';
-const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 
 export function BoolRow({ label, hint, checked, onChange }: {
   label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void;

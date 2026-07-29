@@ -20,17 +20,90 @@ import numpy as np
 RESULTS_DIR = "results"
 
 
+# --- controlled vocabularies ------------------------------------------------
+#
+# These travel to the frontend as JSON strings and are mirrored there as TS
+# unions, so they stay plain strings rather than enum.Enum members — an Enum
+# would need `.value` at every serialization point and buys nothing the
+# validation below does not.
+#
+# What matters is that nothing may introduce a value by accident. Each is
+# checked where it ENTERS the system, and an unknown value raises instead of
+# being quietly accepted and then silently doing nothing downstream. That is
+# the pattern for any new vocabulary: a frozenset here, a check at the
+# boundary. See docs/CONCEPTS.md.
+
+PARAM_TYPES = frozenset({
+    "bool", "int", "number", "string", "select",
+    "int_list", "number_list", "tip_list", "tool_list",
+    "vector_list", "group_list",
+})
+
+# which index space a field's array lives in. `vertex`/`face` are the FINE
+# mesh; getting this wrong paints a fine-indexed array onto the coarse
+# preview, which hard rule 3 exists to prevent.
+FIELD_ASSOCIATIONS = frozenset({"vertex", "face", "brep_face", "graph", "none"})
+
+# What a field IS, for the viewer's benefit. Mirrored as FieldRole in
+# frontend/src/api/types.ts — `fold` was emitted by sheet_metal/bend_plan for
+# a schema before this vocabulary existed and was missing from that union,
+# which is exactly the drift these sets are here to stop.
+FIELD_ROLES = frozenset({
+    "scalar", "mask", "category", "lines", "data", "fold",
+    "nodes", "radii", "edges", "vert_map",
+})
+
+FIELD_DTYPES = frozenset({"f4", "u1", "u4"})
+
+# salt names an AnalysisDef may opt into; processes/resolver.py must
+# implement every one of them (it asserts the two sets match)
+KNOWN_SALTS = frozenset({"splits", "mesh"})
+
+
+def one_of(value, legal, what):
+    """Raise unless ``value`` is in the vocabulary ``legal``."""
+    if value not in legal:
+        raise ValueError(
+            f"unknown {what} {value!r} — legal values: {', '.join(sorted(legal))}")
+    return value
+
+
+def validate_field_meta(name, meta):
+    """Check one field descriptor's vocabulary before it is written.
+
+    ``association`` is required rather than defaulted: the manifest cannot
+    tell "the analysis forgot" from "the analysis meant vertex", and one of
+    those two answers silently mis-indexes the field.
+    """
+    if not isinstance(meta, dict):
+        raise ValueError(f"field_meta[{name!r}] must be a dict")
+    if "association" not in meta:
+        raise ValueError(
+            f"field_meta[{name!r}] must declare an association "
+            f"({', '.join(sorted(FIELD_ASSOCIATIONS))})")
+    one_of(meta["association"], FIELD_ASSOCIATIONS, f"association in {name!r}")
+    if "role" in meta:
+        one_of(meta["role"], FIELD_ROLES, f"role in {name!r}")
+    if meta.get("dtype") is not None:
+        one_of(meta["dtype"], FIELD_DTYPES, f"dtype in {name!r}")
+
+
 @dataclass
 class Param:
     """One declared analysis parameter, renderable as a form control."""
     name: str
-    type: str  # bool | int | number | string | select | int_list | number_list | tip_list | tool_list | vector_list | group_list
+    type: str  # one of PARAM_TYPES; mirrored as ParamSpec['type'] in the frontend
     default: object = None
     label: str = None
     unit: str = None
     min: object = None
     max: object = None
     options: list = None  # for select
+
+    def __post_init__(self):
+        # analyses build their Params at import, so a typo fails on load
+        # rather than rendering an empty form at runtime
+        one_of(self.type, PARAM_TYPES, f"param type for {self.name!r}")
 
     def to_dict(self):
         data = {"name": self.name, "type": self.type, "default": self.default}
@@ -65,8 +138,8 @@ class AnalysisDef:
     is_current: callable = None
     # results-tier cache-key inputs, folded in by resolver.cache_key:
     #   schema     — this analysis's result schema version
-    #   salts      — extra salt names beyond the auto prep fingerprints; only
-    #                "splits" today (per-face-split fingerprint)
+    #   salts      — extra salt names beyond the auto prep fingerprints, from
+    #                KNOWN_SALTS (validated below; the resolver implements them)
     #   key_extra  — literal discriminators for analyses sharing a store dir
     #                (setup_verdict rides in the setups dir with {"verdict": 1})
     #   salt_fields(workdir) -> dict — a prep artifact's fingerprint
@@ -75,6 +148,12 @@ class AnalysisDef:
     salts: tuple = ()
     key_extra: dict = None
     salt_fields: callable = None
+
+    def __post_init__(self):
+        # an unknown salt used to be accepted and then ignored, so the
+        # analysis silently kept serving results keyed on the wrong thing
+        for salt in self.salts:
+            one_of(salt, KNOWN_SALTS, f"salt on {self.id!r}")
 
     def to_dict(self):
         return {
@@ -191,7 +270,14 @@ def store_result(workdir, process_id, analysis_id, params, stats, arrays=None,
 
     ``arrays`` maps npz member name -> numpy array; ``field_meta`` maps the
     same names -> descriptor params surfaced in the manifest.
+
+    Every stored field's descriptor is validated here — this is the single
+    boundary results pass through, so a vocabulary mistake fails at write
+    time instead of turning into a mis-indexed paint much later.
     """
+    for name in (arrays or {}):
+        validate_field_meta(name, (field_meta or {}).get(name, {}))
+
     json_path, npz_path = result_paths(workdir, process_id, analysis_id, params)
     os.makedirs(os.path.dirname(json_path), exist_ok=True)
 

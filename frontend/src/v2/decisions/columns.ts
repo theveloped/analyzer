@@ -10,6 +10,12 @@
 //  * A cell is computed on request, never in a sweep. Each cell knows the one
 //    job that would fill it; nothing runs on its own.
 //
+// Both rules are carried by ONE table, `SCALAR_COLUMNS` + `toolColumn` below.
+// A column used to be a bare string dispatched by `===` in seven places (the
+// header markup, the cell lookup, the run, the cell tooltip, the dim rule, the
+// union's field id and its coverage rule), so adding one meant finding all
+// seven and forgetting one meant a column that rendered but did not aggregate.
+//
 // Cached results are MERGED rather than matched: every non-stale result of an
 // analysis contributes whatever rows it has, newest winning. That is what lets
 // "compute this one cell" accumulate into a full table instead of forcing one
@@ -17,13 +23,11 @@
 
 import type { Manifest, ResultEntry } from '../../api/types';
 import type { GeneratedDir } from '../../processes/directions/build';
+import type { CoverageRule } from '../../processes/cnc/coverage';
 import { cncSources } from '../../processes/cnc/sources';
 import { useStore } from '../../state/store';
 import { runAnalysisJob } from '../../viewer/jobs';
-import { DEFAULT_TOOLS } from '../checks/catalog';
-
-/** Mirror of processes/cnc.py TURNING_SCAN_SCHEMA. */
-export const TURNING_SCAN_SCHEMA = 1;
+import { defaultTools } from '../checks/catalog';
 
 /** Two directions are the same candidate within the backend's own dedup
  * tolerance (analysis._dedup_seen uses 1 degree). */
@@ -110,7 +114,7 @@ export function toolTitle(tool: ToolSpec): string {
  * there is always something to ask for. */
 export function toolColumns(manifest: Manifest | null): ToolSpec[] {
   const seen = new Map<string, ToolSpec>();
-  for (const tool of DEFAULT_TOOLS as ToolSpec[]) seen.set(toolKey(tool), tool);
+  for (const tool of defaultTools() as ToolSpec[]) seen.set(toolKey(tool), tool);
   for (const result of freshResults(manifest, 'cnc', 'reach_study')) {
     for (const tool of ((result.stats as any)?.tools ?? []) as ToolSpec[]) {
       seen.set(toolKey(tool), tool);
@@ -326,14 +330,124 @@ export async function runReach(
 
 // --- showing a cell --------------------------------------------------------
 
-export function cellOf(row: DirectionRow, column: string): Cell {
-  if (column === 'accessible') return row.accessible;
-  if (column === 'compatible') return row.compatible;
-  if (column === 'swept') return row.swept;
-  if (column.startsWith('tool')) {
-    return row.reach[Number(column.slice(4))] ?? { state: 'blocked', value: null };
-  }
-  return { state: 'blocked', value: null };
+// --- the column table ------------------------------------------------------
+
+/** What the table needs to fill a cell that has no value yet. */
+export interface RunCtx {
+  candidates: GeneratedDir[];
+  tools: ToolSpec[];
+  /** Called once the job lands, to paint what it produced. */
+  done: () => void;
+}
+
+/** One column of the directions study — everything the table, the runner and
+ * the aggregate footer need to know about it, in one place. */
+export interface ColumnDef {
+  /** Stable id: sort/filter key and aggregate-row key. */
+  key: string;
+  label: string;
+  /** Header tooltip: what the number means. */
+  title: string;
+  /** Legend label when its union is painted. */
+  coverageLabel: string;
+  /** How the union reads the field behind it. */
+  coverage: CoverageRule;
+  /** This column's cell on a row. */
+  cell(row: DirectionRow): Cell;
+  /** The one job that would fill an empty cell. */
+  run(row: DirectionRow, ctx: RunCtx): void;
+  /** The manifest field the value was read from, so the union can re-read the
+   * mask behind it — null until the cell has a value. */
+  fieldId(row: DirectionRow): string | null;
+  /** Rendered muted: the number is real but does not mean what it looks like. */
+  dim?(row: DirectionRow): boolean;
+  /** Extra tooltip on the cell itself. */
+  cellTitle?(row: DirectionRow): string | undefined;
+}
+
+const BLOCKED: Cell = { state: 'blocked', value: null };
+
+/** A computed cell's lens params, or null — every field id derives from them,
+ * which is what keeps the painted mask and the tabulated number the same
+ * result rather than two lookups that agree by convention. */
+function lensParams(cell: Cell): Record<string, any> | null {
+  return cell.state === 'value' && cell.lens
+    ? cell.lens.params as Record<string, any> : null;
+}
+
+export const SCALAR_COLUMNS: ColumnDef[] = [
+  {
+    key: 'accessible',
+    label: 'Visible',
+    title: 'Area-weighted share of the part visible from this direction',
+    coverageLabel: 'visible',
+    coverage: 'nonzero',
+    cell: (row) => row.accessible,
+    run: (_row, ctx) => { void runAccessibility(ctx.candidates, ctx.done); },
+    fieldId: (row) => (lensParams(row.accessible) && row.index != null
+      ? `accessibility.${row.index}` : null),
+    cellTitle: (row) => (row.accessible.state === 'missing'
+      ? 'Visibility is one array over the whole set, so computing it '
+        + 'covers every candidate'
+      : undefined),
+  },
+  {
+    key: 'compatible',
+    label: 'Revolvable',
+    title: 'Share of area compatible with a revolution about this axis — '
+      + 'reads high on flat plates, which is why the swept column exists',
+    coverageLabel: 'revolution-compatible',
+    coverage: 'ge1',
+    cell: (row) => row.compatible,
+    run: (row, ctx) => { void runTurnability(row, ctx.done); },
+    fieldId: (row) => axisFieldId(row.compatible),
+  },
+  {
+    key: 'swept',
+    label: 'Swept',
+    title: 'Share actually swept by a lathe about this axis — this is what '
+      + 'separates a turned part from a plate',
+    coverageLabel: 'swept',
+    coverage: 'eq2',
+    cell: (row) => row.swept,
+    run: (row, ctx) => { void runTurnability(row, ctx.done); },
+    fieldId: (row) => axisFieldId(row.swept),
+    dim: (row) => row.qualified === false,
+    cellTitle: (row) => (row.qualified === false
+      ? 'Below the swept-area gate — a fit carried by planes perpendicular '
+        + 'to the axis, not by a rotational sweep'
+      : undefined),
+  },
+];
+
+function axisFieldId(cell: Cell): string | null {
+  const p = lensParams(cell);
+  return p ? `results.cnc.turning_scan.${p.scanHash}.axis_role_${p.scanAxis}`
+    : null;
+}
+
+/** One tool column. Keyed by position because the tool list is assembled per
+ * render (library + whatever the cache holds), not stored. */
+export function toolColumn(tool: ToolSpec, t: number): ColumnDef {
+  return {
+    key: `tool${t}`,
+    label: toolLabel(tool),
+    title: toolTitle(tool),
+    coverageLabel: 'reachable',
+    coverage: 'nonzero',
+    cell: (row) => row.reach[t] ?? BLOCKED,
+    run: (row, ctx) => { void runReach(row, tool, ctx.candidates, ctx.done); },
+    fieldId: (row) => {
+      const p = lensParams(row.reach[t] ?? BLOCKED);
+      return p ? `results.cnc.reach_study.${p.reachHash}`
+        + `.reach_${p.reachDirection}_${p.reachTool}` : null;
+    },
+  };
+}
+
+/** Every column of the table, in render order. */
+export function columnsFor(tools: ToolSpec[]): ColumnDef[] {
+  return [...SCALAR_COLUMNS, ...tools.map(toolColumn)];
 }
 
 function activate(lens: CellLens): void {
@@ -348,10 +462,10 @@ function activate(lens: CellLens): void {
  * painting the result that just landed. The table's number fills in from the
  * same manifest refresh, so the click both explains and answers. */
 export function openCell(
-  row: DirectionRow, column: string, candidates: GeneratedDir[],
+  row: DirectionRow, column: ColumnDef, candidates: GeneratedDir[],
   tools: ToolSpec[],
 ): void {
-  const cell = cellOf(row, column);
+  const cell = column.cell(row);
   if (cell.state === 'blocked') return;
   if (cell.lens) {
     activate(cell.lens);
@@ -363,15 +477,8 @@ export function openCell(
     const manifest = useStore.getState().manifest;
     const fresh = buildRows(manifest, candidates, [], toolColumns(manifest))
       .find((r) => r.key === row.key);
-    const lens = fresh && cellOf(fresh, column).lens;
+    const lens = fresh && column.cell(fresh).lens;
     if (lens) activate(lens);
   };
-  if (column === 'accessible') {
-    void runAccessibility(candidates, paintWhenReady);
-  } else if (column === 'compatible' || column === 'swept') {
-    void runTurnability(row, paintWhenReady);
-  } else if (column.startsWith('tool')) {
-    const tool = tools[Number(column.slice(4))];
-    if (tool) void runReach(row, tool, candidates, paintWhenReady);
-  }
+  column.run(row, { candidates, tools, done: paintWhenReady });
 }

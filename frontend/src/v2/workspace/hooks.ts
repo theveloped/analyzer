@@ -8,7 +8,7 @@ import { refreshManifest } from '../../viewer/controller';
 import { runAnalysisJob } from '../../viewer/jobs';
 import type { Analysis } from '../analyses';
 import { ANALYSIS_BY_ID, ANALYSES, defaultCompute } from '../analyses';
-import { DEFAULT_TOOLS, describeCheck } from '../checks/catalog';
+import { defaultTools, describeCheck } from '../checks/catalog';
 import { checkState, type CheckState } from '../checks/status';
 import {
   FIELD_LENSES, fieldLensCompute, latestResult, type FieldLensDef,
@@ -300,7 +300,7 @@ function defaultChecksFor(
         operation: opId, lens: 'cnc:features', visible: true },
       { id: `chk-${opId}-reach`, analysis: 'cnc/reach_study',
         params: { direction_indices: [],
-          tools: machineData.tools ?? DEFAULT_TOOLS },
+          tools: machineData.tools ?? defaultTools() },
         policy: { scope: 'operation', mask: 'features' },
         operation: opId, lens: 'cnc:reach_op', visible: true },
     ];
@@ -423,7 +423,7 @@ export async function seedExploration() {
   const dotZ = directions.map((d) => d[2]);
   const d10 = dotZ.indexOf(Math.max(...dotZ));
   const d20 = dotZ.indexOf(Math.min(...dotZ));
-  const studyParams = { direction_indices: [], tools: DEFAULT_TOOLS };
+  const studyParams = { direction_indices: [], tools: defaultTools() };
   const plan: Plan = {
     ...section.plan,
     operations: [

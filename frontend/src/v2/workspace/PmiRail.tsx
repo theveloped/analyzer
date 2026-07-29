@@ -10,8 +10,8 @@ import { PmiEditor } from './PmiEditor';
 import { usePmiEdit } from './pmiEditStore';
 import { groupPmi, isDatumReferenced, type PmiGroups, type PmiPattern } from './pmiGroups';
 import { buildPmiView, type PmiSelection } from './pmiView';
+import { hintCls } from '../components/styles';
 
-const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 const sectionCls = 'mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400';
 const PROCESS = lensByMode('pmi')!.processId;
 

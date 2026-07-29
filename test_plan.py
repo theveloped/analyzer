@@ -76,6 +76,16 @@ def test_crud_and_history(workdir):
     bad["checks"] = [{"id": "a", "analysis": "x/y", "operation": "nope"}]
     expect_raises("unknown operation ref rejected", ValueError,
                   lambda: plans.save_plan(workdir, bad, expected_revision=2))
+    # a stats rule is only ever read by the frontend evaluator table, so an
+    # unrecognized one costs nothing here and evaluates to `unknown` forever
+    bad["checks"] = [{"id": "a", "analysis": "x/y",
+                      "policy": {"kind": "stats", "rule": "sheet_detekt"}}]
+    expect_raises("unknown stats rule rejected", ValueError,
+                  lambda: plans.save_plan(workdir, bad, expected_revision=2))
+    bad["checks"] = [{"id": "a", "analysis": "x/y",
+                      "policy": {"kind": "stats", "rule": "sheet_detect"}}]
+    plans.save_plan(workdir, bad, expected_revision=2)
+    check("known stats rule accepted", True)
 
 
 def test_dispositions(workdir):
@@ -112,7 +122,6 @@ def test_materialize():
 def _direction_decision(selected=("d4",)):
     return {
         "kind": "direction_set",
-        "generator": {"count": 0, "axes": True},
         "candidates": [
             {"id": "d4", "index": 4, "label": "+Z", "source": "principal_axis"},
             {"id": "d5", "index": 5, "label": "-Z", "source": "principal_axis"},

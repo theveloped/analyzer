@@ -4,6 +4,7 @@
 
 import type { Manifest, ResultEntry } from '../../api/types';
 import { COL, FocusTracker, rampColor } from '../../colorizers/core';
+import { covered, type CoverageRule } from './coverage';
 import { sequentialGradientCss } from '../../viewer/colormaps';
 import type {
   LegendEntry, RGB, ViewCtx, ViewMode,
@@ -290,9 +291,6 @@ export const turningResidualMode: ViewMode = {
   },
 };
 
-// keep in sync with TURNING_SCAN_SCHEMA in processes/cnc.py
-export const TURNING_SCAN_SCHEMA = 2;
-
 // index == backend category code (turning.AXIS_ROLES)
 const AXIS_ROLE_LABELS = ['off-axis', 'revolution-compatible', 'swept'];
 const AXIS_ROLE_COLORS: RGB[] = [
@@ -363,22 +361,21 @@ export const coverageMode: ViewMode = {
   label: 'Combined coverage',
   async paint(ctx) {
     const ids: string[] = ctx.params.coverageFields ?? [];
-    const rule: string = ctx.params.coverageRule ?? 'nonzero';
+    const rule: CoverageRule = ctx.params.coverageRule ?? 'nonzero';
     const label: string = ctx.params.coverageLabel ?? 'covered';
     if (!ids.length) {
       throw new Error('no combined coverage selected — pick rows in the '
         + 'directions study and click its total');
     }
-    const hit = (v: number) => (rule === 'ge1' ? v >= 1
-      : rule === 'eq2' ? v === 2 : v !== 0);
-
     const union = new Uint8Array(ctx.faceCount);
     let missing = 0;
     for (const id of ids) {
       const desc = ctx.manifest.fields.find((f) => f.id === id);
       if (!desc) { missing++; continue; }
       const mask = await ctx.getField(desc) as Uint8Array;
-      for (let f = 0; f < union.length; f++) if (hit(mask[f])) union[f] = 1;
+      for (let f = 0; f < union.length; f++) {
+        if (covered(rule, mask[f])) union[f] = 1;
+      }
     }
 
     let n = 0;
