@@ -259,6 +259,48 @@ def fixture_determinism(check):
               c1.number_of_nodes() == loaded.face_count, "")
 
 
+def fixture_first_load(check):
+    """The first-load ordering: coarse preview -> AAG -> fine mesh.
+
+    The AAG is rebuilt from the source BREP, so building the fine mesh
+    afterwards must not invalidate it. It used to: the currency gate keyed on
+    the mesh fingerprint, which is null at bundle time, so prep/mesh flipped
+    the gate and the rebuild ran at a different edge deflection (
+    part_resolution was None at first load) — changing aag_fingerprint and
+    orphaning every result salted on it.
+    """
+    import json
+
+    import pipeline
+    import processes
+    from processes import prep as prep_stage
+    from processes.base import apply_defaults
+
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = os.path.join(tmp, "wd")
+        os.makedirs(workdir)
+        # laid out like an upload: the source lives inside the workdir, which
+        # is what the BREP-level stages reload
+        path = write_step(workdir, make_pocketed_block(), "source.step")
+        with open(os.path.join(workdir, "part.json"), "w") as handle:
+            json.dump({"name": "pocket", "source": "source.step"}, handle)
+
+        for stage_id in ("mesh_coarse", "aag"):
+            stage = processes.get_analysis("prep", stage_id)
+            stage.run(workdir, apply_defaults(stage, {}), None)
+
+        before = pipeline.aag_fingerprint(workdir)
+        check("first load: AAG is current straight after the bundle",
+              prep_stage.aag_current(workdir, {}), "")
+
+        pipeline.mesh_part(path, workdir, subdivide=2.0)
+        check("first load: the fine mesh does not invalidate the AAG",
+              prep_stage.aag_current(workdir, {}), "")
+        check("first load: AAG fingerprint survives the fine mesh",
+              pipeline.aag_fingerprint(workdir) == before,
+              f"{before} -> {pipeline.aag_fingerprint(workdir)}")
+
+
 def main():
     failures = []
     check = check_factory(failures)
@@ -273,6 +315,9 @@ def main():
     fixture_cylinders(check)
     print("=== fixture E: determinism + workdir integration ===")
     fixture_determinism(check)
+
+    print("=== fixture F: first-load ordering (coarse -> aag -> fine) ===")
+    fixture_first_load(check)
 
     if failures:
         print(f"{len(failures)} CHECKS FAILED: {failures}")

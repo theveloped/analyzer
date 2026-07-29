@@ -555,7 +555,7 @@ export function regionColor(region: number): RGB {
  * fine mesh + its `brep_faces` field are computed on demand). Face ids are
  * stable across subdivision, so the coarse ids color the preview identically —
  * and `paintFaces` iterates the displayed mesh, so the array aligns 1:1. */
-async function loadBrepFaceIds(
+export async function loadBrepFaceIds(
   ctx: ViewCtx,
 ): Promise<{ ids: Uint32Array; desc: FieldDescriptor | null }> {
   const desc = ctx.manifest.fields.find((f) => f.id === 'subfaces')
@@ -565,6 +565,27 @@ async function loadBrepFaceIds(
   const coarseUrl = ctx.manifest.coarse_mesh?.brep_faces_url;
   if (coarseUrl) return { ids: await fetchBin(coarseUrl, Uint32Array), desc: null };
   throw new Error('no BREP face ids — re-mesh the part from its STEP file');
+}
+
+/**
+ * A per-face field, whatever index space it was stored in.
+ *
+ * `brep_face` results (roles, feature ids, panel ids — anything recognized
+ * from the BREP rather than measured on the mesh) are stored once per BREP
+ * face and broadcast here. That is what lets those lenses paint on the coarse
+ * preview: the analysis never needed the fine mesh, only this join did.
+ * `face` fields are already per displayed triangle and pass straight through.
+ */
+export async function fetchFaceField(
+  ctx: ViewCtx, desc: FieldDescriptor,
+): Promise<Float32Array | Uint8Array | Uint32Array> {
+  const data = await ctx.getField(desc);
+  if (desc.association !== 'brep_face') return data;
+  const { ids } = await loadBrepFaceIds(ctx);
+  const out = new (data.constructor as {
+    new (n: number): typeof data })(ctx.faceCount);
+  for (let f = 0; f < ctx.faceCount; f++) out[f] = data[ids[f]];
+  return out;
 }
 
 /** Source BREP faces (from the STEP-aware mesher), one color per face id.

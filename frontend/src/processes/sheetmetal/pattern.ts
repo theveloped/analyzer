@@ -3,7 +3,7 @@
 // mesh.
 
 import type { FieldDescriptor, ResultEntry } from '../../api/types';
-import { COL } from '../../colorizers/core';
+import { COL, fetchFaceField } from '../../colorizers/core';
 import type { RGB, ViewCtx, ViewMode } from '../../registry/types';
 import { latestSheet } from './index';
 
@@ -43,7 +43,7 @@ export const patternMode: ViewMode = {
     // translucent part painted by role for orientation
     const roleDesc = patternField(ctx, result, 'face_role');
     if (roleDesc) {
-      const roles = await ctx.getField(roleDesc) as Uint8Array;
+      const roles = await fetchFaceField(ctx, roleDesc) as Uint8Array;
       const roleColors: RGB[] = [
         COL.ok, [0.44, 0.64, 0.86], [0.62, 0.8, 0.58],
         [0.95, 0.66, 0.23], [0.55, 0.5, 0.62],

@@ -4,6 +4,7 @@ import type { ViewportState } from '../../viewer/viewportState';
 import { catalogAnalysisFor } from '../checks/catalog';
 import { AnalysisToolbar } from './AnalysisToolbar';
 import { DirectionsRail } from './DirectionsRail';
+import { DirectionsTableRail } from './DirectionsTableRail';
 import { DirectionTooltip } from './DirectionTooltip';
 import { FieldLensRail } from './FieldLensRail';
 import {
@@ -11,6 +12,7 @@ import {
   useDirectionsActive, useSelectedPlanCheck,
 } from './hooks';
 import { useV2 } from '../store';
+import { useActiveStudy } from '../studies';
 import { Legend } from './Legend';
 import { LensRail } from './LensRail';
 import { MeasureRail } from './MeasureRail';
@@ -19,6 +21,7 @@ import { PipelineRail } from './PipelineRail';
 import { PlanCheckRail } from './PlanCheckRail';
 import { PmiCallouts } from './PmiCallout';
 import { PmiRail } from './PmiRail';
+import { RightRail } from './RightRail';
 import { SettingsRail } from './SettingsRail';
 import { TopBar } from './TopBar';
 import { Viewer } from './Viewer';
@@ -46,30 +49,41 @@ export function Workspace() {
   const planCheckRail = selected && !catalogAnalysisFor(selected.check);
   const measuring = useV2((s) => s.measure.active);
   const sectionRailOpen = useV2((s) => s.sectionRailOpen);
+  const activeStudy = useActiveStudy();
   const setViewport = useV2((s) => s.setViewport);
 
   // PMI reads best as an xray shell with the BREP edges; only the annotated
   // faces are painted (the lens returns null elsewhere), so no opacity tricks
   // are needed. Restore the prior viewport when the lens closes.
+  // brep_edges.npy is written by prep/mesh only, so on the coarse preview
+  // asking for edges just turns on a toggle that renders nothing — leave it
+  // alone there rather than lying about the viewport state.
+  const hasFineMesh = useStore((s) => !!s.manifest?.mesh);
   const savedViewport = useRef<ViewportState | null>(null);
   useEffect(() => {
     if (modeId !== 'pmi') return;
     savedViewport.current = useV2.getState().viewport;
-    setViewport({ style: 'xray', brepEdges: true });
+    setViewport(hasFineMesh
+      ? { style: 'xray', brepEdges: true }
+      : { style: 'xray' });
     return () => { if (savedViewport.current) setViewport(savedViewport.current); };
-  }, [modeId, setViewport]);
+  }, [modeId, setViewport, hasFineMesh]);
 
   // the viewport INTERACTIONS outrank every lens/check rail while active —
-  // the lens stays visible in the viewport, only the rail switches
-  const rightRail = measuring ? <MeasureRail />
-    : sectionRailOpen ? <SectionRail />
-    : modeId === 'pmi' ? <PmiRail />
-    : directionsActive ? <DirectionsRail />
-    : planCheckRail ? <PlanCheckRail />
-    : activeFieldLens ? <FieldLensRail />
-    : checkActive ? <SettingsRail />
-    : activeLens ? <LensRail />
-    : <SettingsRail />;
+  // the lens stays visible in the viewport, only the rail switches.
+  // The id is what the remembered width is keyed by, so a rail that wants a
+  // different default (the study table) gets its own.
+  const [railId, railWidth, rightRail]: [string, number, React.ReactNode] =
+    measuring ? ['measure', 288, <MeasureRail />]
+      : sectionRailOpen ? ['section', 288, <SectionRail />]
+        : activeStudy ? ['study', 672, <DirectionsTableRail />]
+          : modeId === 'pmi' ? ['pmi', 288, <PmiRail />]
+            : directionsActive ? ['directions', 288, <DirectionsRail />]
+              : planCheckRail ? ['planCheck', 288, <PlanCheckRail />]
+                : activeFieldLens ? ['fieldLens', 288, <FieldLensRail />]
+                  : checkActive ? ['settings', 288, <SettingsRail />]
+                    : activeLens ? ['lens', 288, <LensRail />]
+                      : ['settings', 288, <SettingsRail />];
 
   return (
     <div className="flex h-full flex-col">
@@ -93,7 +107,7 @@ export function Workspace() {
           )}
         </div>
 
-        {rightRail}
+        <RightRail id={railId} defaultWidth={railWidth}>{rightRail}</RightRail>
       </div>
     </div>
   );

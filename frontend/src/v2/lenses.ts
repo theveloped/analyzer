@@ -42,6 +42,11 @@ export interface Lens {
   advanced: boolean;
   /** The hosting plugin ships a Controls panel (Configure tab). */
   hasControls: boolean;
+  /** The backend analysis whose stored result this lens paints, when it has
+   * exactly one. Lets the rail show run state and offer a Run button instead
+   * of throwing "run it in the Compute panel" at the user. Scalar-field
+   * lenses declare theirs in `fieldLenses.ts` and self-materialize instead. */
+  analysis?: { process: string; analysis: string };
 }
 
 interface Curation {
@@ -52,6 +57,7 @@ interface Curation {
   pinned?: boolean;
   advanced?: boolean;
   hidden?: boolean;
+  analysis?: { process: string; analysis: string };
 }
 
 /** Modes registered by several plugins; hosted once, under injection_molding
@@ -116,21 +122,40 @@ const CURATION: Record<string, Curation> = {
     icon: ShieldCheck,
     blurb: 'Faces unreachable in every operation — the route verdict.',
   },
-  'cnc:setups': { icon: Axis3d },
-  'cnc:features': { icon: Drill },
+  'cnc:setups': { icon: Axis3d, analysis: { process: 'cnc', analysis: 'setups' } },
+  'cnc:features': {
+    icon: Drill, analysis: { process: 'cnc', analysis: 'features' },
+  },
   'cnc:turning': {
     icon: Disc3,
+    analysis: { process: 'cnc', analysis: 'turning' },
     blurb: 'Faces a lathe can produce — OD turning, facing and boring — with '
       + 'the maximal turned state as a section, and the milled remainder.',
+  },
+  'cnc:coverage': {
+    icon: ShieldCheck,
+    advanced: true,
+    label: 'Combined coverage',
+    blurb: 'What a set of directions covers together — the union the '
+      + 'directions study totals.',
+  },
+  'cnc:axis_role': {
+    icon: CircleDot,
+    advanced: true,
+    label: 'Turnability about one axis',
+    blurb: 'One candidate axis from the directions study: what a lathe could '
+      + 'sweep about it, and what it could not.',
   },
   'cnc:turning_residual': {
     icon: CircleDot,
     advanced: true,
+    analysis: { process: 'cnc', analysis: 'turning' },
     blurb: 'How far each face is from being a surface of revolution about the '
       + 'turning axis.',
   },
   'cnc:hull': {
     icon: Box,
+    analysis: { process: 'cnc', analysis: 'hull' },
     blurb: 'Faces on the convex hull — machinable from outside with an infinitely large tool.',
   },
   'cnc:unified': { icon: ShieldCheck },
@@ -141,25 +166,62 @@ const CURATION: Record<string, Curation> = {
   'cnc:thinSpan': { icon: Waves },
 
   // molding
-  'injection_molding:assignment': { icon: Layers },
-  'injection_molding:sprue': { icon: Pin },
+  'injection_molding:assignment': {
+    icon: Layers,
+    analysis: { process: 'injection_molding', analysis: 'mold_orientation' },
+  },
+  'injection_molding:sprue': {
+    icon: Pin,
+    analysis: { process: 'injection_molding', analysis: 'sprue_proposals' },
+  },
+  // flowFill needs a user-picked gate point, so it has no meaningful
+  // default run — it stays driven by its own controls
   'injection_molding:flowFill': { icon: Droplets },
   'injection_molding:cooling': { icon: Snowflake },
-  'injection_molding:ejector': { icon: ArrowUpFromLine },
-  'injection_molding:slenderness': { icon: TrendingUp },
-  'injection_molding:skeleton': { icon: Network },
-  'injection_molding:voxelField': { icon: Grid3x3, advanced: true },
+  'injection_molding:ejector': {
+    icon: ArrowUpFromLine,
+    analysis: { process: 'injection_molding', analysis: 'ejection_sticking' },
+  },
+  'injection_molding:slenderness': {
+    icon: TrendingUp,
+    analysis: { process: 'injection_molding', analysis: 'slenderness' },
+  },
+  'injection_molding:skeleton': {
+    icon: Network,
+    analysis: { process: 'injection_molding', analysis: 'wall_skeleton' },
+  },
+  'injection_molding:voxelField': {
+    icon: Grid3x3, advanced: true,
+    analysis: { process: 'prep', analysis: 'voxels' },
+  },
 
   // sheet metal
-  'sheet_metal:flat_pattern': { icon: Expand },
-  'sheet_metal:bend_plan': { icon: ListOrdered },
-  'sheet_metal:bend_sequence': { icon: Play },
-  'sheet_metal:sheet_roles': { icon: Layers },
-  'sheet_metal:bend_radius': { icon: Radius },
+  'sheet_metal:flat_pattern': {
+    icon: Expand,
+    analysis: { process: 'sheet_metal', analysis: 'flat_pattern' },
+  },
+  'sheet_metal:bend_plan': {
+    icon: ListOrdered,
+    analysis: { process: 'sheet_metal', analysis: 'bend_plan' },
+  },
+  'sheet_metal:bend_sequence': {
+    icon: Play,
+    analysis: { process: 'sheet_metal', analysis: 'bend_plan' },
+  },
+  'sheet_metal:sheet_roles': {
+    icon: Layers, analysis: { process: 'sheet_metal', analysis: 'detect' },
+  },
+  'sheet_metal:bend_radius': {
+    icon: Radius, analysis: { process: 'sheet_metal', analysis: 'detect' },
+  },
 
   // tube laser
-  'tube_laser:tube_roles': { icon: Layers },
-  'tube_laser:cut_pattern': { icon: Scissors },
+  'tube_laser:tube_roles': {
+    icon: Layers, analysis: { process: 'tube_laser', analysis: 'profile' },
+  },
+  'tube_laser:cut_pattern': {
+    icon: Scissors, analysis: { process: 'tube_laser', analysis: 'profile' },
+  },
 };
 
 /** Stable plugin order for building the list (categories re-group anyway). */
@@ -189,6 +251,7 @@ function buildLenses(): Lens[] {
         pinned: c.pinned ?? false,
         advanced: c.advanced ?? false,
         hasControls: !!plugin.Controls,
+        analysis: c.analysis,
       });
     }
   }

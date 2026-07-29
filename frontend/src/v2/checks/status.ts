@@ -27,7 +27,7 @@ export interface CheckState {
 
 /** Latest stored result for an analysis (manifest lists oldest→newest). */
 export function resultFor(
-  manifest: Manifest | null, a: Analysis,
+  manifest: Manifest | null, a: AnalysisRef,
 ): ResultEntry | null {
   if (!manifest) return null;
   const list = manifest.results.filter(
@@ -49,6 +49,28 @@ function latestJob(jobs: Job[], partId: string | null, a: AnalysisRef): Job | nu
   return null;
 }
 
+/** The execution axis alone, for anything that names a backend analysis —
+ * a catalog check, a lens with a backing analysis, one column of the
+ * directions table. Verdict is a separate axis and is not decided here. */
+export function executionState(
+  manifest: Manifest | null,
+  jobs: Job[],
+  partId: string | null,
+  a: AnalysisRef,
+): { execution: ExecutionState; note: string; result: ResultEntry | null } {
+  const result = resultFor(manifest, a);
+  const job = latestJob(jobs, partId, a);
+
+  if (job?.status === 'queued') return { execution: 'queued', note: 'queued…', result };
+  if (job?.status === 'running') return { execution: 'running', note: 'running…', result };
+  if (job?.status === 'error' && !result) {
+    return { execution: 'error', note: 'failed', result };
+  }
+  if (!result) return { execution: 'not_run', note: 'not run', result };
+  if (result.stale) return { execution: 'stale', note: 'stale — re-run', result };
+  return { execution: 'current', note: '', result };
+}
+
 export function checkState(
   manifest: Manifest | null,
   jobs: Job[],
@@ -56,24 +78,7 @@ export function checkState(
   a: Analysis,
   threshold: number,
 ): CheckState {
-  const result = resultFor(manifest, a);
-  const job = latestJob(jobs, partId, a);
-
-  let execution: ExecutionState;
-  let note = '';
-  if (job?.status === 'queued') {
-    execution = 'queued'; note = 'queued…';
-  } else if (job?.status === 'running') {
-    execution = 'running'; note = 'running…';
-  } else if (job?.status === 'error' && !result) {
-    execution = 'error'; note = 'failed';
-  } else if (!result) {
-    execution = 'not_run'; note = 'not run';
-  } else if (result.stale) {
-    execution = 'stale'; note = 'stale — re-run';
-  } else {
-    execution = 'current';
-  }
+  const { execution, note, result } = executionState(manifest, jobs, partId, a);
 
   // Provisional verdict: flagged-direction analyses store the field minimum;
   // a minimum past the engineer's limit means there are findings to review.

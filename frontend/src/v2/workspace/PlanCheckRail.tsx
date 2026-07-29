@@ -53,7 +53,7 @@ function Rail({ check, status, plan }: {
   const Icon = view.icon;
 
   return (
-    <div className="flex h-full w-72 shrink-0 flex-col gap-4 overflow-auto border-l border-zinc-950/5 bg-white p-4 dark:border-white/10 dark:bg-zinc-900">
+    <div className="flex min-h-full flex-col gap-4 p-4">
       <div>
         <div className="flex items-center gap-2">
           <Icon className="size-4 text-blue-600 dark:text-blue-400" />

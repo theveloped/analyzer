@@ -6,7 +6,8 @@
 import type { PaintInfo, RGB, ViewCtx, ViewMode } from '../../registry/types';
 import type { SourceKind } from './build';
 import {
-  buildDirections, EMPTY_SETUP, setCurrentBrepIds, setCurrentDirections,
+  arrowsFor, buildDirections, EMPTY_SETUP, setCurrentArrows,
+  setCurrentBrepIds, setCurrentDirections,
 } from './build';
 
 export const PROVENANCE_COLORS: Record<SourceKind, RGB> = {
@@ -100,7 +101,12 @@ export const directionsMode: ViewMode = {
       return null; // context faces keep the native viewport style
     });
 
-    ctx.setArrows(dirs.map((d) => ({
+    // `shownKeys` narrows what is DRAWN without narrowing the candidate set:
+    // the study opens on a bare model and adds an arrow per selected row,
+    // while the plain lens (no param) keeps showing everything.
+    const drawn = arrowsFor(dirs, ctx.params.shownKeys);
+    setCurrentArrows(drawn);
+    ctx.setArrows(drawn.map((d) => ({
       direction: d.vector,
       color: PROVENANCE_COLORS[d.provenances[0].source] ?? PROVENANCE_COLORS.uniform,
     })));

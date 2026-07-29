@@ -1,5 +1,5 @@
 import { Trash2, X } from 'lucide-react';
-import { currentDirections } from '../../processes/directions/build';
+import { currentArrows } from '../../processes/directions/build';
 import { PROVENANCE_LABELS } from '../../processes/directions/modes';
 import { provenanceCss } from '../../processes/directions/state';
 import { useDirectionSetup } from '../../processes/directions/useSetup';
@@ -14,7 +14,7 @@ export function DirectionTooltip() {
   const { setup, patch, params, setParam } = useDirectionSetup();
   const sel = params.selectedArrow as { index: number; x: number; y: number } | null;
   if (!sel) return null;
-  const dir = currentDirections[sel.index];
+  const dir = currentArrows[sel.index]; // indexes the DRAWN arrows
   if (!dir) return null;
 
   const close = () => {

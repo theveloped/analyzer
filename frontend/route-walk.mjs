@@ -13,7 +13,7 @@ form.append('file', new Blob([readFileSync(process.env.FIXTURE)]),
   'bracket_holes.step');
 const up = await fetch(`${base}/api/parts`, { method: 'POST', body: form });
 if (!up.ok) throw new Error(`upload: ${up.status} ${await up.text()}`);
-const part = await up.json();
+const { part } = await up.json();
 console.log('part:', part.id, part.name);
 
 const jobsIdle = async () => {

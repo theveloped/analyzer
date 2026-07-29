@@ -15,6 +15,7 @@ import numpy as np
 
 import pipeline
 import plans
+from processes import prep as prep_stage
 from processes.base import RESULTS_DIR
 
 
@@ -216,7 +217,10 @@ def _result_entries(workdir, base_url, face_count, vert_count):
             dtype = meta.get("dtype") or (
                 "u1" if role in ("mask", "category") else "f4")
             length = meta.get("length")
-            if length is None and association != "none":
+            # only mesh-shaped fields can have their length inferred; a
+            # brep_face array is sized by the BREP, which the mesh counts
+            # say nothing about (and it may exist before any fine mesh does)
+            if length is None and association in ("face", "vertex"):
                 length = face_count if association == "face" else vert_count
             field_id = f"results.{process_id}.{analysis_id}.{result_hash}.{name}"
             field_ids.append(field_id)
@@ -265,7 +269,6 @@ def build_manifest(root, part):
         "part": part,
         "mesh": None,
         "coarse_mesh": None,
-        "fine_pending": False,
         "directions": [],
         "directions_stale": False,
         "fields": [],
@@ -290,7 +293,6 @@ def build_manifest(root, part):
             "normals_url": f"{base_url}/mesh/coarse_normals",
             "brep_faces_url": f"{base_url}/mesh/coarse_brep_faces",
         }
-        manifest["fine_pending"] = not is_meshed
 
     if os.path.exists(os.path.join(workdir, "face_attrs.json")):
         manifest["face_attrs_url"] = f"{base_url}/face_attrs"
@@ -326,10 +328,10 @@ def build_manifest(root, part):
         manifest["aag"] = {
             "schema": aag_meta.get("schema"),
             "stats": _json_safe(aag_meta.get("stats", {})),
-            "stale": bool(
-                aag_meta.get("mesh_fingerprint")
-                and aag_meta["mesh_fingerprint"]
-                != pipeline.mesh_fingerprint(workdir)),
+            # one source of truth with the resolver's own gate — the two
+            # disagreeing is how a "fresh" AAG could read as current here
+            # while every downstream stage quietly rebuilt it
+            "stale": not prep_stage.aag_current(workdir, {}),
         }
 
     # the production plan + derived per-check status (docs/PLAN-ARCHITECTURE.md);
@@ -338,6 +340,22 @@ def build_manifest(root, part):
     manifest["plan"] = _json_safe(plans.plan_section(workdir))
 
     if not is_meshed:
+        # Results that do not live in the fine index space are meaningful on
+        # the coarse preview too: `brep_face` fields join through the BREP id
+        # map the preview carries, and `none` fields are unindexed geometry
+        # (flat-pattern outlines, bend axes) in world coordinates. Fields
+        # indexed by the FINE mesh stay hidden — painting one onto the coarse
+        # preview would be silently wrong (hard rule 3), so it is made
+        # impossible rather than merely discouraged.
+        coarse_fields, coarse_results = _result_entries(
+            workdir, base_url, face_count, vert_count)
+        keep = {f["id"] for f in coarse_fields
+                if f["association"] in ("brep_face", "none")}
+        manifest["fields"] = [f for f in coarse_fields if f["id"] in keep]
+        manifest["results"] = [
+            {**r, "fields": [i for i in r["fields"] if i in keep]}
+            for r in coarse_results
+            if any(i in keep for i in r["fields"])]
         return manifest
 
     manifest["mesh"] = {

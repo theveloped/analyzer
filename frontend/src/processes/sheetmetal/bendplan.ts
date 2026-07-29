@@ -3,13 +3,13 @@
 // intervals, and the ranked plan summary from the search.
 
 import type { FieldDescriptor, ResultEntry } from '../../api/types';
-import { COL, segmentIdColor } from '../../colorizers/core';
+import { COL, fetchFaceField, segmentIdColor } from '../../colorizers/core';
 import type {
   LegendEntry, RGB, ViewCtx, ViewMode,
 } from '../../registry/types';
 
 // keep in sync with BENDPLAN_SCHEMA in processes/sheet_metal.py
-export const BENDPLAN_SCHEMA = 2;
+export const BENDPLAN_SCHEMA = 3;
 
 const OUTLINE: RGB = [0.7, 0.7, 0.75];
 const AXES: RGB = [0.95, 0.66, 0.23];
@@ -44,7 +44,7 @@ export const bendPlanMode: ViewMode = {
     // paint the mesh per rigid panel
     const panelDesc = planField(ctx, result, 'panel_id');
     if (panelDesc) {
-      const panels = await ctx.getField(panelDesc) as Uint8Array;
+      const panels = await fetchFaceField(ctx, panelDesc) as Uint8Array;
       ctx.paintFaces((f) => (panels[f]
         ? segmentIdColor(panels[f]) : COL.inaccess));
     }

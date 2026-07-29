@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import {
-  CircleDashed, Compass, FileUp, Hammer, Plus, Route, X, Zap,
+  CircleDashed, Compass, FileUp, Hammer, Plus, Route, Telescope, X, Zap,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { fetchMachines, fetchRoutes, postPlanRoute } from '../../api/client';
@@ -20,6 +20,7 @@ import {
 import { StatusDot } from '../components/status';
 import { publishPlanReport } from '../report/publish';
 import { useV2 } from '../store';
+import { closeStudy, openStudy, STUDIES } from '../studies';
 import { ImpactModal, type PendingEdit } from './ImpactModal';
 import {
   buildAddOperationEdit, buildRemoveCheckEdit, buildRemoveOperationEdit,
@@ -278,6 +279,41 @@ function AddOperationForm({ stage, onClose }: {
   );
 }
 
+/** Studies sit above the plan: broad comparisons over many candidates, opened
+ * in the right rail. They are exploration, so opening one persists nothing. */
+function StudySection() {
+  const activeStudy = useV2((s) => s.activeStudy);
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+        <Telescope className="size-3" /> Studies
+      </div>
+      <div className="flex flex-col gap-1">
+        {STUDIES.map((study) => {
+          const Icon = study.icon;
+          const isActive = activeStudy === study.id;
+          return (
+            <button
+              key={study.id}
+              type="button"
+              title={study.blurb}
+              onClick={() => (isActive ? closeStudy() : openStudy(study))}
+              className={clsx(
+                'flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm/5',
+                isActive
+                  ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-600/20 dark:bg-blue-500/10 dark:text-blue-300 dark:ring-blue-400/20'
+                  : 'text-zinc-700 hover:bg-zinc-950/5 dark:text-zinc-300 dark:hover:bg-white/5')}
+            >
+              <Icon className="size-3.5 shrink-0" />
+              <span className="flex-1">{study.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function PipelineRail() {
   const active = useActiveAnalysis();
   const checkActive = useCheckActive();
@@ -347,6 +383,8 @@ export function PipelineRail() {
 
   return (
     <div className="flex h-full w-64 shrink-0 flex-col gap-3 overflow-auto border-r border-zinc-950/5 bg-white p-4 dark:border-white/10 dark:bg-zinc-900">
+      <StudySection />
+
       <div className="text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">
         {hasPlan ? `Plan · rev ${section?.plan.revision}` : 'Checks'}
       </div>

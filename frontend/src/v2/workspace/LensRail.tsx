@@ -1,13 +1,80 @@
 import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 import clsx from 'clsx';
-import { ChevronDown, Play, Settings2 } from 'lucide-react';
+import { ChevronDown, Play, RotateCw, Settings2 } from 'lucide-react';
 import { AnalysisPanel } from '../../components/AnalysisPanel';
+import { Button } from '../../catalyst/button';
 import { getPlugin } from '../../registry';
 import { useStore } from '../../state/store';
+import { runAnalysisJob } from '../../viewer/jobs';
+import { executionState, statusKindOf } from '../checks/status';
+import { StatusBadge } from '../components/status';
+import type { Lens } from '../lenses';
 import { useActiveLens } from './hooks';
+import { useBusy } from './run';
 import './v1-controls.css';
 
 const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
+
+/** Run state + a Run button for a lens that paints one analysis's result.
+ * Without this a lens with nothing cached can only tell the user to go find
+ * the analysis in the generic Compute panel — which is where the hole-feature
+ * lens dead-ended. */
+function RunBacking({ lens }: { lens: Lens }) {
+  const ref = lens.analysis!;
+  const partId = useStore((s) => s.partId);
+  const manifest = useStore((s) => s.manifest);
+  const jobs = useStore((s) => s.jobs);
+  const meshReady = useStore((s) => s.meshReady);
+  const busy = useBusy();
+  const state = executionState(manifest, jobs, partId, ref);
+  const needsFine = !manifest?.mesh;
+
+  function run() {
+    if (!partId) return;
+    runAnalysisJob(partId, ref.process, ref.analysis, {}).catch((err) =>
+      useStore.getState().set({
+        error: err instanceof Error ? err.message : String(err),
+      }));
+  }
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="font-mono text-[11px]/4 text-zinc-500 dark:text-zinc-400">
+          {ref.process}/{ref.analysis}
+        </span>
+        <StatusBadge status={statusKindOf({
+          execution: state.execution,
+          verdict: 'unknown',
+          result: state.result,
+          note: state.note,
+        })}
+        >
+          {state.note || 'current'}
+        </StatusBadge>
+      </div>
+      <Button
+        outline
+        className="w-full"
+        disabled={!partId || !meshReady || busy}
+        onClick={run}
+      >
+        {busy ? (
+          <><RotateCw className="animate-spin" /> Running…</>
+        ) : state.execution === 'current' ? (
+          <><RotateCw /> Re-run</>
+        ) : (
+          <><Play /> Run</>
+        )}
+      </Button>
+      {needsFine && (
+        <p className={clsx('mt-2', hintCls)}>
+          Runs on the fine mesh — this builds it first, which is the slow one.
+        </p>
+      )}
+    </div>
+  );
+}
 
 /**
  * The right rail for an active inspection lens: label/blurb, the shared
@@ -25,7 +92,7 @@ export function LensRail() {
   const Controls = lens.hasControls ? getPlugin(lens.processId)?.Controls : undefined;
 
   return (
-    <div className="flex h-full w-72 shrink-0 flex-col gap-4 overflow-auto border-l border-zinc-950/5 bg-white p-4 dark:border-white/10 dark:bg-zinc-900">
+    <div className="flex min-h-full flex-col gap-4 p-4">
       <div>
         <div className="flex items-center gap-2">
           <Icon className="size-4 text-blue-600 dark:text-blue-400" />
@@ -33,6 +100,8 @@ export function LensRail() {
         </div>
         {lens.blurb && <p className={clsx('mt-1', hintCls)}>{lens.blurb}</p>}
       </div>
+
+      {lens.analysis && <RunBacking lens={lens} />}
 
       {Controls && (
         <Disclosure defaultOpen>

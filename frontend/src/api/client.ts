@@ -23,7 +23,9 @@ export async function fetchHighlights(url: string): Promise<number[] | null> {
   return (await res.json()).faces ?? null;
 }
 
-export async function uploadPart(file: File): Promise<Part> {
+export async function uploadPart(
+  file: File,
+): Promise<{ part: Part; job: Job | null }> {
   const body = new FormData();
   body.append('file', file);
   const res = await fetch('/api/parts', { method: 'POST', body });

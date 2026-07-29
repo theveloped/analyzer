@@ -69,12 +69,18 @@ def part_info(root, part_id):
             "verts": int(np.load(verts_path, mmap_mode="r").shape[0]),
             "faces": int(np.load(faces_path, mmap_mode="r").shape[0]),
         }
+    # three states, not two: a part whose first-load bundle has landed is
+    # renderable and inspectable long before the fine mesh exists, and
+    # calling that "raw" reads as "nothing here yet"
+    previewable = os.path.exists(
+        os.path.join(workdir, pipeline.COARSE_FACES_FILE))
 
     return {
         "id": part_id,
         "name": meta.get("name", part_id),
         "source": meta.get("source"),
-        "status": "meshed" if meshed else "raw",
+        "status": ("meshed" if meshed
+                   else "preview" if previewable else "raw"),
         "counts": counts,
         "has_directions": os.path.exists(os.path.join(workdir, pipeline.DIRECTIONS_FILE)),
         "created": meta.get("created"),

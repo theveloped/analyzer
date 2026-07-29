@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
-import { uploadPart } from '../api/client';
 import { useStore } from '../state/store';
-import { refreshParts, selectPart } from '../viewer/controller';
+import { selectPart } from '../viewer/controller';
+import { uploadAndSelect } from '../viewer/jobs';
 
 export function PartPicker() {
   const parts = useStore((s) => s.parts);
@@ -12,9 +12,7 @@ export function PartPicker() {
   async function onUpload(file: File) {
     setBusy(true);
     try {
-      const part = await uploadPart(file);
-      await refreshParts();
-      await selectPart(part.id);
+      await uploadAndSelect(file);
     } catch (err) {
       useStore.getState().set({ error: String(err) });
     } finally {
@@ -41,6 +39,7 @@ export function PartPicker() {
               {p.name}
               {(nameCounts.get(p.name) ?? 0) > 1 ? ` · ${p.id.slice(0, 6)}` : ''}
               {p.status === 'raw' ? ' (not meshed)' : ''}
+              {p.status === 'preview' ? ' (preview)' : ''}
             </option>
           ))}
         </select>

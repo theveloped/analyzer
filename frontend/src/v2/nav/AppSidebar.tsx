@@ -11,8 +11,8 @@ import { Switch } from '../../catalyst/switch';
 import { cancelJob, fetchReports } from '../../api/client';
 import type { Part, ReportSummary } from '../../api/types';
 import { useStore } from '../../state/store';
-import { selectPart, uploadAndSelect } from '../../viewer/controller';
-import { reprocessPart } from '../../viewer/jobs';
+import { selectPart } from '../../viewer/controller';
+import { reprocessPart, uploadAndSelect } from '../../viewer/jobs';
 import { useV2 } from '../store';
 
 const ACCEPT = '.stl,.stp,.step';

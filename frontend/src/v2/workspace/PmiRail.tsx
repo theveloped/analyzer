@@ -135,7 +135,7 @@ export function PmiRail() {
     </div>
   );
 
-  const container = 'flex h-full w-72 shrink-0 flex-col gap-4 overflow-auto border-l border-zinc-950/5 bg-white p-4 dark:border-white/10 dark:bg-zinc-900';
+  const container = 'flex min-h-full flex-col gap-4 p-4';
 
   const degraded = !!(pmi?.degraded || pmiMeta?.degraded);
   const warnings = (pmi?.warnings ?? pmiMeta?.warnings ?? []);

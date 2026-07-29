@@ -109,6 +109,79 @@ def test_materialize():
                   lambda: plans.materialize_params(plan, dangling))
 
 
+def _direction_decision(selected=("d4",)):
+    return {
+        "kind": "direction_set",
+        "generator": {"count": 0, "axes": True},
+        "candidates": [
+            {"id": "d4", "index": 4, "label": "+Z", "source": "principal_axis"},
+            {"id": "d5", "index": 5, "label": "-Z", "source": "principal_axis"},
+        ],
+        "selected": list(selected),
+        "state": "provisional",
+    }
+
+
+def test_decisions(workdir):
+    plan = plans.empty_plan()
+    plan["decisions"]["directions"] = _direction_decision()
+    stored = plans.save_plan(workdir, plan, expected_revision=0)
+    check("decision value is derived on save",
+          stored["decisions"]["directions"]["value"]
+          == {"direction_index": 4, "direction_indices": [4]})
+
+    # moving only the selection re-derives the binding target
+    stored["decisions"]["directions"]["selected"] = ["d5", "d4"]
+    stored = plans.save_plan(workdir, stored, expected_revision=1)
+    check("value follows the selection, in order",
+          stored["decisions"]["directions"]["value"]
+          == {"direction_index": 5, "direction_indices": [5, 4]})
+
+    bad_state = plans.empty_plan()
+    bad_state["decisions"]["directions"] = _direction_decision()
+    bad_state["decisions"]["directions"]["state"] = "chosen"
+    expect_raises("unknown decision state rejected", ValueError,
+                  lambda: plans.validate_plan(bad_state))
+
+    dangling = plans.empty_plan()
+    dangling["decisions"]["directions"] = _direction_decision(selected=("d9",))
+    expect_raises("selection outside the candidates rejected", ValueError,
+                  lambda: plans.validate_plan(dangling))
+
+    unknown_kind = plans.empty_plan()
+    unknown_kind["decisions"]["x"] = {"kind": "mystery", "candidates": []}
+    expect_raises("unknown decision kind rejected", ValueError,
+                  lambda: plans.validate_plan(unknown_kind))
+
+    # a decision without a kind is the free-form dict it has always been
+    freeform = plans.empty_plan()
+    freeform["decisions"]["material"] = {"value": "AlMg3", "state": "whatever"}
+    plans.validate_plan(freeform)
+    check("kind-less decisions stay free-form", True)
+
+
+def test_decision_binding(workdir):
+    """A check bound to a decision's derived value re-keys when the candidate
+    set changes but NOT when only the selection order is rewritten to the
+    same set — the property that makes exploring candidates free."""
+    plan = plans.empty_plan()
+    plan["decisions"]["directions"] = _direction_decision(selected=("d4",))
+    plan["checks"] = [{
+        "id": "chk", "analysis": ANALYSIS_ID,
+        "params": {NUM_PARAM: {"$plan": "decisions.directions.value.direction_index"}},
+    }]
+    plans.save_plan(workdir, plan, expected_revision=0)
+
+    same = plans.impact_preview(workdir, {})
+    check("no patch leaves the bound check unchanged",
+          same["chk"]["outcome"] == "unchanged")
+
+    moved = plans.impact_preview(
+        workdir, {"decisions": {"directions": {"selected": ["d5"]}}})
+    check("selecting another candidate re-keys the bound check",
+          moved["chk"]["outcome"] == "recomputes")
+
+
 def test_check_status(workdir):
     plan = plans.empty_plan()
     plan["checks"] = [
@@ -293,6 +366,10 @@ def main():
     with tempfile.TemporaryDirectory() as workdir:
         test_dispositions(workdir)
     test_materialize()
+    with tempfile.TemporaryDirectory() as workdir:
+        test_decisions(workdir)
+    with tempfile.TemporaryDirectory() as workdir:
+        test_decision_binding(workdir)
     with tempfile.TemporaryDirectory() as workdir:
         test_check_status(workdir)
     with tempfile.TemporaryDirectory() as workdir:

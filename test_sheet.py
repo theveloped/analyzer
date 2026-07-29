@@ -138,12 +138,10 @@ def fixture_bracket(check, tmp):
           f"{stats['reasons']}")
 
     # bend radii: inner r3 (opposite skin), outer r5 (base skin), read off
-    # the per-fine-face field
+    # the per-BREP-face field
+    from processes import resolver
     from processes.base import load_result_arrays
-    from processes.sheet_metal import SHEET_SCHEMA
-    cache_params = {**merged, "schema": SHEET_SCHEMA,
-                    "mesh": pipeline.mesh_fingerprint(workdir),
-                    "aag": pipeline.aag_fingerprint(workdir)}
+    cache_params = resolver.cache_key(workdir, "sheet_metal/detect", merged)
     arrays = load_result_arrays(workdir, "sheet_metal", "detect",
                                 cache_params)
     radius = arrays["bend_radius"]

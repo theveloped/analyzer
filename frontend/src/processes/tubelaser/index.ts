@@ -3,14 +3,15 @@
 
 import type { ResultEntry } from '../../api/types';
 import {
-  brepFacesMode, COL, faceAttrsMode, highlightsMode, paintCategory,
+  brepFacesMode, COL, faceAttrsMode, fetchFaceField, highlightsMode,
+  paintCategory,
 } from '../../colorizers/core';
 import type {
   ProcessPlugin, RGB, ViewCtx, ViewMode,
 } from '../../registry/types';
 
 // keep in sync with TUBE_SCHEMA in processes/tube_laser.py
-export const TUBE_SCHEMA = 2;
+export const TUBE_SCHEMA = 3;
 
 const ROLE_LABELS = ['other', 'outer shell', 'inner shell', 'end cut'];
 const ROLE_COLORS: RGB[] = [
@@ -30,7 +31,8 @@ function latestProfile(ctx: ViewCtx): ResultEntry | null {
 async function profileField(ctx: ViewCtx, result: ResultEntry, name: string) {
   const desc = ctx.manifest.fields.find(
     (f) => f.id === `results.tube_laser.profile.${result.hash}.${name}`);
-  return desc ? ctx.getField(desc) : null;
+  // face_role is per BREP face; lines are unindexed geometry
+  return desc ? fetchFaceField(ctx, desc) : null;
 }
 
 function sectionLine(result: ResultEntry): string {

@@ -7,9 +7,9 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
                             load_cached_result, store_result)
 
 # keep in sync with frontend/src/processes/sheetmetal/index.ts
-SHEET_SCHEMA = 2
+SHEET_SCHEMA = 3
 # keep in sync with frontend/src/processes/sheetmetal/bendplan.ts
-BENDPLAN_SCHEMA = 2
+BENDPLAN_SCHEMA = 3
 
 
 def run_detect(workdir, params, progress):
@@ -239,14 +239,15 @@ def run_bend_plan(workdir, params, progress):
         panel_by_face[faces] = panel_id + 1
     for bend_id, faces in info["bend_faces"].items():
         panel_by_face[faces] = graph.bends[bend_id].child_panel + 1
-    brep_ids = np.load(os.path.join(workdir, pipeline.BREP_FACES_FILE))
 
     arrays = {
         "outline_lines": sheet._segments_from_points(outline_points),
         "bend_axis_lines": sheet._segments_from_points(bend_axis_points),
         "required_lines": sheet._segments_from_points(required_points),
         "forbidden_lines": sheet._segments_from_points(forbidden_points),
-        "panel_id": panel_by_face[brep_ids].astype("<u1"),
+        # per BREP face, like every other role field — the panels are a
+        # BREP partition and the viewer joins them to whatever mesh it shows
+        "panel_id": panel_by_face.astype("<u1"),
     }
     field_meta = {}
     for name in ("outline_lines", "bend_axis_lines", "required_lines",
@@ -256,15 +257,26 @@ def run_bend_plan(workdir, params, progress):
                             "length": int(arrays[name].size),
                             "segments": int(arrays[name].size // 6)}
     field_meta["panel_id"] = {
-        "kind": "bend_plan_panel", "association": "face",
+        "kind": "bend_plan_panel", "association": "brep_face",
         "role": "category", "dtype": "u1",
+        "length": int(len(panel_by_face)), "count": int(len(panel_by_face)),
         "labels": ["none"] + [f"panel {p.id}" for p in graph.panels]}
 
-    # per-vertex fold coordinates for the bend-sequence animation and the
-    # mesh verifier (schema 2)
-    if progress is not None:
-        progress(0.95, "fold coordinates")
-    fold = adapter.compute_fold_mesh(workdir, graph, info)
+    # Per-vertex fold coordinates for the bend-sequence animation and the
+    # mesh verifier (schema 2) — the ONE part of a bend plan that is genuinely
+    # per fine vertex. Everything above (graph, actions, tooling, ranked plans,
+    # panel ids) is BREP-level, so the plan itself is available on the coarse
+    # preview and only the animation waits. `salts=("mesh",)` keeps the two
+    # results apart, so a coarse-computed plan is not served forever once the
+    # fine mesh lands.
+    if pipeline.mesh_fingerprint(workdir) is None:
+        fold = {"available": False,
+                "reason": "needs the fine mesh — the bend sequence animates "
+                          "real vertices"}
+    else:
+        if progress is not None:
+            progress(0.95, "fold coordinates")
+        fold = adapter.compute_fold_mesh(workdir, graph, info)
     fold_stats = {"available": bool(fold["available"]),
                   "reason": fold["reason"] if not fold["available"] else None}
     if fold["available"]:
@@ -371,7 +383,8 @@ PROCESS = ProcessDef(
                         "(normal ray cast from the largest face), classify "
                         "every face as base/opposite/bend/wall, and report "
                         "a sheet / not-sheet verdict with reasons.",
-            requires=["prep/mesh", "prep/aag"],
+            # roles are per BREP face, so the coarse preview is enough
+            requires=["prep/mesh_coarse", "prep/aag"],
             params=[
                 Param("min_thickness", "number", default=0.1, unit="mm",
                       min=0, label="Minimum sheet thickness"),
@@ -388,7 +401,7 @@ PROCESS = ProcessDef(
                         "outer contour, holes and bend lines as the flat "
                         "pattern, validated by volume conservation "
                         "(flat area x thickness vs solid volume).",
-            requires=["prep/mesh", "prep/aag"],
+            requires=["prep/mesh_coarse", "prep/aag"],
             params=[
                 Param("k_factor", "number", default=0.5, min=0, max=1,
                       label="K-factor (neutral fiber position)"),
@@ -412,7 +425,9 @@ PROCESS = ProcessDef(
                         "punch/die/machine catalogue, plus a bend-sequence "
                         "search with segmented tooling placement ranked by "
                         "setup changes, sections and installed length.",
-            requires=["prep/mesh", "prep/aag"],
+            # only the fold mesh needs the fine level; the plan itself does
+            # not, so it is salted on the mesh instead of requiring it
+            requires=["prep/mesh_coarse", "prep/aag"],
             params=[
                 Param("k_factor", "number", default=0.5, min=0, max=1,
                       label="K-factor (must match the unfold allowance)"),
@@ -442,6 +457,7 @@ PROCESS = ProcessDef(
             ],
             run=run_bend_plan,
             schema=BENDPLAN_SCHEMA,
+            salts=("mesh",),
         ),
     ],
 )
