@@ -9,8 +9,8 @@ import { StatusBadge } from '../components/status';
 import { FindingRow } from './findings';
 import { usePlanSection, useSelectedPlanCheck } from './hooks';
 import { runPlanCheck, useBusy } from './run';
+import { hintCls } from '../components/styles';
 
-const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 
 /**
  * Right rail for a non-threshold plan check (reach study / per-operation /
@@ -117,7 +117,7 @@ function Rail({ check, status, plan }: {
         {error ? (
           <p className="whitespace-pre-wrap text-xs/5 text-red-600 dark:text-red-500">⚠ {error}</p>
         ) : (
-          <p className="whitespace-pre-wrap text-xs/5 text-zinc-500 dark:text-zinc-400">{stats}</p>
+          <p className={clsx('whitespace-pre-wrap', hintCls)}>{stats}</p>
         )}
       </div>
     </div>

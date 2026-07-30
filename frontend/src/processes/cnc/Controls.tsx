@@ -25,29 +25,6 @@ export function CncControls() {
   // the turning roles view offers the same face-splitting interaction
   if (modeId === 'turning') return <TurningControls />;
 
-  // thin span reads the direction-free stiffness proxy result, not the
-  // per-direction tool fields
-  if (modeId === 'thinSpan') {
-    return (
-      <div className="row">
-        <div>
-          <label>Max span/thickness (×)</label>
-          <input
-            type="number" min={0} step={0.5} value={params.maxSpanRatio ?? 5.0}
-            onChange={(e) => set('maxSpanRatio', e.target.value)}
-          />
-        </div>
-        <div>
-          <label>Heatmap max (×)</label>
-          <input
-            type="number" placeholder="auto" value={params.spanScale ?? ''}
-            onChange={(e) => set('spanScale', e.target.value)}
-          />
-        </div>
-      </div>
-    );
-  }
-
   return (
     <>
       <label>Direction</label>

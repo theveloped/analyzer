@@ -6,8 +6,8 @@ import {
   computeMeasurement, type MeasureFrame, type MeasurePick,
 } from '../../viewer/measure';
 import { useV2 } from '../store';
+import { hintCls } from '../components/styles';
 
-const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 const sectionCls = 'text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400';
 const mm = (v: number) => `${v.toFixed(3)} mm`;
 const deg = (v: number) => `${v.toFixed(1)}°`;

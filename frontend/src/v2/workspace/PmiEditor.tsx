@@ -5,6 +5,7 @@ import type { PmiDatum, PmiDimension, PmiTolerance } from '../../api/types';
 import { putPmi } from '../../api/client';
 import { useStore } from '../../state/store';
 import { refreshManifest } from '../../viewer/controller';
+import { hintCls } from '../components/styles';
 import { lensByMode } from '../lenses';
 import { ToleranceFrame } from './ControlFrame';
 import { usePmiEdit } from './pmiEditStore';
@@ -19,7 +20,6 @@ import {
 } from './pmiVocab';
 
 const PROCESS = lensByMode('pmi')!.processId;
-const hint = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 const section = 'mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400';
 const field = 'w-full rounded-md border border-zinc-500/40 bg-transparent px-2 py-1 text-sm text-zinc-800 dark:text-zinc-100';
 const smallBtn = 'inline-flex items-center gap-1 rounded-md border border-zinc-500/40 px-2 py-1 text-xs font-medium text-zinc-600 transition hover:bg-zinc-950/5 dark:text-zinc-300 dark:hover:bg-white/5';
@@ -85,7 +85,7 @@ export function PmiEditor({ onDone }: { onDone: () => void }) {
           <button type="button" onClick={onDone} className={smallBtn}>Done</button>
         </div>
       </div>
-      <p className={hint}>
+      <p className={hintCls}>
         Author tolerance <b>features</b>: define the frame, then pick the faces it
         controls. Datums are referenced by letter. Only constructs that survive an
         AP242 export are offered.
@@ -100,13 +100,13 @@ export function PmiEditor({ onDone }: { onDone: () => void }) {
           <button type="button" onClick={() => setPick(null)} className="shrink-0 hover:underline">done</button>
         </div>
       )}
-      {error && <p className={clsx(hint, 'rounded-md bg-red-500/10 p-2 text-red-600 dark:text-red-400')}>⚠ {error}</p>}
+      {error && <p className={clsx(hintCls, 'rounded-md bg-red-500/10 p-2 text-red-600 dark:text-red-400')}>⚠ {error}</p>}
       {!dirty && warnings.length > 0 && (
         <details className="rounded-md bg-amber-500/5 p-2">
-          <summary className={clsx(hint, 'cursor-pointer text-amber-700 dark:text-amber-500')}>
+          <summary className={clsx(hintCls, 'cursor-pointer text-amber-700 dark:text-amber-500')}>
             saved · {warnings.length} round-trip caveat{warnings.length > 1 ? 's' : ''}
           </summary>
-          <ul className={clsx('mt-1 list-disc pl-4', hint)}>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+          <ul className={clsx('mt-1 list-disc pl-4', hintCls)}>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
         </details>
       )}
 
@@ -274,7 +274,7 @@ function ToleranceRow({ tol, datums, pickActive, onChange, onDatumFrame, onPick,
       {spec?.needsDatum && (
         <div>
           <div className="mb-1 text-[10px] uppercase tracking-wide text-zinc-400">Datum reference frame</div>
-          {letters.length === 0 && <p className={hint}>Add a datum above to reference it.</p>}
+          {letters.length === 0 && <p className={hintCls}>Add a datum above to reference it.</p>}
           <div className="flex flex-wrap gap-1">
             {letters.map((l) => {
               const pos = tol.datum_names.indexOf(l);
@@ -376,7 +376,7 @@ function DimensionRow({ dim, pickActive, pickField, onChange, onPick, onDelete }
       <div className="flex items-center gap-1.5">
         <PickButton active={pickActive && pickField === 'face_ids'} count={dim.face_ids.length}
           onClick={() => onPick('face_ids')} />
-        <span className={hint}>to</span>
+        <span className={hintCls}>to</span>
         <PickButton active={pickActive && pickField === 'secondary_face_ids'} count={(dim.secondary_face_ids ?? []).length}
           onClick={() => onPick('secondary_face_ids')} />
       </div>

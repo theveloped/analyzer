@@ -5,7 +5,7 @@ import { useStore } from '../../state/store';
 import { faceAccess, vertexGap, vertexMinStickout } from './compose';
 import { CncControls } from './Controls';
 import {
-  accessMode, classMode, gapMode, stickoutMode, thinSpanMode, unifiedMode,
+  accessMode, classMode, gapMode, stickoutMode, unifiedMode,
 } from './modes';
 import { reachAggregateMode, reachOpMode, reachStudyMode } from './reach';
 import { featuresMode, inspectFeature } from './features';
@@ -74,7 +74,7 @@ export const cncPlugin: ProcessPlugin = {
   modes: [setupsMode, featuresMode, turningRolesMode, turningResidualMode,
           axisRoleMode, coverageMode,
           hullMode, unifiedMode, accessMode,
-          classMode, gapMode, stickoutMode, thinSpanMode, reachStudyMode,
+          classMode, gapMode, stickoutMode, reachStudyMode,
           reachOpMode, reachAggregateMode, brepFacesMode, faceAttrsMode,
           highlightsMode],
   defaults: () => ({
@@ -96,8 +96,6 @@ export const cncPlugin: ProcessPlugin = {
     stickout: '',
     holder: '',
     scale: '',
-    maxSpanRatio: 5.0,
-    spanScale: '',
     rule: 'all',
     wallTol: 1.0,
     sideMill: true,

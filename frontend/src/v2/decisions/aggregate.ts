@@ -16,7 +16,10 @@ import { fetchField } from '../../fields/fields';
 import { faceAreas } from '../../processes/cnc/reach';
 import { useStore } from '../../state/store';
 import { meshArrays } from '../../viewer/controller';
-import { cellOf, type DirectionRow, type ToolSpec } from './columns';
+import { covered } from '../../processes/cnc/coverage';
+import {
+  columnsFor, type ColumnDef, type DirectionRow, type ToolSpec,
+} from './columns';
 
 export interface AggregateCell {
   /** Area share covered by at least one selected direction. */
@@ -27,42 +30,6 @@ export interface AggregateCell {
 
 export type AggregateRow = Record<string, AggregateCell>;
 
-/** How a column's field encodes "covered". The role field is a category
- * (0 off-axis, 1 compatible, 2 swept), everything else a 0/1 mask. */
-export type CoverageRule = 'nonzero' | 'ge1' | 'eq2';
-
-export function coverageRule(column: string): CoverageRule {
-  if (column === 'compatible') return 'ge1';
-  if (column === 'swept') return 'eq2';
-  return 'nonzero';
-}
-
-/** The field a cell's value was read from, so the union can re-read the mask
- * behind it. Mirrors the ids the manifest publishes. */
-export function fieldIdFor(row: DirectionRow, column: string): string | null {
-  const cell = cellOf(row, column);
-  if (cell.state !== 'value' || !cell.lens) return null;
-  const p = cell.lens.params as Record<string, any>;
-  if (column === 'accessible') return `accessibility.${row.index}`;
-  if (column === 'compatible' || column === 'swept') {
-    return `results.cnc.turning_scan.${p.scanHash}.axis_role_${p.scanAxis}`;
-  }
-  if (column.startsWith('tool')) {
-    return `results.cnc.reach_study.${p.reachHash}`
-      + `.reach_${p.reachDirection}_${p.reachTool}`;
-  }
-  return null;
-}
-
-export function covered(rule: CoverageRule, v: number): boolean {
-  if (rule === 'ge1') return v >= 1;
-  if (rule === 'eq2') return v === 2;
-  return v !== 0;
-}
-
-const covers = (column: string, v: number) =>
-  covered(coverageRule(column), v);
-
 async function fetchMask(
   manifest: Manifest, id: string,
 ): Promise<Uint8Array | null> {
@@ -72,10 +39,10 @@ async function fetchMask(
 }
 
 async function unionShare(
-  manifest: Manifest, rows: DirectionRow[], column: string,
+  manifest: Manifest, rows: DirectionRow[], column: ColumnDef,
   areas: Float64Array, total: number,
 ): Promise<AggregateCell> {
-  const ids = rows.map((row) => fieldIdFor(row, column));
+  const ids = rows.map((row) => column.fieldId(row));
   const usable = ids.filter((id): id is string => !!id);
   if (!usable.length) return { value: null, missing: rows.length };
 
@@ -84,33 +51,25 @@ async function unionShare(
     const mask = await fetchMask(manifest, id);
     if (!mask) continue;
     for (let f = 0; f < union.length; f++) {
-      if (covers(column, mask[f])) union[f] = 1;
+      if (covered(column.coverage, mask[f])) union[f] = 1;
     }
   }
-  let covered = 0;
-  for (let f = 0; f < union.length; f++) if (union[f]) covered += areas[f];
-  return { value: covered / total, missing: ids.length - usable.length };
+  let coveredArea = 0;
+  for (let f = 0; f < union.length; f++) if (union[f]) coveredArea += areas[f];
+  return { value: coveredArea / total, missing: ids.length - usable.length };
 }
-
-/** Column labels for the coverage lens's legend. */
-const COVERAGE_LABEL: Record<string, string> = {
-  accessible: 'visible',
-  compatible: 'revolution-compatible',
-  swept: 'swept',
-};
 
 /** Paint the union behind an aggregate cell — the same fields and the same
  * rule the total was computed from, so the picture is that number. */
-export function showCoverage(rows: DirectionRow[], column: string): void {
+export function showCoverage(rows: DirectionRow[], column: ColumnDef): void {
   const ids = rows
-    .map((row) => fieldIdFor(row, column))
+    .map((row) => column.fieldId(row))
     .filter((id): id is string => !!id);
   if (!ids.length) return;
   const store = useStore.getState();
   store.setViewerParam('cnc', 'coverageFields', ids);
-  store.setViewerParam('cnc', 'coverageRule', coverageRule(column));
-  store.setViewerParam('cnc', 'coverageLabel',
-    COVERAGE_LABEL[column] ?? 'reachable');
+  store.setViewerParam('cnc', 'coverageRule', column.coverage);
+  store.setViewerParam('cnc', 'coverageLabel', column.coverageLabel);
   store.set({ processId: 'cnc', modeId: 'coverage' });
 }
 
@@ -129,9 +88,9 @@ export function subscribeAggregate(fn: () => void): () => void {
 /** Cache key: the selection and every field the union would read. Two
  * selections that resolve to the same fields share an answer; recomputing a
  * cell changes its hash and so invalidates the row. */
-function keyFor(rows: DirectionRow[], columns: string[]): string {
+function keyFor(rows: DirectionRow[], columns: ColumnDef[]): string {
   return rows.map((row) => row.key).join(',') + '|'
-    + columns.map((c) => rows.map((r) => fieldIdFor(r, c) ?? '-').join('~')).join('|');
+    + columns.map((c) => rows.map((r) => c.fieldId(r) ?? '-').join('~')).join('|');
 }
 
 /**
@@ -143,8 +102,7 @@ export function aggregateFor(
   manifest: Manifest | null, selected: DirectionRow[], tools: ToolSpec[],
 ): AggregateRow | null {
   if (!manifest || !selected.length) return null;
-  const columns = ['accessible', 'compatible', 'swept',
-    ...tools.map((_, t) => `tool${t}`)];
+  const columns = columnsFor(tools);
   const key = keyFor(selected, columns);
   const hit = cache.get(key);
   if (hit) return hit;
@@ -162,7 +120,7 @@ export function aggregateFor(
       for (let f = 0; f < areas.length; f++) total += areas[f];
       const row: AggregateRow = {};
       for (const column of columns) {
-        row[column] = await unionShare(manifest, selected, column, areas,
+        row[column.key] = await unionShare(manifest, selected, column, areas,
           total || 1);
       }
       cache.set(key, row);

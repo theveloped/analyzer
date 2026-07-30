@@ -6,6 +6,9 @@ server, Vite/React/three.js viewer.
 
 Read this file first. Then, depending on the task:
 
+- **docs/CONCEPTS.md** — the vocabulary: what a lens, study, check, decision,
+  operation and the rest actually mean, with code anchors. Cheapest thing to read
+  first; canon for naming when other docs disagree.
 - **APPROACH.md** — the algorithms and *why* they work (Minkowski/offset tricks,
   Z-map engine, mold assignment). Read the relevant section before touching any
   geometry code.
@@ -14,7 +17,7 @@ Read this file first. Then, depending on the task:
 - **docs/CODEMAP.md** — where everything lives: per-file map, on-disk cache
   contracts (npy/npz/json layouts), API routes, frontend plugin interface.
 - **docs/RECIPES.md** — step-by-step procedures for the common change types
-  (add an analysis, add a view mode, add a CLI command, verify a change).
+  (add an analysis, add a lens, add a CLI command, verify a change).
 - **docs/BACKLOG.md** — the work queue: self-contained items (problem,
   evidence, approach, verification) meant to be tackled one per session.
   Pick from the top tier, delete the section when it lands.
@@ -118,6 +121,7 @@ python test_pressbrake.py    # press-brake core: kinematics, envelopes, tooling,
 python test_bendplan.py      # bend-plan adapter + analysis on STEP fixtures
 python test_plan.py          # production-plan sidecars: revisions, dispositions, check status, impact
 python test_reach.py         # cnc/reach_study: per-(direction, tool) masks vs compose_tool
+python test_vocab.py         # controlled vocabularies: every Python frozenset vs its TS union
 ```
 
 They build synthetic parts with known-correct answers and assert on them; a green
@@ -135,6 +139,17 @@ styles/section/measure pixel checks) walk the UI against a running server
   `get_inside_indices` rough edge as the anti-pattern).
 - Results are per-face boolean masks or per-vertex scalar fields; combining checks
   is numpy logic over those arrays, never new geometry passes.
+- **No stringly-typed vocabularies.** A fixed set of legal strings lives as a
+  frozenset in `processes/base.py` (param types, field associations/roles/dtypes,
+  salt names) or `plans.py` (decision/disposition states, operation kinds), and is
+  checked where the value ENTERS: `Param.__post_init__`, `AnalysisDef.__post_init__`,
+  `store_result`, `validate_plan`, or a Pydantic `Literal` on the request model.
+  An unknown value must raise — the failure mode being designed out is a typo that
+  is accepted and then silently does nothing. Frontend mirrors are NAMED TS unions
+  (`export type FieldRole = …`, never inline in an interface member) and
+  `test_vocab.py` parses each one and asserts it equals the Python set — a test,
+  not a comment. `v2/lenses.test.ts` does the same for what only exists on the
+  frontend: lens keys, including the ones route templates name.
 - Frontend: TypeScript strict, zustand store, no CSS framework (plain
   `styles.css`). View modes paint via `ctx.paintFaces` / heatmap helpers in
   `colorizers/core.ts`; interactive thresholds recompute client-side from cached

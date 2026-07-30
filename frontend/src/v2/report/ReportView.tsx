@@ -5,8 +5,8 @@ import { fetchReport } from '../../api/client';
 import type { Report } from '../../api/types';
 import { dispositionOf } from '../checks/evaluators';
 import { StatusBadge, type StatusKind } from '../components/status';
+import { hintCls } from '../components/styles';
 
-const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 
 const VERDICT_BADGE: Record<string, StatusKind> = {
   pass: 'good', review: 'warning', fail: 'serious', na: 'neutral',

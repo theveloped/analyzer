@@ -12,8 +12,8 @@ import type { Lens } from '../lenses';
 import { useActiveLens } from './hooks';
 import { useBusy } from './run';
 import './v1-controls.css';
+import { hintCls } from '../components/styles';
 
-const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 
 /** Run state + a Run button for a lens that paints one analysis's result.
  * Without this a lens with nothing cached can only tell the user to go find
@@ -151,7 +151,7 @@ export function LensRail() {
         {error ? (
           <p className="whitespace-pre-wrap text-xs/5 text-red-600 dark:text-red-500">⚠ {error}</p>
         ) : stats ? (
-          <p className="whitespace-pre-wrap text-xs/5 text-zinc-500 dark:text-zinc-400">{stats}</p>
+          <p className={clsx('whitespace-pre-wrap', hintCls)}>{stats}</p>
         ) : (
           <p className={hintCls}>Loading…</p>
         )}

@@ -12,16 +12,24 @@ export interface Part {
   created: string | null;
 }
 
+/** Mirror of FIELD_ROLES in processes/base.py, which validates it at write time. */
 export type FieldRole = 'scalar' | 'mask' | 'category' | 'lines' | 'data'
-  | 'nodes' | 'radii' | 'edges' | 'vert_map';
+  | 'fold' | 'nodes' | 'radii' | 'edges' | 'vert_map';
+
+/** Mirror of FIELD_ASSOCIATIONS in processes/base.py. Which index space the
+ * array lives in — the one thing standing between the coarse preview and a
+ * silently wrong paint. 'brep_face' is indexed by BREP face id, not by mesh
+ * face: such a field is valid against the coarse preview as well as the fine
+ * mesh, and the viewer joins it through the BREP id map. */
+export type FieldAssociation = 'vertex' | 'face' | 'brep_face' | 'none' | 'graph';
+
+/** Mirror of FIELD_DTYPES in processes/base.py. */
+export type FieldDtype = 'f4' | 'u1' | 'u4';
 
 export interface FieldDescriptor {
   id: string;
-  /** 'brep_face' is indexed by BREP face id, not by mesh face: such a
-   * field is valid against the coarse preview as well as the fine mesh,
-   * and the viewer joins it through the BREP id map. */
-  association: 'vertex' | 'face' | 'brep_face' | 'none' | 'graph';
-  dtype: 'f4' | 'u1' | 'u4';
+  association: FieldAssociation;
+  dtype: FieldDtype;
   role: FieldRole;
   units?: string;
   length: number | null;
@@ -153,18 +161,21 @@ export interface HoleCandidate {
   detail: Record<string, any>;
 }
 
+/** Mirror of OPERATION_KINDS in plans.py, which rejects an unknown kind in
+ * validate_plan. Dispatches the operation's default checks (defaultChecksFor)
+ * and its card icon, so a kind nobody handles is a card with neither. */
+export type OperationKind = 'laser' | 'cnc_setup' | 'press_brake';
+
 /** Production plan sidecars + derived check status (plans.py, plan.json). */
 export interface PlanOperation {
   id: string;
-  kind?: string;
+  kind?: OperationKind;
   label?: string;
   config?: Record<string, any>;
   machine?: { template: string; sha: string };
   /** Declarative workpiece-state annotation: what this operation produces
    * over the final-part face space (e.g. {features: "holes"}). */
   produces?: Record<string, any>;
-  /** Structured quotation inputs (setup count, bend count, …). */
-  outputs?: Record<string, any>;
 }
 
 export interface RouteSummary {
@@ -194,22 +205,25 @@ export interface Candidate {
   index?: number;
   label?: string;
   source?: string;
-  /** Hidden from the table without renumbering the underlying artifact. */
-  suppressed?: boolean;
   [key: string]: any;
 }
+
+/** Mirror of DECISION_PROJECTIONS in plans.py — a kind exists exactly when the
+ * backend can derive a `value` for it, which is why the two are one table. */
+export type DecisionKind = 'direction_set';
+
+/** Mirror of DECISION_STATES in plans.py. */
+export type DecisionState = 'provisional' | 'selected' | 'locked';
 
 /** A curated candidate set plus its selection: propose → compare → commit.
  * `value` is DERIVED server-side from `selected` (plans.normalize_decisions)
  * — it is the stable path checks bind to via {"$plan": …}. */
 export interface DecisionSlot {
-  kind: string;
-  /** The params that produced the candidates (re-runnable). */
-  generator?: Record<string, any>;
+  kind: DecisionKind;
   candidates: Candidate[];
   selected: string[] | string;
   value?: Record<string, any>;
-  state?: 'provisional' | 'selected' | 'locked';
+  state?: DecisionState;
 }
 
 export interface Plan {
@@ -230,9 +244,14 @@ export interface PlanCheckStatus {
   error: string | null;
 }
 
+/** Mirror of DISPOSITION_STATES in plans.py, which validates it in
+ * append_disposition and again as a Literal on the request model. */
+export type DispositionState = 'open' | 'accepted' | 'customer_approval'
+  | 'resolved';
+
 export interface DispositionEvent {
   finding_id: string;
-  state: 'open' | 'accepted' | 'customer_approval' | 'resolved';
+  state: DispositionState;
   by: string;
   at: string;
   why: string;
@@ -317,9 +336,15 @@ export interface Manifest {
   plan?: PlanSection;
 }
 
+/** Mirror of PARAM_TYPES in processes/base.py, which validates it in
+ * Param.__post_init__ — i.e. at backend import time. */
+export type ParamType = 'bool' | 'int' | 'number' | 'string' | 'select'
+  | 'int_list' | 'number_list' | 'tip_list' | 'tool_list' | 'vector_list'
+  | 'group_list';
+
 export interface ParamSpec {
   name: string;
-  type: 'bool' | 'int' | 'number' | 'string' | 'select' | 'int_list' | 'number_list' | 'tip_list' | 'tool_list' | 'vector_list' | 'group_list';
+  type: ParamType;
   default: any;
   label?: string;
   unit?: string;

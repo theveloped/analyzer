@@ -19,8 +19,8 @@ import {
 } from './hooks';
 import { useBusy } from './run';
 import { runAnalysisJob } from '../../viewer/jobs';
+import { hintCls } from '../components/styles';
 
-const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 const sectionCls = 'text-xs/5 font-medium text-zinc-500 dark:text-zinc-400';
 
 /** The lens's compute payload: v2 store overrides on top of the defaults. */
@@ -52,7 +52,7 @@ function BoundRow({ label, bound, onChange, fieldUnit, resolved }: {
 }) {
   return (
     <div className="mt-1.5 grid grid-cols-[2rem_4.5rem_1fr_2.75rem] items-center gap-1.5">
-      <span className="text-xs/5 text-zinc-500 dark:text-zinc-400">{label}</span>
+      <span className={hintCls}>{label}</span>
       <Input type="number" step="any" placeholder="—"
         value={bound.value}
         onChange={(e) => onChange({ ...bound, value: e.target.value })}
@@ -283,7 +283,7 @@ function Rail({ def, lensLabel, lensBlurb }: {
         {error ? (
           <p className="whitespace-pre-wrap text-xs/5 text-red-600 dark:text-red-500">⚠ {error}</p>
         ) : (
-          <p className="whitespace-pre-wrap text-xs/5 text-zinc-500 dark:text-zinc-400">{stats}</p>
+          <p className={clsx('whitespace-pre-wrap', hintCls)}>{stats}</p>
         )}
       </div>
     </div>

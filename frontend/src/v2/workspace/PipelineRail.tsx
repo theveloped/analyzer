@@ -5,11 +5,12 @@ import {
 import { useEffect, useState } from 'react';
 import { fetchMachines, fetchRoutes, postPlanRoute } from '../../api/client';
 import type {
-  PlanCheck, PlanCheckStatus, PlanOperation, RouteSummary,
+  OperationKind, PlanCheck, PlanCheckStatus, PlanOperation, RouteSummary,
 } from '../../api/types';
 import { Button } from '../../catalyst/button';
 import { Input } from '../../catalyst/input';
 import { Select } from '../../catalyst/select';
+import { hintCls } from '../components/styles';
 import { refreshManifest } from '../../viewer/controller';
 import { useStore } from '../../state/store';
 import type { Analysis } from '../analyses';
@@ -51,7 +52,7 @@ function CheckCard({ icon: Icon, label, tier, state, summary, isActive, onClick 
           <span className="text-[10px] uppercase tracking-wide text-zinc-400">adv</span>
         )}
       </div>
-      <div className="ml-[22px] mt-1 text-xs/5 text-zinc-500 dark:text-zinc-400">
+      <div className={clsx('ml-[22px] mt-1', hintCls)}>
         {summary}
       </div>
     </button>
@@ -195,11 +196,14 @@ function OperationCard({ op, stage }: {
   );
 }
 
+// the kinds offered in the form, labelled. `satisfies` keeps the ids inside
+// the OperationKind union that plans.py validates, so a kind the backend
+// would reject cannot reach the select.
 const OP_KINDS = [
   { id: 'cnc_setup', label: 'CNC setup' },
   { id: 'laser', label: 'Laser' },
   { id: 'press_brake', label: 'Press brake' },
-];
+] satisfies { id: OperationKind; label: string }[];
 
 /** Inline add-operation form: label, kind, optional machine template and
  * (for CNC) primary direction. The edit stages through the impact modal
@@ -211,7 +215,7 @@ function AddOperationForm({ stage, onClose }: {
   const [machines, setMachines] = useState<
     { name: string; label: string; kind: string | null }[]>([]);
   const [label, setLabel] = useState('');
-  const [kind, setKind] = useState('cnc_setup');
+  const [kind, setKind] = useState<OperationKind>('cnc_setup');
   const [machine, setMachine] = useState('');
   const [direction, setDirection] = useState('0');
   const [building, setBuilding] = useState(false);
@@ -245,8 +249,15 @@ function AddOperationForm({ stage, onClose }: {
       <div className="flex flex-col gap-1.5">
         <Input placeholder="label (e.g. OP30)" value={label}
           onChange={(e) => setLabel(e.target.value)} aria-label="operation label" />
-        <Select value={kind} onChange={(e) => { setKind(e.target.value); setMachine(''); }}
-          aria-label="operation kind">
+        <Select
+          value={kind}
+          onChange={(e) => {
+            // narrow through the table rather than casting the DOM string
+            const next = OP_KINDS.find((k) => k.id === e.target.value);
+            if (next) { setKind(next.id); setMachine(''); }
+          }}
+          aria-label="operation kind"
+        >
           {OP_KINDS.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
         </Select>
         <Select value={machine} onChange={(e) => setMachine(e.target.value)}

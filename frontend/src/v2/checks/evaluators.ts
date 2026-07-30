@@ -148,18 +148,22 @@ export async function evaluateReachOp(
   };
 }
 
-/** Stats-verdict checks: judged directly from the stored result's stats
- * (sheet detection / flat pattern / bend plan / feature recognition).
- * Findings carry stable per-reason ids so dispositions survive re-runs. */
-export function evaluateStatsCheck(
-  rule: string, check: PlanCheck, result: ResultEntry | null,
-): Evaluation {
-  if (!result) return { verdict: 'unknown', findings: [] };
-  const stats = result.stats as Record<string, any>;
-  const finding = (code: string, label: string, detail: string): Finding =>
-    ({ id: `${check.id}:${code}`, code, label, detail, severity: 'review' });
+/** The stats-rule vocabulary. Two tables are keyed by it — the evaluators
+ * below and the card presentation in `catalog.ts` — so TS refuses a rule that
+ * has logic but no label, or a label with no logic. `plans.py` `STATS_RULES`
+ * validates the same names where a plan enters, so a typo in a route YAML
+ * raises instead of seeding a check that quietly evaluates to `unknown`
+ * forever; `test_vocab.py` asserts the two sides list the same rules. */
+export type StatsRule = 'sheet_detect' | 'flat_pattern' | 'bend_plan'
+  | 'features';
 
-  if (rule === 'sheet_detect') {
+/** Emits a finding under this check's identity. */
+type Emit = (code: string, label: string, detail: string) => Finding;
+
+const STATS_EVALUATORS: Record<
+  StatsRule, (stats: Record<string, any>, finding: Emit) => Evaluation
+> = {
+  sheet_detect: (stats, finding) => {
     if (stats.verdict === 'sheet') return { verdict: 'pass', findings: [] };
     const reasons: string[] = stats.reasons ?? [];
     return {
@@ -167,8 +171,9 @@ export function evaluateStatsCheck(
       findings: [finding('not_sheet', 'Not detected as sheet metal',
         reasons.join('; ') || `verdict: ${stats.verdict}`)],
     };
-  }
-  if (rule === 'flat_pattern') {
+  },
+
+  flat_pattern: (stats, finding) => {
     const findings: Finding[] = [];
     if (stats.developable === false) {
       findings.push(finding('not_developable', 'Not developable',
@@ -185,8 +190,9 @@ export function evaluateStatsCheck(
     return findings.length
       ? { verdict: 'review', findings }
       : { verdict: 'pass', findings: [] };
-  }
-  if (rule === 'bend_plan') {
+  },
+
+  bend_plan: (stats, finding) => {
     if (stats.feasible) return { verdict: 'pass', findings: [] };
     return {
       verdict: 'fail',
@@ -194,9 +200,26 @@ export function evaluateStatsCheck(
         'no tooling/sequence combination bends this part on the selected '
         + 'machine')],
     };
-  }
-  if (rule === 'features') return { verdict: 'na', findings: [] };
-  return { verdict: 'unknown', findings: [] };
+  },
+
+  // recognition is exploration data, not a judgement
+  features: () => ({ verdict: 'na', findings: [] }),
+};
+
+export function isStatsRule(rule: string): rule is StatsRule {
+  return Object.prototype.hasOwnProperty.call(STATS_EVALUATORS, rule);
+}
+
+/** Stats-verdict checks: judged directly from the stored result's stats
+ * (sheet detection / flat pattern / bend plan / feature recognition).
+ * Findings carry stable per-reason ids so dispositions survive re-runs. */
+export function evaluateStatsCheck(
+  rule: string, check: PlanCheck, result: ResultEntry | null,
+): Evaluation {
+  if (!result || !isStatsRule(rule)) return { verdict: 'unknown', findings: [] };
+  const finding: Emit = (code, label, detail) =>
+    ({ id: `${check.id}:${code}`, code, label, detail, severity: 'review' });
+  return STATS_EVALUATORS[rule](result.stats as Record<string, any>, finding);
 }
 
 /** Route aggregate: faces unreachable in EVERY operation (geometry-union

@@ -1,28 +1,35 @@
 # Analysis inventory — what exists today
 
 A complete audit of the analysis surface as of 2026-07-29, written to drive the
-"keep / clean up / how to visualize" pass over the v2 UI. Concepts and rules come
-from docs/PLAN-ARCHITECTURE.md; contracts from docs/CODEMAP.md. When code and this
+"keep / clean up / how to visualize" pass over the v2 UI. Vocabulary comes from
+docs/CONCEPTS.md, plan-layer rules from docs/PLAN-ARCHITECTURE.md; contracts from
+docs/CODEMAP.md. When code and this
 file disagree, the code wins.
 
 UI companion: [V2 button and icon inventory](V2-BUTTON-ICON-INVENTORY.md) —
-current button styling, all 40 lens icons, and the viewer/action icon review sheet.
+current button styling, all 41 lens icons, and the viewer/action icon review sheet.
 
-## The four layers
+## The layers
+
+Vocabulary is defined once, in **[CONCEPTS.md](CONCEPTS.md)**. This file is the census:
+what exists today and how much of it, as of the date above.
 
 ```
-prep stages (7)        fixed-name workdir artifacts, auto-run by the resolver
+prep stages        artifacts in the workdir, auto-run by the resolver
    ↓ requires
-analyses (25)          results/<proc>/<an>/<hash>.json[.npz], self-caching
-   ↓ paints
-lenses (40)            ProcessPlugin.modes + v2/lenses.ts curation — never a verdict
-   ↓ interprets
-checks (9 kinds)       pinned policy over one analysis result → verdict + findings
+analyses           results/<proc>/<an>/<hash>.json[.npz], self-caching
+   ↓ read by
+lenses             ProcessPlugin.modes + v2/lenses.ts curation — never a verdict
+   ↓ interpreted by
+checks             pinned policy over one analysis result → verdict + findings
 ```
 
-Counts: **7 prep stages + 25 results-tier analyses**, surfaced by **40 lenses**, of
-which **7 are self-materializing field lenses** and only **9 analyses can currently
-become a check**.
+The arrows are "reads", not "produces": a field lens *runs* the analysis it paints when
+nothing is cached, so the dependency points both ways in practice.
+
+Counts as of 2026-07-29: **7 prep stages + 24 results-tier analyses**, surfaced by
+**41 lenses**, of which **7 are self-materializing field lenses**; **9 analyses can
+currently become a check**.
 
 ---
 
@@ -81,7 +88,6 @@ Also non-registry but part of the currency: `face_splits.json` → `subfaces.npy
 | `wall_skeleton`     | `prep/mesh`                            | `max_radius` 5, `min_radius` 0.1, `cluster_factor` 1.0, `absorb_factor` 0.5                                                                                                                                 | node/edge counts, `mesh` resolution spec (`edge_thickness_ratio`)                        | `thickness`, `raw_nodes/radii/edges/vert_node`, `cluster_nodes/radii/edges/vert_node`                 | SKELETON_SCHEMA 5            |
 | `sprue_proposals`   | `prep/mesh` (sub-runs `wall_skeleton`) | 4 skeleton knobs + `min_gate_thickness` 0.8, `max_candidates` 400, `thick_percentile` 85, `pack_factor` 0.5, `edge_gate_distance` 5, `forbid_side`, `orientation_option` 0, `top_n` 10, **7 score weights** | ranked proposals + subscores                                                             | `candidate_points/node/vertex/face/score/subscores`, `proposal_index`, `best_fill`, `weld_edges_best` | SPRUE_SCHEMA 2               |
 | `ejection_sticking` | `prep/mesh` (sub-runs `wall_skeleton`) | 4 skeleton knobs + `grip_deg` 15°, `mu` 0.5, `p_shrink` 0.5 MPa, `orientation_option` 0                                                                                                                     | total force, `pull`, `orientation`                                                       | `draft_deg` f4/face, `grip_faces` u1/face, `vert_force` f4/vertex, `node_load` f4/graph-node          | EJECTION_SCHEMA 2            |
-| `flow_voxels`       | —                                      | `voxel`                                                                                                                                                                                                     | **forwards to `prep/voxels`**                                                            | (prep/voxels arrays)                                                                                  | = VOXEL_SCHEMA               |
 | `flow_fill`         | `prep/mesh` (sub-runs `prep/voxels`)   | `voxel`, `gate` [x,y,z] **required**, `delta0` 0, `skin_coef` 0.12, `fill_time` 2 s, `iterations` 3, `neighborhood` 26                                                                                      | `gate` (point/voxel/snap), `grid`, `voxels_hash`                                         | `arrival` f4/voxel, `frozen` u1/voxel, `vert_arrival`, `vert_frozen`                                  | FLOW_SCHEMA (= 1)            |
 
 
@@ -105,7 +111,7 @@ Also non-registry but part of the currency: `face_splits.json` → `subfaces.npy
 
 ---
 
-## C. Lens registry (40) → backing analysis
+## C. Lens registry (41) → backing analysis
 
 Built by `v2/lenses.ts` from `ProcessPlugin.modes` + a curation overlay. Shared
 modes (`brep_faces`, `face_attrs`, `pmi`, `highlights`) are hosted once under
@@ -130,6 +136,8 @@ modes (`brep_faces`, `face_attrs`, `pmi`, `highlights`) are hosted once under
 | cnc      | `features`              | cnc/features                                                               |        |                                        |
 | cnc      | `turning`               | cnc/turning                                                                |        |                                        |
 | cnc      | `turning_residual`      | cnc/turning                                                                |        | advanced                               |
+| cnc      | `axis_role`             | cnc/turning_scan                                                           |        | advanced, pinned by `scanHash`+`scanAxis` |
+| cnc      | `coverage`              | whichever masks the study total unioned                                    |        | advanced, painted from a study footer  |
 | cnc      | `hull`                  | cnc/hull                                                                   |        |                                        |
 | cnc      | `reach_study`           | cnc/reach_study                                                            |        | one (d × t) mask                       |
 | cnc      | `reach_op`              | cnc/reach_study                                                            |        | cone-sliced                            |
@@ -139,7 +147,6 @@ modes (`brep_faces`, `face_attrs`, `pmi`, `highlights`) are hosted once under
 | cnc      | `class`                 | cnc/precompute (zcache)                                                    |        | legacy                                 |
 | cnc      | `gap`                   | cnc/precompute (zcache)                                                    |        | legacy                                 |
 | cnc      | `stickout`              | cnc/precompute (zcache)                                                    |        | legacy                                 |
-| cnc      | `thinSpan`              | injection_molding/thin_span                                                |        | **duplicate of the geometry lens**     |
 | molding  | `assignment`            | injection_molding/mold_orientation                                         |        | parting-line optimizer + splits        |
 | molding  | `sprue`                 | injection_molding/sprue_proposals                                          |        |                                        |
 | molding  | `flowFill`              | injection_molding/flow_fill                                                |        | gate picked in-view                    |
@@ -199,30 +206,25 @@ Ordered by how much they cost to leave as-is.
 3. **`slenderness` is a scalar field with a threshold param (`maxSlenderness`)
   that never became a field lens.** Same treatment as thin_span would make it
    self-materializing + bandable for free.
-4. **Duplicate lens: `cnc:thinSpan` and `injection_molding:thinSpan`** paint the
-  same `span_ratio` field. Pick a home (geometry) and drop the other.
-5. `**injection_molding/flow_voxels` is a pure forwarder to `prep/voxels`.** It
-  exists so the old plugin submit keeps working. Once the injection plugin
-   submits `prep/voxels`, delete it.
-6. `**cooling` has no backing analysis** — it is `coef · halfThickness²` computed
+4. `**cooling` has no backing analysis** — it is `coef · halfThickness²` computed
   in the painter. Fine as a lens, but it can never carry a check or a finding
    until the rule moves into an analysis (or an explicit "derived lens" concept).
-7. `**setup_verdict` rides inside the `cnc/setups` store dir** (`key_extra`),
+5. `**setup_verdict` rides inside the `cnc/setups` store dir** (`key_extra`),
   distinguished only by `stats.verdict`. Works, but it is the one place where
    "one analysis id = one store dir" does not hold — worth a comment in the UI
    layer if the results list ever becomes user-facing.
-8. **Three analyses re-run `wall_skeleton` as a sub-run** (`sprue_proposals`,
+6. **Three analyses re-run `wall_skeleton` as a sub-run** (`sprue_proposals`,
   `ejection_sticking`) and one re-runs `thickness` (`thin_span`). Cache-aware, so
    correct — but it means those analyses expose the 4 skeleton knobs in their own
    param forms, which is most of their surface area. Candidate for the same
    `requires`-with-derived-params treatment prep got.
-9. **Params that are compute-scope vs interpretation are still mixed in the
+7. **Params that are compute-scope vs interpretation are still mixed in the
   forms.** `slenderness.direction`, `sprue.orientation_option`,
    `setup_verdict.option`, `flow_fill.gate` are all scope-that-recomputes; the
    thresholds are interpretation. The v2 field-lens rail already models this split
    correctly — the other lenses don't.
-10. **Coverage gaps by process:** molding has 12 analyses and **zero** checks;
-  sheet has 3 analyses and 3 checks; CNC has 8 and 2 (reach + features-as-na).
+8. **Coverage gaps by process:** molding has 11 analyses and **zero** checks;
+  sheet has 3 analyses and 3 checks; CNC has 9 and 2 (reach + features-as-na).
     If the polishing pass is "finalize lenses and checks one-by-one", molding is
     where the work is.
 

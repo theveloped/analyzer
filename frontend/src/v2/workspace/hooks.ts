@@ -1,14 +1,14 @@
 import { useEffect } from 'react';
 import { postPlanMachine, putPlan } from '../../api/client';
 import type {
-  Plan, PlanCheck, PlanCheckStatus, PlanOperation, PlanSection,
+  OperationKind, Plan, PlanCheck, PlanCheckStatus, PlanOperation, PlanSection,
 } from '../../api/types';
 import { useStore } from '../../state/store';
 import { refreshManifest } from '../../viewer/controller';
 import { runAnalysisJob } from '../../viewer/jobs';
 import type { Analysis } from '../analyses';
 import { ANALYSIS_BY_ID, ANALYSES, defaultCompute } from '../analyses';
-import { DEFAULT_TOOLS, describeCheck } from '../checks/catalog';
+import { defaultTools, describeCheck } from '../checks/catalog';
 import { checkState, type CheckState } from '../checks/status';
 import {
   FIELD_LENSES, fieldLensCompute, latestResult, type FieldLensDef,
@@ -280,7 +280,7 @@ export async function applyPlanEdit(edit: Partial<Plan>) {
 /** The standard checks an operation of a kind brings along — the same set
  * the route templates seed, so hand-built routes behave identically. */
 function defaultChecksFor(
-  kind: string, opId: string,
+  kind: OperationKind, opId: string,
   machineData: Record<string, any>, snapshotPath: string | null,
 ): PlanCheck[] {
   if (kind === 'laser') {
@@ -300,7 +300,7 @@ function defaultChecksFor(
         operation: opId, lens: 'cnc:features', visible: true },
       { id: `chk-${opId}-reach`, analysis: 'cnc/reach_study',
         params: { direction_indices: [],
-          tools: machineData.tools ?? DEFAULT_TOOLS },
+          tools: machineData.tools ?? defaultTools() },
         policy: { scope: 'operation', mask: 'features' },
         operation: opId, lens: 'cnc:reach_op', visible: true },
     ];
@@ -318,7 +318,7 @@ function defaultChecksFor(
 
 export interface AddOperationInput {
   label: string;
-  kind: string;
+  kind: OperationKind;
   machine?: string | null;
   directionIndex?: number | null;
 }
@@ -423,7 +423,7 @@ export async function seedExploration() {
   const dotZ = directions.map((d) => d[2]);
   const d10 = dotZ.indexOf(Math.max(...dotZ));
   const d20 = dotZ.indexOf(Math.min(...dotZ));
-  const studyParams = { direction_indices: [], tools: DEFAULT_TOOLS };
+  const studyParams = { direction_indices: [], tools: defaultTools() };
   const plan: Plan = {
     ...section.plan,
     operations: [

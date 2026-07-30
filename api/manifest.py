@@ -15,8 +15,10 @@ import numpy as np
 
 import pipeline
 import plans
+from loguru import logger
+
 from processes import prep as prep_stage
-from processes.base import RESULTS_DIR
+from processes.base import FIELD_ASSOCIATIONS, RESULTS_DIR
 
 
 def _json_safe(obj):
@@ -210,7 +212,18 @@ def _result_entries(workdir, base_url, face_count, vert_count):
 
         field_ids = []
         for name, meta in payload.get("arrays", {}).items():
-            association = meta.get("association", "vertex")
+            # store_result requires an association, so a missing one means a
+            # result written before that check. Fall back to "none" — the
+            # SAFE value: unindexed, so nothing paints it onto a mesh. The
+            # old default was "vertex", which quietly claimed fine-mesh
+            # indexing for an array that might be anything.
+            association = meta.get("association")
+            if association not in FIELD_ASSOCIATIONS:
+                if association is not None:
+                    logger.warning(
+                        f"{process_id}/{analysis_id} field {name!r}: unknown "
+                        f"association {association!r} — treating as unindexed")
+                association = "none"
             role = meta.get("role", "scalar")
             # graph-shaped arrays declare their own dtype and flat length;
             # mesh-shaped fields keep the inferred defaults

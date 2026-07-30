@@ -15,17 +15,23 @@ import { PROCESS_PLUGINS } from '../registry';
  * concept (see docs/PLAN-ARCHITECTURE.md).
  */
 
-export type LensCategoryId =
-  | 'model' | 'geometry' | 'cnc' | 'molding' | 'sheet' | 'tube';
+/** The lens categories, in rail order. One table: the id union, the rail's
+ * section list and the fallback icon all derive from it, so adding a category
+ * is one entry rather than three edits that must agree. */
+const CATEGORIES = {
+  model: { label: 'Model data', icon: Shapes },
+  geometry: { label: 'Geometry', icon: Ruler },
+  cnc: { label: 'CNC', icon: Axis3d },
+  molding: { label: 'Molding', icon: Droplets },
+  sheet: { label: 'Sheet metal', icon: Layers },
+  tube: { label: 'Tube', icon: Scissors },
+} as const satisfies Record<string, { label: string; icon: LucideIcon }>;
 
-export const LENS_CATEGORIES: { id: LensCategoryId; label: string }[] = [
-  { id: 'model', label: 'Model data' },
-  { id: 'geometry', label: 'Geometry' },
-  { id: 'cnc', label: 'CNC' },
-  { id: 'molding', label: 'Molding' },
-  { id: 'sheet', label: 'Sheet metal' },
-  { id: 'tube', label: 'Tube' },
-];
+export type LensCategoryId = keyof typeof CATEGORIES;
+
+export const LENS_CATEGORIES: { id: LensCategoryId; label: string }[] =
+  (Object.keys(CATEGORIES) as LensCategoryId[])
+    .map((id) => ({ id, label: CATEGORIES[id].label }));
 
 export interface Lens {
   /** `${processId}:${modeId}` — unique across plugins. */
@@ -73,12 +79,9 @@ const DEFAULT_CATEGORY: Record<string, LensCategoryId> = {
   tube_laser: 'tube',
 };
 
-const CATEGORY_ICON: Record<LensCategoryId, LucideIcon> = {
-  model: Shapes, geometry: Ruler, cnc: Axis3d,
-  molding: Droplets, sheet: Layers, tube: Scissors,
-};
-
-const CURATION: Record<string, Curation> = {
+/** Exported so a test can assert every key resolves to a real lens — a
+ * typo'd `process:mode` key is otherwise a silent no-op. */
+export const CURATION: Record<string, Curation> = {
   // model data (shared, hosted under injection_molding)
   'injection_molding:brep_faces': {
     icon: Shapes, category: 'model', pinned: true,
@@ -163,7 +166,6 @@ const CURATION: Record<string, Curation> = {
   'cnc:class': { icon: Layers },
   'cnc:gap': { icon: Spline },
   'cnc:stickout': { icon: MoveVertical },
-  'cnc:thinSpan': { icon: Waves },
 
   // molding
   'injection_molding:assignment': {
@@ -224,14 +226,22 @@ const CURATION: Record<string, Curation> = {
   },
 };
 
-/** Stable plugin order for building the list (categories re-group anyway). */
+/** Preferred display order. Not a membership list: every registered plugin is
+ * built, listed ones first, so registering a plugin and forgetting it here
+ * costs you the ordering — not all of its lenses, silently. */
 const PLUGIN_ORDER = [
   'injection_molding', 'directions', 'cnc', 'sheet_metal', 'tube_laser',
 ];
 
+function orderedPluginIds(): string[] {
+  const all = Object.keys(PROCESS_PLUGINS);
+  const ranked = PLUGIN_ORDER.filter((id) => id in PROCESS_PLUGINS);
+  return [...ranked, ...all.filter((id) => !PLUGIN_ORDER.includes(id))];
+}
+
 function buildLenses(): Lens[] {
   const lenses: Lens[] = [];
-  for (const processId of PLUGIN_ORDER) {
+  for (const processId of orderedPluginIds()) {
     const plugin = PROCESS_PLUGINS[processId];
     if (!plugin) continue;
     for (const mode of plugin.modes) {
@@ -246,7 +256,7 @@ function buildLenses(): Lens[] {
         modeId: mode.id,
         label: c.label ?? mode.label,
         blurb: c.blurb,
-        icon: c.icon ?? CATEGORY_ICON[category],
+        icon: c.icon ?? CATEGORIES[category].icon,
         category,
         pinned: c.pinned ?? false,
         advanced: c.advanced ?? false,

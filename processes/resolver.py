@@ -19,7 +19,7 @@ changed upstream (e.g. the mesh) changes its content fingerprint, which flips th
 downstream ``is_current`` gate and re-salts every results-tier cache key.
 """
 
-from processes.base import AnalysisResult, apply_defaults
+from processes.base import KNOWN_SALTS, AnalysisResult, apply_defaults
 
 # get_analysis is imported lazily inside the functions below: process modules
 # import this resolver at their top level, and processes/__init__ defines
@@ -82,6 +82,30 @@ def _split(target_id):
     return process_id, analysis_id
 
 
+def _splits_salt(workdir):
+    import pipeline
+    return pipeline.splits_fingerprint(workdir)
+
+
+def _mesh_salt(workdir):
+    # for an analysis that does not REQUIRE the fine mesh but produces more
+    # when one exists (sheet_metal/bend_plan's fold mesh): keying on the
+    # fingerprint — None included — keeps the coarse-only result and the full
+    # one as separate entries instead of one masquerading as the other forever
+    import pipeline
+    return pipeline.mesh_fingerprint(workdir)
+
+
+# every opt-in salt an AnalysisDef may declare, and how it is computed. The
+# assert closes the other direction from AnalysisDef's own validation: a name
+# in the vocabulary with no implementation here would be accepted and then
+# silently contribute nothing to the key.
+_OPT_IN_SALTS = {"splits": _splits_salt, "mesh": _mesh_salt}
+assert set(_OPT_IN_SALTS) == set(KNOWN_SALTS), (
+    f"salt vocabulary and implementations disagree: "
+    f"{set(KNOWN_SALTS) ^ set(_OPT_IN_SALTS)}")
+
+
 def cache_key(workdir, target_id, params):
     """The content-addressed results-tier cache key for an analysis.
 
@@ -114,17 +138,8 @@ def cache_key(workdir, target_id, params):
                 f"{target_id}: declared param(s) {sorted(clash)} collide with "
                 f"prep salt fields — rename the analysis param")
         key.update(salt)
-    if "splits" in analysis.salts:
-        import pipeline
-        key["splits"] = pipeline.splits_fingerprint(workdir)
-    if "mesh" in analysis.salts:
-        # for an analysis that does not REQUIRE the fine mesh but produces
-        # more when one exists (sheet_metal/bend_plan's fold mesh): keying on
-        # the fingerprint — None included — keeps the coarse-only result and
-        # the full one as separate entries instead of one masquerading as the
-        # other forever
-        import pipeline
-        key["mesh"] = pipeline.mesh_fingerprint(workdir)
+    for salt in analysis.salts:
+        key[salt] = _OPT_IN_SALTS[salt](workdir)
     if analysis.key_extra:
         key.update(analysis.key_extra)
     return key

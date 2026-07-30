@@ -79,6 +79,20 @@ DISPOSITION_STATES = ("open", "accepted", "customer_approval", "resolved")
 #   }
 DECISION_STATES = ("provisional", "selected", "locked")
 
+# What kind of thing an operation is. Dispatches the default checks
+# (v2/workspace/hooks.ts defaultChecksFor) and the card icon, so an unknown
+# kind used to produce a card with no checks and no icon rather than an error.
+# Mirrored as OperationKind in frontend/src/api/types.ts (test_vocab.py).
+OPERATION_KINDS = ("laser", "cnc_setup", "press_brake")
+
+# A stats check names the RULE that reads its analysis's stats. The rule is
+# authored in route YAML and by the client, and evaluated only on the frontend
+# (the StatsRule union in v2/checks/evaluators.ts mirrors this tuple, and
+# test_vocab.py compares them), so a typo here has no backend consequence at
+# all — it silently produces a check that evaluates to `unknown` for the life
+# of the plan. Validated where the plan enters instead.
+STATS_RULES = ("sheet_detect", "flat_pattern", "bend_plan", "features")
+
 
 def _direction_set_value(selected):
     """Projection for a direction_set: the row indices into directions.npy.
@@ -178,6 +192,12 @@ def validate_plan(plan):
     op_ids = [op.get("id") for op in plan["operations"]]
     if len(op_ids) != len(set(op_ids)) or not all(op_ids):
         raise ValueError("operation ids must be unique and non-empty")
+    for op in plan["operations"]:
+        kind = op.get("kind")
+        if kind is not None and kind not in OPERATION_KINDS:
+            raise ValueError(
+                f"operation {op['id']}: unknown kind {kind!r} — "
+                f"known kinds: {', '.join(OPERATION_KINDS)}")
     check_ids = [c.get("id") for c in plan["checks"]]
     if len(check_ids) != len(set(check_ids)) or not all(check_ids):
         raise ValueError("check ids must be unique and non-empty")
@@ -192,6 +212,13 @@ def validate_plan(plan):
         if operation is not None and operation not in op_ids:
             raise ValueError(
                 f"check {check['id']}: unknown operation {operation!r}")
+        policy = check.get("policy") or {}
+        if isinstance(policy, dict) and policy.get("kind") == "stats":
+            rule = policy.get("rule")
+            if rule not in STATS_RULES:
+                raise ValueError(
+                    f"check {check['id']}: unknown stats rule {rule!r} — "
+                    f"known rules: {', '.join(STATS_RULES)}")
 
 
 def save_plan(workdir, plan, expected_revision):

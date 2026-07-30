@@ -6,8 +6,8 @@ import {
 } from '../../viewer/viewportState';
 import { armSectionSnap } from '../tools/sectionSnap';
 import { useV2 } from '../store';
+import { hintCls } from '../components/styles';
 
-const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 const sectionCls = 'text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400';
 const segActive = 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900';
 const segIdle = 'text-zinc-600 hover:bg-zinc-950/5 dark:text-zinc-300 dark:hover:bg-white/10';

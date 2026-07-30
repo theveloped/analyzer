@@ -5,6 +5,7 @@
 The file above is the operating manual for this repo — hard rules, commands, tests
 and conventions. Deeper references, in reading order per task:
 
+- docs/CONCEPTS.md — the vocabulary (lens, study, check, decision, operation…)
 - APPROACH.md — algorithm/methodology background (read before geometry changes)
 - TESTING.md — end-to-end workflows and performance knobs
 - docs/CODEMAP.md — file map, cache/data contracts, API routes, frontend seam

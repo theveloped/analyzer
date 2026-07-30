@@ -16,8 +16,8 @@ import {
   aggregateFor, aggregateVersion, showCoverage, subscribeAggregate,
 } from '../decisions/aggregate';
 import {
-  buildRows, cellOf, openCell, toolColumns,
-  toolKey, toolLabel, toolTitle, type Cell, type DirectionRow, type ToolSpec,
+  buildRows, columnsFor, openCell, toolColumns,
+  type Cell, type DirectionRow,
 } from '../decisions/columns';
 import { selectCandidates, useSelection } from '../decisions/directions';
 import {
@@ -26,30 +26,9 @@ import {
 import { SortableHeader } from '../table/SortableHeader';
 import { applyControls, useTableControls, type CellValue } from '../table/useTableControls';
 import { useBusy } from './run';
+import { focusCls, hintCls } from '../components/styles';
 
-const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
-// keyboard focus stays visible, mouse focus does not — clicking a value
-// should paint it, not leave a ring behind on the cell
-const focusCls = 'focus:outline-none focus-visible:rounded-xs '
-  + 'focus-visible:outline-2 focus-visible:outline-blue-500';
 const pct = (v: number) => `${(100 * v).toFixed(1)}%`;
-
-/** The value columns that live on every row, in render order. Tool columns
- * come after and are keyed by their index. */
-const COLUMNS = ['accessible', 'compatible', 'swept'];
-
-function cellTitle(row: DirectionRow, column: string): string | undefined {
-  const cell = cellOf(row, column);
-  if (column === 'accessible' && cell.state === 'missing') {
-    return 'Visibility is one array over the whole set, so computing it '
-      + 'covers every candidate';
-  }
-  if (column === 'swept' && row.qualified === false) {
-    return 'Below the swept-area gate — a fit carried by planes perpendicular '
-      + 'to the axis, not by a rotational sweep';
-  }
-  return undefined;
-}
 
 /** One cell: a cached number you can click to SEE, or the job that would
  * produce it. Either way the click ends with that thing painted in the
@@ -120,13 +99,15 @@ export function DirectionsTableRail() {
   const candidates: GeneratedDir[] = currentDirections;
   const selected = useSelection();
   const tools = toolColumns(manifest);
+  const columns = columnsFor(tools);
   const rows = buildRows(manifest, candidates, selected, tools);
 
+  const byKey = new Map(columns.map((c) => [c.key, c]));
   const valueOf = (row: DirectionRow, column: string): CellValue => {
     if (column === 'label') return row.label;
     if (column === 'source') return row.source;
-    const cell = cellOf(row, column);
-    return cell.state === 'value' ? cell.value : null;
+    const cell = byKey.get(column)?.cell(row);
+    return cell?.state === 'value' ? cell.value : null;
   };
   const shown = applyControls(rows, controls, valueOf);
 
@@ -219,34 +200,13 @@ export function DirectionsTableRail() {
                   onToggleSort={controls.toggleSort}
                   filter={controls.filters.source} onSetFilter={controls.setFilter}
                 />
-                <SortableHeader
-                  column="accessible" label="Visible" sort={controls.sort}
-                  onToggleSort={controls.toggleSort}
-                  filter={controls.filters.accessible}
-                  onSetFilter={controls.setFilter}
-                  title="Area-weighted share of the part visible from this direction"
-                />
-                <SortableHeader
-                  column="compatible" label="Revolvable" sort={controls.sort}
-                  onToggleSort={controls.toggleSort}
-                  filter={controls.filters.compatible}
-                  onSetFilter={controls.setFilter}
-                  title="Share of area compatible with a revolution about this axis — reads high on flat plates, which is why the swept column exists"
-                />
-                <SortableHeader
-                  column="swept" label="Swept" sort={controls.sort}
-                  onToggleSort={controls.toggleSort}
-                  filter={controls.filters.swept} onSetFilter={controls.setFilter}
-                  title="Share actually swept by a lathe about this axis — this is what separates a turned part from a plate"
-                />
-                {tools.map((tool: ToolSpec, t: number) => (
+                {columns.map((column) => (
                   <SortableHeader
-                    key={toolKey(tool)} column={`tool${t}`}
-                    label={toolLabel(tool)}
+                    key={column.key} column={column.key} label={column.label}
                     sort={controls.sort} onToggleSort={controls.toggleSort}
-                    filter={controls.filters[`tool${t}`]}
+                    filter={controls.filters[column.key]}
                     onSetFilter={controls.setFilter}
-                    title={toolTitle(tool)}
+                    title={column.title}
                   />
                 ))}
               </TableRow>
@@ -254,7 +214,7 @@ export function DirectionsTableRail() {
             <TableBody>
               {shown.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5 + tools.length} className="py-6 text-center text-zinc-500">
+                  <TableCell colSpan={2 + columns.length} className="py-6 text-center text-zinc-500">
                     No candidate matches the filters.
                   </TableCell>
                 </TableRow>
@@ -298,22 +258,14 @@ export function DirectionsTableRail() {
                   <TableCell className="text-zinc-500 dark:text-zinc-400">
                     {PROVENANCE_LABELS[row.source as SourceKind] ?? row.source}
                   </TableCell>
-                  {COLUMNS.map((column) => (
+                  {columns.map((column) => (
                     <ValueCell
-                      key={column}
-                      cell={cellOf(row, column)}
+                      key={column.key}
+                      cell={column.cell(row)}
                       busy={busy}
-                      dim={column === 'swept' && row.qualified === false}
-                      title={cellTitle(row, column)}
+                      dim={column.dim?.(row)}
+                      title={column.cellTitle?.(row)}
                       onOpen={() => openCell(row, column, candidates, tools)}
-                    />
-                  ))}
-                  {tools.map((tool: ToolSpec, t: number) => (
-                    <ValueCell
-                      key={toolKey(tool)}
-                      cell={row.reach[t]}
-                      busy={busy}
-                      onOpen={() => openCell(row, `tool${t}`, candidates, tools)}
                     />
                   ))}
                 </TableRow>
@@ -328,10 +280,10 @@ export function DirectionsTableRail() {
                   <TableCell className="text-zinc-500 dark:text-zinc-400">
                     covered by any
                   </TableCell>
-                  {[...COLUMNS, ...tools.map((_, t) => `tool${t}`)].map((column) => {
-                    const cell = aggregate[column];
+                  {columns.map((column) => {
+                    const cell = aggregate[column.key];
                     return (
-                      <TableCell key={column} className="tabular-nums font-medium">
+                      <TableCell key={column.key} className="tabular-nums font-medium">
                         {cell?.value == null ? (
                           <span
                             className="text-zinc-400"
