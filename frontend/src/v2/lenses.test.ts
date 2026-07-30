@@ -1,3 +1,5 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { PROCESS_PLUGINS } from '../registry';
 import { CURATION, LENSES } from './lenses';
@@ -31,5 +33,33 @@ describe('lens registry', () => {
   it('gives every lens a unique key', () => {
     const keys = LENSES.map((lens) => lens.key);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+/**
+ * A route template names the lens each of its checks opens. The backend cannot
+ * check that — the lens registry only exists here — so a template naming a lens
+ * that was renamed or removed would silently open nothing. Read as text: a YAML
+ * parser is not a dependency worth adding for one key.
+ *
+ * The Python half is `test_vocab.py`, which checks the same templates' analysis
+ * ids, operation kinds and stats rules against the registry and `plans.py`.
+ */
+describe('route templates', () => {
+  const dir = fileURLToPath(new URL('../../../catalogue/routes/', import.meta.url));
+  const files = readdirSync(dir).filter((n) => n.endsWith('.yaml'));
+
+  it('has templates to check', () => {
+    expect(files.length, `no route templates in ${dir}`).toBeGreaterThan(0);
+  });
+
+  it.each(files)('%s names only lenses that exist', (file) => {
+    const text = readFileSync(dir + file, 'utf-8');
+    const named = [...text.matchAll(/^\s*lens:\s*(\S+)/gm)].map((m) => m[1]);
+    const keys = new Set(LENSES.map((lens) => lens.key));
+    expect(named.length, 'no lens: keys found — has the syntax changed?')
+      .toBeGreaterThan(0);
+    expect(named.filter((key) => !keys.has(key)), 'unknown lens keys')
+      .toEqual([]);
   });
 });

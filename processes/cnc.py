@@ -9,8 +9,8 @@ from processes.base import (AnalysisDef, AnalysisResult, Param, ProcessDef,
 SETUPS_SCHEMA = 3  # result schema version, salted into the cache key
 FEATURES_SCHEMA = 2  # keep in sync with frontend/src/processes/cnc/features.ts
 REACH_STUDY_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/reach.ts
-TURNING_SCHEMA = 2  # keep in sync with frontend/src/processes/cnc/turning.ts
-TURNING_SCAN_SCHEMA = 2  # keep in sync with frontend/src/v2/decisions/columns.ts
+TURNING_SCHEMA = 2  # keep in sync with frontend/src/processes/cnc/turning.tsx
+TURNING_SCAN_SCHEMA = 2  # no frontend mirror: the scan is read per result hash
 HULL_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/hull.ts
 
 # default library: 3 flat endmills + 2 ball mills, each at its longest

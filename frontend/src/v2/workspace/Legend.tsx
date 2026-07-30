@@ -1,7 +1,9 @@
+import clsx from 'clsx';
 import { COL } from '../../colorizers/core';
 import type { LegendEntry, RGB } from '../../registry/types';
 import { useStore } from '../../state/store';
 import { flyToFocus, selectLegendGroup } from '../../viewer/controller';
+import { hintCls } from '../components/styles';
 import { useActiveAnalysis, useActiveLens, useCheckActive, useDirectionsActive } from './hooks';
 
 const rgbCss = (c: RGB | readonly number[]) =>
@@ -71,7 +73,7 @@ export function Legend() {
         {showLimit && (
           <div className={`mt-1 ${sub}`}>▎limit {threshold} {unit}</div>
         )}
-        <div className="mt-1.5 flex items-center gap-2 text-xs/5 text-zinc-500 dark:text-zinc-400">
+        <div className={clsx('mt-1.5 flex items-center gap-2', hintCls)}>
           <span className="size-2.5 rounded-[3px] ring-1 ring-black/10" style={{ background: rgbCss(COL.inaccess) }} />
           no data
         </div>

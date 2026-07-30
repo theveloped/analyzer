@@ -121,6 +121,7 @@ python test_pressbrake.py    # press-brake core: kinematics, envelopes, tooling,
 python test_bendplan.py      # bend-plan adapter + analysis on STEP fixtures
 python test_plan.py          # production-plan sidecars: revisions, dispositions, check status, impact
 python test_reach.py         # cnc/reach_study: per-(direction, tool) masks vs compose_tool
+python test_vocab.py         # controlled vocabularies: every Python frozenset vs its TS union
 ```
 
 They build synthetic parts with known-correct answers and assert on them; a green
@@ -144,8 +145,11 @@ styles/section/measure pixel checks) walk the UI against a running server
   checked where the value ENTERS: `Param.__post_init__`, `AnalysisDef.__post_init__`,
   `store_result`, `validate_plan`, or a Pydantic `Literal` on the request model.
   An unknown value must raise — the failure mode being designed out is a typo that
-  is accepted and then silently does nothing. Frontend mirrors are TS unions, kept
-  honest by a test (`v2/lenses.test.ts` is the pattern) rather than a comment.
+  is accepted and then silently does nothing. Frontend mirrors are NAMED TS unions
+  (`export type FieldRole = …`, never inline in an interface member) and
+  `test_vocab.py` parses each one and asserts it equals the Python set — a test,
+  not a comment. `v2/lenses.test.ts` does the same for what only exists on the
+  frontend: lens keys, including the ones route templates name.
 - Frontend: TypeScript strict, zustand store, no CSS framework (plain
   `styles.css`). View modes paint via `ctx.paintFaces` / heatmap helpers in
   `colorizers/core.ts`; interactive thresholds recompute client-side from cached

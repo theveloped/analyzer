@@ -14,18 +14,18 @@ buttons:
   user buttons merely because they appear in the backend registry.
 - **Analyses** own computation. They surface as Run/Re-run actions in a rail, as
   plan checks, or through a lens that materializes the analysis.
-- **Lenses** are the current inspection-tool buttons. `v2/lenses.ts` builds **40
+- **Lenses** are the current inspection-tool buttons. `v2/lenses.ts` builds **41
   runtime lenses**. Eight are duplicated as always-visible icon buttons; the
-  searchable Wrench menu lists all 40 and hides five advanced lenses until
+  searchable Wrench menu lists all 41 and hides seven advanced lenses until
   Advanced mode is enabled.
 - **Candidate directions** is an additional dedicated toolbar button backed by the
-  hidden `directions:directions` mode. It is intentionally outside the 40-item
+  hidden `directions:directions` mode. It is intentionally outside the 41-item
   runtime lens list.
 - **Checks** are policy-bearing cards in the left pipeline, not additional viewer
   toolbar icons. Their icons come from `v2/analyses.ts` and
   `v2/checks/catalog.ts`.
 
-The practical icon-review set is therefore: the 40 lens meanings below, the
+The practical icon-review set is therefore: the 41 lens meanings below, the
 candidate-directions button, viewport controls, navigation/actions, and plan/check
 cards.
 
@@ -165,7 +165,9 @@ is deliberately left open for the design review.
 | `setups` | Setup assignment (3-axis / 3+2) | `Axis3d` | Menu; shared with operation reach | — |
 | `features` | Machined features | `Drill` | Menu | — |
 | `turning` | Turning roles | `Disc3` | Menu | — |
-| `turning_residual` | Revolution error | `CircleDot` | Advanced menu | — |
+| `turning_residual` | Revolution error | `CircleDot` | Advanced menu; same icon as axis role | — |
+| `axis_role` | Turnability about one axis | `CircleDot` | Advanced menu; same icon as revolution error | — |
+| `coverage` | Combined coverage | `ShieldCheck` | Advanced menu; painted from a study total | — |
 | `hull` | Convex hull faces | `Box` | Menu | — |
 | `reach_study` | Reach study (direction × tool) | `Eye` | Menu; shared with accessibility | — |
 | `reach_op` | Operation reach (any tool in cone) | `Axis3d` | Menu; shared with setups | — |
@@ -175,7 +177,6 @@ is deliberately left open for the design review.
 | `class` | Surface class (normal vs direction) | `Layers` | Menu; heavily reused icon | — |
 | `gap` | Tip gap heatmap | `Spline` | Menu | — |
 | `stickout` | Required stickout heatmap | `MoveVertical` | Menu | — |
-| `thinSpan` | Thin span / stiffness heatmap | `Waves` | Menu; duplicate of Geometry lens | — |
 
 ### Injection molding
 
@@ -207,17 +208,17 @@ is deliberately left open for the design review.
 | `tube_roles` | Shell roles | `Layers` | Menu; heavily reused icon | — |
 | `cut_pattern` | Cut pattern (unrolled) | `Scissors` | Menu | — |
 
-### Icon reuse inside the 40 lenses
+### Icon reuse inside the 41 lenses
 
-The 40 runtime lenses currently use 30 distinct Lucide icons. Reuse is:
+The 41 runtime lenses currently use 30 distinct Lucide icons. Reuse is:
 
 - `Layers`: 4 meanings — mold assignment, CNC surface class, sheet roles, tube roles.
+- `ShieldCheck`: 3 — unified verdict, route reach and combined coverage.
 - `Spline`: 2 — wall clearance and CNC tip gap.
 - `Radius`: 2 — ray gap and sheet bend radius.
-- `Waves`: 2 — the duplicated thin-span lenses.
 - `Compass`: 2 — thickness angle and gap angle.
 - `Axis3d`: 2 — setup assignment and operation reach.
-- `ShieldCheck`: 2 — unified verdict and route reach.
+- `CircleDot`: 2 — revolution error and turnability about one axis.
 - `Eye`: 2 — accessibility and reach study.
 
 Some reuse is a useful family relationship; some produces indistinguishable

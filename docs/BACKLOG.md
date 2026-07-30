@@ -507,15 +507,24 @@ resolves through `describeCheck`. Frontend `npx tsc -b`, `npm test`.
 ### 21. Schema mirrors are hand-maintained and already wrong
 
 **Problem.** Every cross-side schema int is duplicated by hand with a
-"keep in sync" comment and nothing asserts it. The two unread
-`TURNING_SCAN_SCHEMA` copies (which disagreed with each other) are gone;
-the remaining mirrors are read, so drift in them is a live bug rather than
-an invisible one. `DEFAULT_TOOLS` (`v2/checks/catalog.ts:29`) is a
-hand-copy of `processes/cnc.py` with no test.
+"keep in sync" comment and nothing asserts it. The frontend's unread
+`TURNING_SCAN_SCHEMA` copy is gone (`processes/cnc.py` keeps the one that
+salts the cache key, now marked as having no mirror); every remaining pair
+is *read* on both sides, so drift in one is a live bug rather than an
+invisible one. The live pairs: `SETUPS_SCHEMA`, `FEATURES_SCHEMA`,
+`REACH_STUDY_SCHEMA`/`REACH_SCHEMA`, `TURNING_SCHEMA`, `HULL_SCHEMA`,
+`MOLD_SCHEMA`, `SHEET_SCHEMA`, `BENDPLAN_SCHEMA`, `TUBE_SCHEMA`,
+`FLOW_SCHEMA` (and `PMI_SCHEMA`, mirrored only in a `types.ts` comment) —
+all equal as of writing, none enforced. A test cannot just pair up equal
+names: `REACH_STUDY_SCHEMA` is `REACH_SCHEMA` on the other side, and the
+mold version lives in *three* places (`processes/injection_molding.py`
+`MOLD_SCHEMA`, `pipeline.py` `MOLD_STATS_SCHEMA`, the frontend constant).
 
 **Where to start.** Either serve the schema ints in `/api/processes`
-(they are already on `AnalysisDef.schema`) and read them, or add a test
-that parses both sides and asserts equality.
+(they are already on `AnalysisDef.schema`) and read them, or extend
+`test_vocab.py` — it already parses the TS side for the string
+vocabularies, so the int pairs are the same mechanism with a different
+regex.
 
 **Verify.** A test that fails if any `*_SCHEMA` differs across the seam.
 

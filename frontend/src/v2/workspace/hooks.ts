@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { postPlanMachine, putPlan } from '../../api/client';
 import type {
-  Plan, PlanCheck, PlanCheckStatus, PlanOperation, PlanSection,
+  OperationKind, Plan, PlanCheck, PlanCheckStatus, PlanOperation, PlanSection,
 } from '../../api/types';
 import { useStore } from '../../state/store';
 import { refreshManifest } from '../../viewer/controller';
@@ -280,7 +280,7 @@ export async function applyPlanEdit(edit: Partial<Plan>) {
 /** The standard checks an operation of a kind brings along — the same set
  * the route templates seed, so hand-built routes behave identically. */
 function defaultChecksFor(
-  kind: string, opId: string,
+  kind: OperationKind, opId: string,
   machineData: Record<string, any>, snapshotPath: string | null,
 ): PlanCheck[] {
   if (kind === 'laser') {
@@ -318,7 +318,7 @@ function defaultChecksFor(
 
 export interface AddOperationInput {
   label: string;
-  kind: string;
+  kind: OperationKind;
   machine?: string | null;
   directionIndex?: number | null;
 }

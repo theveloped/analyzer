@@ -148,20 +148,14 @@ export async function evaluateReachOp(
   };
 }
 
-/** Stats-verdict checks: judged directly from the stored result's stats
- * (sheet detection / flat pattern / bend plan / feature recognition).
- * Findings carry stable per-reason ids so dispositions survive re-runs. */
 /** The stats-rule vocabulary. Two tables are keyed by it — the evaluators
  * below and the card presentation in `catalog.ts` — so TS refuses a rule that
- * has logic but no label, or a label with no logic. `plans.py` validates the
- * same names where a plan enters, so a typo in a route YAML raises instead of
- * seeding a check that quietly evaluates to `unknown` forever. */
+ * has logic but no label, or a label with no logic. `plans.py` `STATS_RULES`
+ * validates the same names where a plan enters, so a typo in a route YAML
+ * raises instead of seeding a check that quietly evaluates to `unknown`
+ * forever; `test_vocab.py` asserts the two sides list the same rules. */
 export type StatsRule = 'sheet_detect' | 'flat_pattern' | 'bend_plan'
   | 'features';
-
-export const STATS_RULES: StatsRule[] = [
-  'sheet_detect', 'flat_pattern', 'bend_plan', 'features',
-];
 
 /** Emits a finding under this check's identity. */
 type Emit = (code: string, label: string, detail: string) => Finding;
@@ -216,6 +210,9 @@ export function isStatsRule(rule: string): rule is StatsRule {
   return Object.prototype.hasOwnProperty.call(STATS_EVALUATORS, rule);
 }
 
+/** Stats-verdict checks: judged directly from the stored result's stats
+ * (sheet detection / flat pattern / bend plan / feature recognition).
+ * Findings carry stable per-reason ids so dispositions survive re-runs. */
 export function evaluateStatsCheck(
   rule: string, check: PlanCheck, result: ResultEntry | null,
 ): Evaluation {

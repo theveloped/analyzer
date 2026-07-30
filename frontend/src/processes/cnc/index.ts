@@ -96,8 +96,6 @@ export const cncPlugin: ProcessPlugin = {
     stickout: '',
     holder: '',
     scale: '',
-    maxSpanRatio: 5.0,
-    spanScale: '',
     rule: 'all',
     wallTol: 1.0,
     sideMill: true,

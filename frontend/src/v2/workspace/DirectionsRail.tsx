@@ -215,7 +215,7 @@ export function DirectionsRail() {
       {stats && (
         <div className="mt-auto">
           <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">In view</div>
-          <p className="whitespace-pre-wrap text-xs/5 text-zinc-500 dark:text-zinc-400">{stats}</p>
+          <p className={clsx('whitespace-pre-wrap', hintCls)}>{stats}</p>
         </div>
       )}
     </div>

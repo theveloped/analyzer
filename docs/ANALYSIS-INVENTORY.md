@@ -7,7 +7,7 @@ docs/CODEMAP.md. When code and this
 file disagree, the code wins.
 
 UI companion: [V2 button and icon inventory](V2-BUTTON-ICON-INVENTORY.md) —
-current button styling, all 40 lens icons, and the viewer/action icon review sheet.
+current button styling, all 41 lens icons, and the viewer/action icon review sheet.
 
 ## The layers
 
@@ -111,7 +111,7 @@ Also non-registry but part of the currency: `face_splits.json` → `subfaces.npy
 
 ---
 
-## C. Lens registry (40) → backing analysis
+## C. Lens registry (41) → backing analysis
 
 Built by `v2/lenses.ts` from `ProcessPlugin.modes` + a curation overlay. Shared
 modes (`brep_faces`, `face_attrs`, `pmi`, `highlights`) are hosted once under
@@ -136,6 +136,8 @@ modes (`brep_faces`, `face_attrs`, `pmi`, `highlights`) are hosted once under
 | cnc      | `features`              | cnc/features                                                               |        |                                        |
 | cnc      | `turning`               | cnc/turning                                                                |        |                                        |
 | cnc      | `turning_residual`      | cnc/turning                                                                |        | advanced                               |
+| cnc      | `axis_role`             | cnc/turning_scan                                                           |        | advanced, pinned by `scanHash`+`scanAxis` |
+| cnc      | `coverage`              | whichever masks the study total unioned                                    |        | advanced, painted from a study footer  |
 | cnc      | `hull`                  | cnc/hull                                                                   |        |                                        |
 | cnc      | `reach_study`           | cnc/reach_study                                                            |        | one (d × t) mask                       |
 | cnc      | `reach_op`              | cnc/reach_study                                                            |        | cone-sliced                            |
@@ -145,7 +147,6 @@ modes (`brep_faces`, `face_attrs`, `pmi`, `highlights`) are hosted once under
 | cnc      | `class`                 | cnc/precompute (zcache)                                                    |        | legacy                                 |
 | cnc      | `gap`                   | cnc/precompute (zcache)                                                    |        | legacy                                 |
 | cnc      | `stickout`              | cnc/precompute (zcache)                                                    |        | legacy                                 |
-| cnc      | `thinSpan`              | injection_molding/thin_span                                                |        | **duplicate of the geometry lens**     |
 | molding  | `assignment`            | injection_molding/mold_orientation                                         |        | parting-line optimizer + splits        |
 | molding  | `sprue`                 | injection_molding/sprue_proposals                                          |        |                                        |
 | molding  | `flowFill`              | injection_molding/flow_fill                                                |        | gate picked in-view                    |
@@ -182,7 +183,7 @@ Three evaluator kinds in `v2/checks/evaluators.ts`, dispatched by
 Route template `catalogue/routes/laser_cnc_brake.yaml` wires: sheet detect →
 flat pattern → cnc features → reach (op-scoped, feature-masked) → bend plan.
 
-**So 9 of 25 analyses can become a check. The other 16 are lens-only.**
+**So 9 of 24 analyses can become a check. The other 15 are lens-only.**
 
 ---
 

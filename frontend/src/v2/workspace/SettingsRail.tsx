@@ -223,7 +223,7 @@ export function SettingsRail() {
         ) : error ? (
           <p className="whitespace-pre-wrap text-xs/5 text-red-600 dark:text-red-500">⚠ {error}</p>
         ) : stats ? (
-          <p className="whitespace-pre-wrap text-xs/5 text-zinc-500 dark:text-zinc-400">{stats}</p>
+          <p className={clsx('whitespace-pre-wrap', hintCls)}>{stats}</p>
         ) : (
           <p className={hintCls}>
             {computed ? 'Adjust the limit or inspect faces in the viewer.' : 'Run the check to see findings.'}

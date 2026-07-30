@@ -1,3 +1,4 @@
+import clsx from 'clsx';
 import { useEffect, useState } from 'react';
 import { postPlanImpact } from '../../api/client';
 import type { Plan } from '../../api/types';
@@ -8,6 +9,7 @@ import {
 import { useStore } from '../../state/store';
 import { describeCheck } from '../checks/catalog';
 import { StatusBadge } from '../components/status';
+import { hintCls } from '../components/styles';
 import { applyPlanEdit, usePlanSection } from './hooks';
 
 /** One staged plan edit awaiting confirmation. */
@@ -90,7 +92,7 @@ export function ImpactModal({ edit, onClose }: {
                 </StatusBadge>
               </div>
             ))}
-            <p className="mt-1 text-xs/5 text-zinc-500 dark:text-zinc-400">
+            <p className={clsx('mt-1', hintCls)}>
               {rows.some((r) => r.outcome === 'recomputes')
                 ? OUTCOME_HINT.recomputes + ' for the flagged checks — results '
                   + 'land under new hashes; nothing is overwritten.'

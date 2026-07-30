@@ -82,14 +82,15 @@ DECISION_STATES = ("provisional", "selected", "locked")
 # What kind of thing an operation is. Dispatches the default checks
 # (v2/workspace/hooks.ts defaultChecksFor) and the card icon, so an unknown
 # kind used to produce a card with no checks and no icon rather than an error.
+# Mirrored as OperationKind in frontend/src/api/types.ts (test_vocab.py).
 OPERATION_KINDS = ("laser", "cnc_setup", "press_brake")
 
 # A stats check names the RULE that reads its analysis's stats. The rule is
 # authored in route YAML and by the client, and evaluated only on the frontend
-# (v2/checks/evaluators.ts STATS_RULES, the mirror of this tuple), so a typo
-# here has no backend consequence at all — it silently produces a check that
-# evaluates to `unknown` for the life of the plan. Validated where the plan
-# enters instead.
+# (the StatsRule union in v2/checks/evaluators.ts mirrors this tuple, and
+# test_vocab.py compares them), so a typo here has no backend consequence at
+# all — it silently produces a check that evaluates to `unknown` for the life
+# of the plan. Validated where the plan enters instead.
 STATS_RULES = ("sheet_detect", "flat_pattern", "bend_plan", "features")
 
 
