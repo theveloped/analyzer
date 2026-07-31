@@ -1,7 +1,7 @@
-import { readdirSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { PROCESS_PLUGINS } from '../registry';
+import { ANALYSES } from './analyses';
+import { FIELD_LENSES } from './fieldLenses';
 import { CURATION, LENSES } from './lenses';
 
 /**
@@ -37,28 +37,24 @@ describe('lens registry', () => {
 });
 
 /**
- * A route template names the lens each of its checks opens. The backend cannot
- * check that — the lens registry only exists here — so a template naming a lens
- * that was renamed or removed would silently open nothing. Read as text: a YAML
- * parser is not a dependency worth adding for one key.
- *
- * The Python half is `test_vocab.py`, which checks the same templates' analysis
- * ids, operation kinds and stats rules against the registry and `plans.py`.
+ * Lens keys named in CODE. The backend cannot check these — the lens registry
+ * only exists here — so a key left behind by a rename would silently open
+ * nothing. Route templates used to be the other namer of lens keys; with them
+ * gone, the field lenses and the check catalog are what remain.
  */
-describe('route templates', () => {
-  const dir = fileURLToPath(new URL('../../../catalogue/routes/', import.meta.url));
-  const files = readdirSync(dir).filter((n) => n.endsWith('.yaml'));
+describe('lens keys named in code', () => {
+  const keys = new Set(LENSES.map((lens) => lens.key));
 
-  it('has templates to check', () => {
-    expect(files.length, `no route templates in ${dir}`).toBeGreaterThan(0);
+  it('every field lens points at a real lens', () => {
+    const named = Object.values(FIELD_LENSES).map((def) => def.lensKey);
+    expect(named.length, 'no field lenses found').toBeGreaterThan(0);
+    expect(named.filter((key) => !keys.has(key)), 'unknown lens keys')
+      .toEqual([]);
   });
 
-  it.each(files)('%s names only lenses that exist', (file) => {
-    const text = readFileSync(dir + file, 'utf-8');
-    const named = [...text.matchAll(/^\s*lens:\s*(\S+)/gm)].map((m) => m[1]);
-    const keys = new Set(LENSES.map((lens) => lens.key));
-    expect(named.length, 'no lens: keys found — has the syntax changed?')
-      .toBeGreaterThan(0);
+  it('every catalog analysis has a lens of its own id', () => {
+    const named = ANALYSES.map((a) => `${a.process}:${a.id}`);
+    expect(named.length, 'no catalog analyses found').toBeGreaterThan(0);
     expect(named.filter((key) => !keys.has(key)), 'unknown lens keys')
       .toEqual([]);
   });

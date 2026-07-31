@@ -5,12 +5,12 @@ import {
 import { create } from 'zustand';
 import { useStore } from '../../state/store';
 import type {
-  Manifest, Plan, PlanCheck, PlanCheckStatus, PlanOperation,
+  Manifest, Route, RouteCheck, RouteCheckStatus, Operation,
 } from '../../api/types';
 import { fetchField } from '../../fields/fields';
 import type { ReachCtx } from '../../processes/cnc/reach';
 import { ANALYSES, type Analysis } from '../analyses';
-import type { ToolSpec } from '../decisions/columns';
+import type { ToolSpec } from '../table/columns';
 import { FIELD_LENSES, type FieldLensDef } from '../fieldLenses';
 import {
   evaluateBandCheck, evaluateCheck, evaluateReachOp, evaluateReachRoute,
@@ -19,12 +19,12 @@ import {
 import { resultForHash } from './status';
 
 /**
- * Check descriptors: how a plan check presents (label/icon), which lens it
+ * Check descriptors: how a route check presents (label/icon), which lens it
  * activates with what scope bound in, and how its verdict is evaluated.
  * Threshold checks evaluate synchronously from stats; reach checks union
  * cached masks asynchronously, memoized by the eval key
  * (expected result hash + policy + the operation config it interprets) —
- * the derivation-cache identity from docs/PLAN-ARCHITECTURE.md.
+ * the derivation-cache identity from docs/ROUTE-ARCHITECTURE.md.
  */
 
 /** The tool library, read from the served registry rather than mirrored: it
@@ -63,7 +63,7 @@ export interface CheckView {
   };
 }
 
-export function catalogAnalysisFor(check: PlanCheck): Analysis | null {
+export function catalogAnalysisFor(check: RouteCheck): Analysis | null {
   return ANALYSES.find(
     (a) => `${a.process}/${a.analysis}` === check.analysis) ?? null;
 }
@@ -82,8 +82,8 @@ const STATS_VIEWS: Record<StatsRule, { label: string; blurb: string;
     blurb: 'Unfolds cleanly: developable, closed outline, volume preserved.',
   },
   bend_plan: {
-    label: 'Bend plan', icon: ListOrdered,
-    blurb: 'A feasible tooling + sequence exists on the plan\'s machine.',
+    label: 'Bend route', icon: ListOrdered,
+    blurb: 'A feasible tooling + sequence exists on the route\'s machine.',
   },
   features: {
     label: 'Feature recognition', icon: Drill,
@@ -92,12 +92,12 @@ const STATS_VIEWS: Record<StatsRule, { label: string; blurb: string;
 };
 
 /** A check's preferred lens ("processId:modeId") as an activation target. */
-function lensTarget(check: PlanCheck, params: Record<string, unknown> = {}) {
+function lensTarget(check: RouteCheck, params: Record<string, unknown> = {}) {
   const [processId, modeId] = (check.lens ?? ':').split(':');
   return () => ({ processId, modeId, params });
 }
 
-export function describeCheck(check: PlanCheck, plan: Plan): CheckView | null {
+export function describeCheck(check: RouteCheck, route: Route): CheckView | null {
   const rule = check.policy?.kind === 'stats'
     ? String(check.policy?.rule ?? '') : null;
   if (rule) {
@@ -139,11 +139,11 @@ export function describeCheck(check: PlanCheck, plan: Plan): CheckView | null {
   if (check.analysis !== 'cnc/reach_study') return null;
   const scope = (check.policy?.scope ?? 'study') as string;
   if (scope === 'operation') {
-    const op = plan.operations.find((o) => o.id === check.operation);
+    const op = route.operations.find((o) => o.id === check.operation);
     return {
       kind: 'reach_op',
       label: `Reach — ${op?.label ?? check.operation ?? '?'}`,
-      blurb: 'Faces no library tool reaches within this operation\'s cone.',
+      blurb: 'Faces no library tool reaches from this operation\'s direction.',
       icon: Axis3d,
       tier: 'primary',
       analysis: null,
@@ -151,8 +151,7 @@ export function describeCheck(check: PlanCheck, plan: Plan): CheckView | null {
         processId: 'cnc', modeId: 'reach_op',
         params: {
           reachHash: hash,
-          opPrimary: op?.config?.direction_index ?? null,
-          opTilt: op?.config?.tilt ?? 90,
+          opDirection: op?.config?.direction_index ?? null,
           reachFeatureMask: check.policy?.mask === 'features',
         },
       }),
@@ -168,7 +167,7 @@ export function describeCheck(check: PlanCheck, plan: Plan): CheckView | null {
       analysis: null,
       activate: (hash) => ({
         processId: 'cnc', modeId: 'reach_aggregate',
-        params: { reachHash: hash, reachOps: routeOps(plan) },
+        params: { reachHash: hash, reachOps: routeOps(route) },
       }),
     };
   }
@@ -187,14 +186,15 @@ export function describeCheck(check: PlanCheck, plan: Plan): CheckView | null {
   };
 }
 
-/** The lens-facing op list for the aggregate view. */
-export function routeOps(plan: Plan) {
-  return plan.operations
-    .filter((op) => op.kind === 'cnc_setup'
+/** The lens-facing op list for the aggregate view. Operations are ATOMIC —
+ * one approach direction each — so the aggregate unions the directions
+ * actually authored rather than every direction inside a tilt cone. */
+export function routeOps(route: Route) {
+  return route.operations
+    .filter((op) => op.kind === 'milling'
       && Number.isFinite(Number(op.config?.direction_index)))
     .map((op) => ({
-      primary: Number(op.config!.direction_index),
-      tilt: Number(op.config?.tilt ?? 90),
+      direction: Number(op.config!.direction_index),
       label: op.label ?? op.id,
     }));
 }
@@ -220,11 +220,11 @@ function reachCtx(manifest: Manifest, expectedHash: string): ReachCtx | null {
   };
 }
 
-function opFor(check: PlanCheck, plan: Plan): PlanOperation | null {
-  return plan.operations.find((o) => o.id === check.operation) ?? null;
+function opFor(check: RouteCheck, route: Route): Operation | null {
+  return route.operations.find((o) => o.id === check.operation) ?? null;
 }
 
-function checkRef(check: PlanCheck): { process: string; analysis: string } {
+function checkRef(check: RouteCheck): { process: string; analysis: string } {
   const [process, analysis] = check.analysis.split('/');
   return { process, analysis };
 }
@@ -296,7 +296,7 @@ function runMemoized(
  * a check pinned to an expected hash is not answerable from another result.
  */
 function evaluateResolved(
-  view: CheckView, check: PlanCheck, status: PlanCheckStatus | undefined,
+  view: CheckView, check: RouteCheck, status: RouteCheckStatus | undefined,
   manifest: Manifest,
 ): Evaluation | null {
   if (view.kind === 'stats') {
@@ -325,7 +325,7 @@ function evaluateResolved(
 }
 
 /** The pinned band, or null when the check is a plain threshold. */
-function bandOf(view: CheckView, check: PlanCheck): FieldLensDef | null {
+function bandOf(view: CheckView, check: RouteCheck): FieldLensDef | null {
   const a = view.analysis;
   const def = a ? FIELD_LENSES[`${a.process}:${a.id}`] : undefined;
   const band = (check.policy?.band ?? null) as
@@ -337,7 +337,7 @@ function bandOf(view: CheckView, check: PlanCheck): FieldLensDef | null {
 /** The half that walks fields or masks. Only reached with a pinned hash and,
  * for a band, a result that matches it. */
 async function evaluateDeferred(
-  view: CheckView, check: PlanCheck, plan: Plan, hash: string,
+  view: CheckView, check: RouteCheck, route: Route, hash: string,
   manifest: Manifest,
 ): Promise<Evaluation> {
   if (view.kind === 'threshold' && view.analysis) {
@@ -349,28 +349,28 @@ async function evaluateDeferred(
   const ctx = reachCtx(manifest, hash);
   if (!ctx) return { verdict: 'unknown', findings: [] };
   if (view.kind === 'reach_op') {
-    const op = opFor(check, plan);
+    const op = opFor(check, route);
     if (!op) return { verdict: 'unknown', findings: [] };
     const mask = check.policy?.mask === 'features'
       ? await featureMaskOf(manifest) : null;
     return evaluateReachOp(ctx, check, op, mask);
   }
-  return evaluateReachRoute(ctx, check, plan.operations);
+  return evaluateReachRoute(ctx, check, route.operations);
 }
 
 /** Memo key: the pinned result, the policy, and whatever else the deferred
  * half reads — the operation config it slices, and the features result when
  * the policy masks by it. */
 function deferredKey(
-  view: CheckView, check: PlanCheck, plan: Plan, hash: string,
+  view: CheckView, check: RouteCheck, route: Route, hash: string,
   manifest: Manifest,
 ): string {
   if (view.kind === 'threshold') {
     return ['band', check.id, hash, JSON.stringify(check.policy ?? {})].join('|');
   }
   const scopeConfig = view.kind === 'reach_op'
-    ? opFor(check, plan)?.config ?? {}
-    : routeOps(plan);
+    ? opFor(check, route)?.config ?? {}
+    : routeOps(route);
   const featuresHash = check.policy?.mask === 'features'
     ? latestFeatures(manifest)?.hash ?? 'none' : '';
   return ['reach', check.id, hash, featuresHash,
@@ -379,30 +379,30 @@ function deferredKey(
 
 /** Non-hook evaluation (the publish flow): run to completion. */
 export async function evaluateNow(
-  check: PlanCheck, plan: Plan, status: PlanCheckStatus | undefined,
+  check: RouteCheck, route: Route, status: RouteCheckStatus | undefined,
   manifest: Manifest,
 ): Promise<Evaluation> {
-  const view = describeCheck(check, plan);
+  const view = describeCheck(check, route);
   if (!view) return { verdict: 'unknown', findings: [] };
   const resolved = evaluateResolved(view, check, status, manifest);
   if (resolved) return resolved;
-  return evaluateDeferred(view, check, plan, status!.expected_hash!, manifest);
+  return evaluateDeferred(view, check, route, status!.expected_hash!, manifest);
 }
 
-/** Evaluation of a plan check against its pinned policy. Plain threshold and
+/** Evaluation of a route check against its pinned policy. Plain threshold and
  * stats checks resolve synchronously; band and reach checks return null while
  * their field/mask math is in flight and re-render via the eval tick when
  * done. */
 export function useCheckEvaluation(
-  check: PlanCheck, plan: Plan, status: PlanCheckStatus | undefined,
+  check: RouteCheck, route: Route, status: RouteCheckStatus | undefined,
   manifest: Manifest | null,
 ): Evaluation | null {
   useEvalTick((s) => s.n); // re-read the memo when an evaluation lands
-  const view = describeCheck(check, plan);
+  const view = describeCheck(check, route);
   if (!view || !manifest) return { verdict: 'unknown', findings: [] };
   const resolved = evaluateResolved(view, check, status, manifest);
   if (resolved) return resolved;
   const hash = status!.expected_hash!;
-  return runMemoized(deferredKey(view, check, plan, hash, manifest),
-    () => evaluateDeferred(view, check, plan, hash, manifest));
+  return runMemoized(deferredKey(view, check, route, hash, manifest),
+    () => evaluateDeferred(view, check, route, hash, manifest));
 }

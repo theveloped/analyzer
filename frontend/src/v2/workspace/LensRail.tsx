@@ -80,7 +80,7 @@ function RunBacking({ lens }: { lens: Lens }) {
  * The right rail for an active inspection lens: label/blurb, the shared
  * paint stats, and — when the hosting plugin ships a Controls panel — a
  * Configure section rendering that panel verbatim under the `.v1-controls`
- * scope (the visual seam is accepted for now; see docs/PLAN-ARCHITECTURE.md).
+ * scope (the visual seam is accepted for now; see docs/ROUTE-ARCHITECTURE.md).
  */
 export function LensRail() {
   const lens = useActiveLens();

@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
-  Boxes, ClipboardCheck, FileText, FolderKanban, Layers, Moon, Package,
+  Boxes, ClipboardCheck, FolderKanban, Layers, Moon, Package,
   Plus, RefreshCw, SlidersHorizontal, Sun, Upload, Wrench,
 } from 'lucide-react';
 import {
@@ -8,8 +8,8 @@ import {
   SidebarItem, SidebarLabel, SidebarSection, SidebarSpacer,
 } from '../../catalyst/sidebar';
 import { Switch } from '../../catalyst/switch';
-import { cancelJob, fetchReports } from '../../api/client';
-import type { Part, ReportSummary } from '../../api/types';
+import { cancelJob } from '../../api/client';
+import type { Part } from '../../api/types';
 import { useStore } from '../../state/store';
 import { selectPart } from '../../viewer/controller';
 import { reprocessPart, uploadAndSelect } from '../../viewer/jobs';
@@ -24,44 +24,6 @@ const NAV = [
   { id: 'presets', label: 'Stack presets', icon: Layers, enabled: false },
   { id: 'materials', label: 'Materials', icon: Wrench, enabled: false },
 ];
-
-/** Published report bundles of the selected part (newest first); refetches
- * when the manifest refreshes (the publish flow bumps it). */
-function ReportsSection() {
-  const partId = useStore((s) => s.partId);
-  const manifestVersion = useStore((s) => s.manifestVersion);
-  const [reports, setReports] = useState<ReportSummary[]>([]);
-
-  useEffect(() => {
-    if (!partId) { setReports([]); return; }
-    let live = true;
-    fetchReports(partId)
-      .then((list) => { if (live) setReports(list); })
-      .catch(() => { if (live) setReports([]); });
-    return () => { live = false; };
-  }, [partId, manifestVersion]);
-
-  if (!partId || !reports.length) return null;
-  return (
-    <SidebarSection>
-      <SidebarHeading>Reports</SidebarHeading>
-      {reports.slice().reverse().map((r) => (
-        <SidebarItem
-          key={r.rid}
-          onClick={() => {
-            window.location.hash =
-              `#report=${encodeURIComponent(partId)}/${encodeURIComponent(r.rid)}`;
-          }}
-        >
-          <FileText data-slot="icon" />
-          <SidebarLabel>
-            {r.title} · rev {r.plan_revision}
-          </SidebarLabel>
-        </SidebarItem>
-      ))}
-    </SidebarSection>
-  );
-}
 
 export function AppSidebar() {
   const parts = useStore((s) => s.parts);
@@ -212,8 +174,6 @@ export function AppSidebar() {
             </div>
           ))}
         </SidebarSection>
-
-        <ReportsSection />
 
         <input
           ref={fileInput}

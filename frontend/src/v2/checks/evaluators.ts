@@ -1,5 +1,5 @@
 import type {
-  DispositionEvent, Manifest, PlanCheck, PlanOperation, ResultEntry,
+  Manifest, Operation, ResultEntry, RouteCheck,
 } from '../../api/types';
 import { fetchBin, fetchField } from '../../fields/fields';
 import { findStudy, opReach, type ReachCtx } from '../../processes/cnc/reach';
@@ -14,7 +14,7 @@ import type { VerdictState } from './status';
  * result stats and the policy carried by the plan revision, so re-evaluating
  * always reproduces the same findings. Keep every evaluator in this module —
  * a later Python mirror (cross-part dashboards, publish flow) should be a
- * port, not a hunt (docs/PLAN-ARCHITECTURE.md).
+ * port, not a hunt (docs/ROUTE-ARCHITECTURE.md).
  */
 
 export interface Finding {
@@ -37,7 +37,7 @@ export interface Evaluation {
  * ray variants) store the field minimum in stats; a minimum past the pinned
  * limit means there is geometry to review. */
 export function evaluateCheck(
-  a: Analysis, check: PlanCheck, result: ResultEntry | null,
+  a: Analysis, check: RouteCheck, result: ResultEntry | null,
 ): Evaluation {
   if (!result) return { verdict: 'unknown', findings: [] };
   const threshold = Number(check.policy?.threshold ?? a.thresholdDefault);
@@ -59,7 +59,7 @@ export function evaluateCheck(
 }
 
 /** Human-readable band text from a pinned policy. */
-export function bandText(check: PlanCheck, unit: string): string {
+export function bandText(check: RouteCheck, unit: string): string {
   const [lo, hi] = (check.policy?.band ?? [null, null]) as
     [number | null, number | null];
   if (lo != null && hi != null) return `${lo.toFixed(2)} – ${hi.toFixed(2)} ${unit}`;
@@ -73,7 +73,7 @@ export function bandText(check: PlanCheck, unit: string): string {
  * values, the faceValues convention). Async: fetches the cached field and
  * mesh faces (both usually already in the fetchBin cache). */
 export async function evaluateBandCheck(
-  manifest: Manifest, def: FieldLensDef, a: Analysis, check: PlanCheck,
+  manifest: Manifest, def: FieldLensDef, a: Analysis, check: RouteCheck,
   result: ResultEntry,
 ): Promise<Evaluation> {
   const desc = fieldDescriptor(manifest, result, def);
@@ -111,20 +111,19 @@ export async function evaluateBandCheck(
   };
 }
 
-/** Per-operation reach: faces visible somewhere in the operation's tilt
- * cone that NO library tool reaches. Async — unions cached masks. With a
+/** Per-operation reach: faces visible from the operation's direction that
+ * NO library tool reaches. Async — unions cached masks. With a
  * `featureMask` (cnc/features feature_id per face) only machined-feature
  * faces count: "are the features this operation produces reachable" —
  * the declarative workpiece-state scoping, on the final-part mesh. */
 export async function evaluateReachOp(
-  ctx: ReachCtx, check: PlanCheck, op: PlanOperation,
+  ctx: ReachCtx, check: RouteCheck, op: Operation,
   featureMask?: Uint32Array | null,
 ): Promise<Evaluation> {
-  const primary = Number(op.config?.direction_index);
-  const tilt = Number(op.config?.tilt ?? 90);
-  if (!Number.isFinite(primary)) return { verdict: 'unknown', findings: [] };
+  const direction = Number(op.config?.direction_index);
+  if (!Number.isFinite(direction)) return { verdict: 'unknown', findings: [] };
   const study = findStudy(ctx);
-  const { reach, visible } = await opReach(ctx, study, primary, tilt);
+  const { reach, visible } = await opReach(ctx, study, direction);
   let blocked = 0;
   let scoped = 0;
   for (let f = 0; f < ctx.faceCount; f++) {
@@ -141,8 +140,8 @@ export async function evaluateReachOp(
       id: `${check.id}:tool_blocked`,
       code: 'op_tool_blocked',
       label: `${op.label ?? op.id}: ${what} no tool reaches`,
-      detail: `${blocked} ${what} visible in the ±${tilt}° cone of direction `
-        + `${primary} are blocked for every library tool`,
+      detail: `${blocked} ${what} visible from direction ${direction} are `
+        + 'blocked for every library tool',
       severity: 'review',
     }],
   };
@@ -150,10 +149,10 @@ export async function evaluateReachOp(
 
 /** The stats-rule vocabulary. Two tables are keyed by it — the evaluators
  * below and the card presentation in `catalog.ts` — so TS refuses a rule that
- * has logic but no label, or a label with no logic. `plans.py` `STATS_RULES`
- * validates the same names where a plan enters, so a typo in a route YAML
- * raises instead of seeding a check that quietly evaluates to `unknown`
- * forever; `test_vocab.py` asserts the two sides list the same rules. */
+ * has logic but no label, or a label with no logic. `route.py` `STATS_RULES`
+ * validates the same names where a route enters, so a typo raises instead of
+ * storing a check that quietly evaluates to `unknown` forever;
+ * `test_vocab.py` asserts the two sides list the same rules. */
 export type StatsRule = 'sheet_detect' | 'flat_pattern' | 'bend_plan'
   | 'features';
 
@@ -214,7 +213,7 @@ export function isStatsRule(rule: string): rule is StatsRule {
  * (sheet detection / flat pattern / bend plan / feature recognition).
  * Findings carry stable per-reason ids so dispositions survive re-runs. */
 export function evaluateStatsCheck(
-  rule: string, check: PlanCheck, result: ResultEntry | null,
+  rule: string, check: RouteCheck, result: ResultEntry | null,
 ): Evaluation {
   if (!result || !isStatsRule(rule)) return { verdict: 'unknown', findings: [] };
   const finding: Emit = (code, label, detail) =>
@@ -225,7 +224,7 @@ export function evaluateStatsCheck(
 /** Route aggregate: faces unreachable in EVERY operation (geometry-union
  * of the per-op reach masks, inverted) — the customer-facing verdict. */
 export async function evaluateReachRoute(
-  ctx: ReachCtx, check: PlanCheck, ops: PlanOperation[],
+  ctx: ReachCtx, check: RouteCheck, ops: Operation[],
 ): Promise<Evaluation> {
   const configured = ops.filter(
     (op) => Number.isFinite(Number(op.config?.direction_index)));
@@ -235,8 +234,7 @@ export async function evaluateReachRoute(
   const anyVisible = new Uint8Array(ctx.faceCount);
   for (const op of configured) {
     const { reach, visible } = await opReach(
-      ctx, study, Number(op.config!.direction_index),
-      Number(op.config?.tilt ?? 90));
+      ctx, study, Number(op.config!.direction_index));
     for (let f = 0; f < ctx.faceCount; f++) {
       anyReach[f] |= reach[f];
       anyVisible[f] |= visible[f];
@@ -271,10 +269,3 @@ export async function evaluateReachRoute(
   return { verdict: 'fail', findings };
 }
 
-/** A finding's effective disposition state ('open' when never judged). */
-export function dispositionOf(
-  finding: Finding,
-  dispositions: Record<string, DispositionEvent> | undefined,
-): DispositionEvent['state'] {
-  return dispositions?.[finding.id]?.state ?? 'open';
-}

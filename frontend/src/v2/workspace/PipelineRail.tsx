@@ -1,17 +1,16 @@
 import clsx from 'clsx';
 import {
-  CircleDashed, Compass, FileUp, Hammer, Plus, Route, Telescope, X, Zap,
+  Circle, CircleDashed, Compass, Hammer, Plus, Route, Telescope, X, Zap,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { fetchMachines, fetchRoutes, postPlanRoute } from '../../api/client';
+import { fetchMachines } from '../../api/client';
 import type {
-  OperationKind, PlanCheck, PlanCheckStatus, PlanOperation, RouteSummary,
+  MachineSummary, Operation, OperationKind, RouteCheck, RouteCheckStatus,
 } from '../../api/types';
 import { Button } from '../../catalyst/button';
 import { Input } from '../../catalyst/input';
 import { Select } from '../../catalyst/select';
 import { hintCls } from '../components/styles';
-import { refreshManifest } from '../../viewer/controller';
 import { useStore } from '../../state/store';
 import type { Analysis } from '../analyses';
 import { describeCheck, useCheckEvaluation } from '../checks/catalog';
@@ -19,14 +18,12 @@ import {
   checkState, planCheckState, statusKindOf, type CheckState,
 } from '../checks/status';
 import { StatusDot } from '../components/status';
-import { publishPlanReport } from '../report/publish';
 import { useV2 } from '../store';
 import { closeStudy, openStudy, STUDIES } from '../studies';
-import { ImpactModal, type PendingEdit } from './ImpactModal';
 import {
-  buildAddOperationEdit, buildRemoveCheckEdit, buildRemoveOperationEdit,
-  catalogFor, seedExploration, seedPlan, selectAnalysis, selectPlanCheck,
-  useActiveAnalysis, useCheckActive, usePlanSection, useVisibleAnalyses,
+  addOperation, catalogFor, removeCheck, removeOperation, selectAnalysis,
+  selectRouteCheck, updateOperation, useActiveAnalysis, useCheckActive,
+  useRouteSection, useVisibleAnalyses,
 } from './hooks';
 
 function CheckCard({ icon: Icon, label, tier, state, summary, isActive, onClick }: {
@@ -63,18 +60,18 @@ function Connector() {
   return <div className="ml-[17px] h-2.5 w-px bg-zinc-950/10 dark:bg-white/10" />;
 }
 
-/** Plan-driven check card: execution from the server-derived expected hash,
+/** Route-driven check card: execution from the server-derived expected hash,
  * verdict from the pinned policy (async mask unions for reach checks). */
-function PlanCheckCard({ check, status, isActive }: {
-  check: PlanCheck; status: PlanCheckStatus | undefined; isActive: boolean;
+function RouteCheckCard({ check, status, isActive }: {
+  check: RouteCheck; status: RouteCheckStatus | undefined; isActive: boolean;
 }) {
   const manifest = useStore((s) => s.manifest);
   const jobs = useStore((s) => s.jobs);
   const partId = useStore((s) => s.partId);
-  const section = usePlanSection();
+  const section = useRouteSection();
   const evaluation = useCheckEvaluation(
-    check, section!.plan, status, manifest);
-  const view = describeCheck(check, section!.plan);
+    check, section!.route, status, manifest);
+  const view = describeCheck(check, section!.route);
   if (!view) return null;
   const [process, analysis] = check.analysis.split('/');
   const state = planCheckState(status, jobs, partId, { process, analysis },
@@ -101,33 +98,26 @@ function PlanCheckCard({ check, status, isActive }: {
       state={state}
       summary={summary || view.blurb}
       isActive={isActive}
-      onClick={() => selectPlanCheck(check)}
+      onClick={() => selectRouteCheck(check)}
     />
   );
 }
 
 const KIND_ICON: Record<string, typeof Route> = {
-  laser: Zap, press_brake: Hammer, cnc_setup: Compass,
+  laser: Zap, press_brake: Hammer, milling: Compass, turning: Circle,
 };
 
-/** Operation header: the decision surface (direction + tilt for CNC,
- * machine label for the rest); edits stage an impact preview first. */
-function OperationCard({ op, stage }: {
-  op: PlanOperation; stage: (edit: PendingEdit) => void;
-}) {
+/** Operation header. An operation is ATOMIC — for milling/turning that is one
+ * approach direction and nothing else. There is no tilt cone: a 3+2 machine
+ * holding one fixturing across several approaches is several operations that
+ * a later grouping recognises as one setup. */
+function OperationCard({ op }: { op: Operation }) {
   const manifest = useStore((s) => s.manifest);
-  const section = usePlanSection();
   const directions = manifest?.directions ?? [];
   const sources = manifest?.direction_sources ?? [];
   const current = Number(op.config?.direction_index);
   const KindIcon = KIND_ICON[op.kind ?? ''] ?? Route;
-
-  const patchOps = (config: Record<string, unknown>) =>
-    (section?.plan.operations ?? []).map((o) =>
-      o.id === op.id ? { ...o, config: { ...o.config, ...config } } : o);
-
-  const currentTilt = Number(op.config?.tilt ?? 90);
-  const [tilt, setTilt] = useState(String(currentTilt));
+  const directional = op.kind === 'milling' || op.kind === 'turning';
 
   return (
     <div className="group/op mb-1 rounded-lg bg-zinc-950/2.5 p-2 dark:bg-white/5">
@@ -136,10 +126,7 @@ function OperationCard({ op, stage }: {
         <button
           type="button"
           title="Remove this operation (and its checks)"
-          onClick={() => {
-            const edit = buildRemoveOperationEdit(op);
-            if (edit) stage(edit);
-          }}
+          onClick={() => { void removeOperation(op); }}
           className="ml-auto rounded p-0.5 opacity-0 transition group-hover/op:opacity-100 hover:bg-zinc-950/10 hover:text-zinc-700 dark:hover:bg-white/10 dark:hover:text-zinc-200"
         >
           <X className="size-3" />
@@ -147,22 +134,19 @@ function OperationCard({ op, stage }: {
       </div>
       {op.machine && (
         <div className="mt-0.5 text-[11px]/4 text-zinc-500 dark:text-zinc-400">
-          {op.machine.template} · {op.machine.sha.slice(0, 8)}
+          {op.machine}
         </div>
       )}
-      {op.kind === 'cnc_setup' && directions.length > 0 && (
-        <div className="mt-1.5 flex items-center gap-1.5">
+      {directional && directions.length > 0 && (
+        <div className="mt-1.5">
           <Select
-            className="min-w-0 flex-1"
             value={Number.isFinite(current) ? String(current) : ''}
             onChange={(e) => {
               const next = parseInt(e.target.value, 10);
               if (next === current) return;
-              stage({
-                title: `${op.label ?? op.id}: direction ${current} → ${next}`,
-                patch: { operations: patchOps({ direction_index: next }) },
-              });
+              void updateOperation(op.id, { direction_index: next });
             }}
+            aria-label="approach direction"
           >
             {directions.map((d, i) => (
               <option key={i} value={String(i)}>
@@ -171,25 +155,6 @@ function OperationCard({ op, stage }: {
               </option>
             ))}
           </Select>
-          <div className="w-16 shrink-0" title="3+2 tilt cone half-angle (0 = plain 3-axis)">
-            <Input
-              type="number"
-              value={tilt}
-              onChange={(e) => setTilt(e.target.value)}
-              onBlur={() => {
-                const next = parseFloat(tilt);
-                if (!isFinite(next) || next === currentTilt) {
-                  setTilt(String(currentTilt));
-                  return;
-                }
-                stage({
-                  title: `${op.label ?? op.id}: tilt ±${currentTilt}° → ±${next}°`,
-                  patch: { operations: patchOps({ tilt: next }) },
-                });
-              }}
-              aria-label="tilt"
-            />
-          </div>
         </div>
       )}
     </div>
@@ -197,25 +162,24 @@ function OperationCard({ op, stage }: {
 }
 
 // the kinds offered in the form, labelled. `satisfies` keeps the ids inside
-// the OperationKind union that plans.py validates, so a kind the backend
+// the OperationKind union that route.py validates, so a kind the backend
 // would reject cannot reach the select.
 const OP_KINDS = [
-  { id: 'cnc_setup', label: 'CNC setup' },
+  { id: 'milling', label: 'Milling (one direction)' },
+  { id: 'turning', label: 'Turning' },
   { id: 'laser', label: 'Laser' },
   { id: 'press_brake', label: 'Press brake' },
 ] satisfies { id: OperationKind; label: string }[];
 
-/** Inline add-operation form: label, kind, optional machine template and
- * (for CNC) primary direction. The edit stages through the impact modal
- * and brings the kind's standard checks along. */
-function AddOperationForm({ stage, onClose }: {
-  stage: (edit: PendingEdit) => void; onClose: () => void;
-}) {
+/** Inline add-operation form: label, kind, optional machine and (for
+ * milling/turning) the approach direction. Adding an operation adds ONLY the
+ * operation — checks are authored deliberately, from a lens band or a
+ * study, so every check on the route is one somebody meant. */
+function AddOperationForm({ onClose }: { onClose: () => void }) {
   const manifest = useStore((s) => s.manifest);
-  const [machines, setMachines] = useState<
-    { name: string; label: string; kind: string | null }[]>([]);
+  const [machines, setMachines] = useState<MachineSummary[]>([]);
   const [label, setLabel] = useState('');
-  const [kind, setKind] = useState<OperationKind>('cnc_setup');
+  const [kind, setKind] = useState<OperationKind>('milling');
   const [machine, setMachine] = useState('');
   const [direction, setDirection] = useState('0');
   const [building, setBuilding] = useState(false);
@@ -227,16 +191,17 @@ function AddOperationForm({ stage, onClose }: {
   }, []);
 
   const kindMachines = machines.filter((m) => !m.kind || m.kind === kind);
+  const directional = kind === 'milling' || kind === 'turning';
 
   const add = () => {
     setBuilding(true);
-    void buildAddOperationEdit({
+    void addOperation({
       label: label || OP_KINDS.find((k) => k.id === kind)!.label,
       kind,
       machine: machine || null,
       directionIndex: parseInt(direction, 10),
     })
-      .then((edit) => { if (edit) { stage(edit); onClose(); } })
+      .then(onClose)
       .catch((err) => useStore.getState().set({ error: String(err) }))
       .finally(() => setBuilding(false));
   };
@@ -261,15 +226,15 @@ function AddOperationForm({ stage, onClose }: {
           {OP_KINDS.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
         </Select>
         <Select value={machine} onChange={(e) => setMachine(e.target.value)}
-          aria-label="machine template">
-          <option value="">no machine template</option>
+          aria-label="machine">
+          <option value="">no machine</option>
           {kindMachines.map((m) => (
             <option key={m.name} value={m.name}>{m.label}</option>
           ))}
         </Select>
-        {kind === 'cnc_setup' && (manifest?.directions.length ?? 0) > 0 && (
+        {directional && (manifest?.directions.length ?? 0) > 0 && (
           <Select value={direction} onChange={(e) => setDirection(e.target.value)}
-            aria-label="primary direction">
+            aria-label="approach direction">
             {(manifest?.directions ?? []).map((d, i) => (
               <option key={i} value={String(i)}>
                 {`dir ${i}`}
@@ -282,7 +247,7 @@ function AddOperationForm({ stage, onClose }: {
         <div className="flex gap-1.5">
           <Button outline onClick={onClose} className="flex-1">Cancel</Button>
           <Button onClick={add} disabled={building} className="flex-1">
-            {building ? 'Preparing…' : 'Add'}
+            {building ? 'Adding…' : 'Add'}
           </Button>
         </div>
       </div>
@@ -331,64 +296,32 @@ export function PipelineRail() {
   const catalog = useVisibleAnalyses();
   const advanced = useV2((s) => s.advanced);
   const activeCheckId = useV2((s) => s.activeCheckId);
-  const section = usePlanSection();
+  const section = useRouteSection();
   const manifest = useStore((s) => s.manifest);
   const jobs = useStore((s) => s.jobs);
   const partId = useStore((s) => s.partId);
   const viewerParams = useStore((s) => s.viewerParams);
   const manifestVersion = useStore((s) => s.manifestVersion);
   void manifestVersion;
-  const [pending, setPending] = useState<PendingEdit | null>(null);
-  const [publishing, setPublishing] = useState<string | null>(null);
-  const [routes, setRoutes] = useState<RouteSummary[]>([]);
-  const [instantiating, setInstantiating] = useState(false);
   const [adding, setAdding] = useState(false);
-  useEffect(() => {
-    let live = true;
-    fetchRoutes().then((r) => { if (live) setRoutes(r); }).catch(() => {});
-    return () => { live = false; };
-  }, []);
 
-  const addRoute = (name: string) => {
-    if (!partId) return;
-    setInstantiating(true);
-    void postPlanRoute(partId, name)
-      .then(() => refreshManifest())
-      .catch((err) => useStore.getState().set({ error: String(err) }))
-      .finally(() => setInstantiating(false));
-  };
-
-  const publish = () => {
-    setPublishing('publishing…');
-    void publishPlanReport('DFM report', setPublishing)
-      .then((report) => {
-        if (report && partId) {
-          window.location.hash =
-            `#report=${encodeURIComponent(partId)}/${encodeURIComponent(report.rid)}`;
-        }
-      })
-      .catch((err) => useStore.getState().set({ error: String(err) }))
-      .finally(() => setPublishing(null));
-  };
-
-  const planChecks = (section?.plan.checks ?? []).filter((c) => {
+  const routeChecks = (section?.route.checks ?? []).filter((c) => {
     const a = catalogFor(c);
     return a ? (advanced || a.tier === 'primary') : true;
   });
-  const operations = section?.plan.operations ?? [];
-  const hasPlan = planChecks.length > 0 || operations.length > 0;
-  const hasCncOps = operations.some((o) => o.kind === 'cnc_setup');
+  const operations = section?.route.operations ?? [];
+  const hasRoute = routeChecks.length > 0 || operations.length > 0;
 
   const groups = [
     ...operations.map((op) => ({
       op,
       label: op.label ?? op.id,
-      checks: planChecks.filter((c) => c.operation === op.id),
+      checks: routeChecks.filter((c) => c.operation === op.id),
     })),
     {
-      op: null as PlanOperation | null,
+      op: null as Operation | null,
       label: 'Review',
-      checks: planChecks.filter((c) => c.operation == null),
+      checks: routeChecks.filter((c) => c.operation == null),
     },
   ].filter((g) => g.op !== null || g.checks.length > 0);
 
@@ -397,15 +330,15 @@ export function PipelineRail() {
       <StudySection />
 
       <div className="text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">
-        {hasPlan ? `Plan · rev ${section?.plan.revision}` : 'Checks'}
+        {hasRoute ? `Route · rev ${section?.route.revision}` : 'Checks'}
       </div>
 
-      {hasPlan ? (
+      {hasRoute ? (
         <div className="flex flex-col gap-3">
           {groups.map((group) => (
             <div key={group.op?.id ?? '__review'}>
               {group.op ? (
-                <OperationCard op={group.op} stage={setPending} />
+                <OperationCard op={group.op} />
               ) : (
                 <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
                   <Compass className="size-3" /> {group.label}
@@ -413,7 +346,7 @@ export function PipelineRail() {
               )}
               {group.checks.map((check, i) => (
                 <div key={check.id} className="group/check relative">
-                  <PlanCheckCard
+                  <RouteCheckCard
                     check={check}
                     status={section?.checks[check.id]}
                     isActive={activeCheckId === check.id}
@@ -421,13 +354,7 @@ export function PipelineRail() {
                   <button
                     type="button"
                     title="Remove this check"
-                    onClick={() => {
-                      const view = section
-                        ? describeCheck(check, section.plan) : null;
-                      const edit = buildRemoveCheckEdit(
-                        check, view?.label ?? check.id);
-                      if (edit) setPending(edit);
-                    }}
+                    onClick={() => { void removeCheck(check); }}
                     className="absolute right-1.5 top-1.5 rounded p-0.5 text-zinc-400 opacity-0 transition group-hover/check:opacity-100 hover:bg-zinc-950/10 hover:text-zinc-700 dark:hover:bg-white/10 dark:hover:text-zinc-200"
                   >
                     <X className="size-3" />
@@ -470,51 +397,27 @@ export function PipelineRail() {
       )}
 
       <div className="flex flex-col gap-2">
-        {!hasPlan && (
-          <Button outline onClick={() => void seedPlan()} className="w-full"
-            disabled={!manifest}>
-            <Plus data-slot="icon" /> Create plan with these checks
-          </Button>
-        )}
-        {!hasCncOps && (
-          <Button outline onClick={() => void seedExploration()} className="w-full"
-            disabled={!manifest}>
-            <Compass data-slot="icon" /> Add CNC exploration
-          </Button>
-        )}
-        {operations.length === 0 && routes.map((route) => (
-          <Button key={route.name} outline className="w-full"
-            onClick={() => addRoute(route.name)}
-            disabled={!manifest || instantiating}>
-            <Route data-slot="icon" />
-            {instantiating ? 'Instantiating…' : `Add route: ${route.title}`}
-          </Button>
-        ))}
         {adding ? (
-          <AddOperationForm stage={setPending} onClose={() => setAdding(false)} />
+          <AddOperationForm onClose={() => setAdding(false)} />
         ) : (
           <Button outline onClick={() => setAdding(true)} className="w-full"
             disabled={!manifest}>
             <Plus data-slot="icon" /> Add operation
           </Button>
         )}
-        {hasPlan && (
-          <Button onClick={publish} className="w-full"
-            disabled={!manifest || !!publishing}>
-            <FileUp data-slot="icon" />
-            {publishing ?? 'Publish report'}
-          </Button>
-        )}
       </div>
 
       <div className="mt-2 flex items-start gap-2 rounded-lg bg-zinc-950/2.5 p-2.5 text-xs/5 text-zinc-500 dark:bg-white/5 dark:text-zinc-400">
         <CircleDashed className="mt-0.5 size-3.5 shrink-0" />
-        {hasPlan
-          ? 'Direction changes preview their impact first — the reach study covers every candidate, so re-slicing is free.'
-          : 'Creating a plan pins the default limits as policies so verdicts become reproducible.'}
+        {!hasRoute
+          ? 'Nothing is planned yet. Explore with a lens or a study, then add '
+            + 'the operations you settle on — that is what records the choice.'
+          : routeChecks.length === 0
+            ? 'No checks yet — this route is UNASSESSED, not passing. Save a '
+              + 'lens band or a study total as a check to judge it.'
+            : 'Changing an operation\'s direction only re-slices the reach '
+              + 'study — nothing recomputes.'}
       </div>
-
-      {pending && <ImpactModal edit={pending} onClose={() => setPending(null)} />}
     </div>
   );
 }

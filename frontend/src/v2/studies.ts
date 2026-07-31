@@ -4,7 +4,7 @@ import { useV2 } from './store';
 
 /**
  * A STUDY is the third surface beside lenses and checks
- * (docs/PLAN-ARCHITECTURE.md): a broad comparison over many candidates at
+ * (docs/ROUTE-ARCHITECTURE.md): a broad comparison over many candidates at
  * once. A lens paints one thing over the model; a check judges one thing
  * against a policy; a study lays the candidates out side by side so the
  * engineer can pick.

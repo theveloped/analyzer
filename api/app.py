@@ -17,7 +17,7 @@ from api import fields as fields_api
 from api import manifest as manifest_api
 from api import parts as parts_api
 from api import ejector as ejector_api
-from api import plan as plan_api
+from api import route as route_api
 from api.jobs import JobManager, PartBusyError
 from api.schemas import (EjectorSimRequest, JobRequest, PmiPutRequest,
                          SplitRequest)
@@ -437,8 +437,8 @@ def create_app(root=".", preload=None):
             raise HTTPException(status_code=404, detail="no highlights")
         return FileResponse(path, media_type="application/json")
 
-    plan_api.register(app, part_or_404,
-                      lambda part_id: parts_api.workdir_for(root, part_id))
+    route_api.register(app, part_or_404,
+                       lambda part_id: parts_api.workdir_for(root, part_id))
 
     @app.post("/api/jobs", status_code=201)
     def submit_job(request: JobRequest):

@@ -119,7 +119,7 @@ python test_sheet.py         # sheet detect + K-factor unfold + DXF round-trip
 python test_tube.py          # tube/profile classification + unroll
 python test_pressbrake.py    # press-brake core: kinematics, envelopes, tooling, search
 python test_bendplan.py      # bend-plan adapter + analysis on STEP fixtures
-python test_plan.py          # production-plan sidecars: revisions, dispositions, check status, impact
+python test_route.py         # route sidecars: revisions, validation, derived check status
 python test_reach.py         # cnc/reach_study: per-(direction, tool) masks vs compose_tool
 python test_vocab.py         # controlled vocabularies: every Python frozenset vs its TS union
 ```
@@ -141,15 +141,15 @@ styles/section/measure pixel checks) walk the UI against a running server
   is numpy logic over those arrays, never new geometry passes.
 - **No stringly-typed vocabularies.** A fixed set of legal strings lives as a
   frozenset in `processes/base.py` (param types, field associations/roles/dtypes,
-  salt names) or `plans.py` (decision/disposition states, operation kinds), and is
-  checked where the value ENTERS: `Param.__post_init__`, `AnalysisDef.__post_init__`,
-  `store_result`, `validate_plan`, or a Pydantic `Literal` on the request model.
+  salt names) or `route.py` (operation kinds, stats rules), and is checked where
+  the value ENTERS: `Param.__post_init__`, `AnalysisDef.__post_init__`,
+  `store_result`, or `validate_route`.
   An unknown value must raise — the failure mode being designed out is a typo that
   is accepted and then silently does nothing. Frontend mirrors are NAMED TS unions
   (`export type FieldRole = …`, never inline in an interface member) and
   `test_vocab.py` parses each one and asserts it equals the Python set — a test,
   not a comment. `v2/lenses.test.ts` does the same for what only exists on the
-  frontend: lens keys, including the ones route templates name.
+  frontend: lens keys, including the ones `fieldLenses.ts`/`analyses.ts` name.
 - Frontend: TypeScript strict, zustand store, no CSS framework (plain
   `styles.css`). View modes paint via `ctx.paintFaces` / heatmap helpers in
   `colorizers/core.ts`; interactive thresholds recompute client-side from cached

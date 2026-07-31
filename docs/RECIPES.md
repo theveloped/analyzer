@@ -27,7 +27,7 @@ in docs/CODEMAP.md; background in APPROACH.md.
 | `pressbrake/` pure core (kinematics, envelope, tooling, search) | `python test_pressbrake.py` |
 | `pressbrake/adapter.py`, sheet_metal/bend_plan | `python test_bendplan.py` |
 | A controlled vocabulary (`PARAM_TYPES`, `FIELD_*`, `OPERATION_KINDS`, `STATS_RULES`, …) or its TS union | `python test_vocab.py` + `cd frontend && npm test` |
-| `catalogue/routes/*.yaml` | `python test_vocab.py` + `cd frontend && npm test` (lens keys) |
+| `route.py`, `api/route.py` | `python test_route.py` + `python test_vocab.py` |
 
 Sheet/tube changes should additionally be scored against the instapart
 example corpus (166 real STEP files with expected thickness/bends/volume):

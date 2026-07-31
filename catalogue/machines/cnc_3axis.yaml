@@ -2,7 +2,7 @@
 # `config` seeds the operation (tilt 0 = plain 3-axis: the setup covers only
 # its primary direction); `tools` is the default library route checks bind
 # via the $machine:tools token.
-kind: cnc_setup
+kind: milling
 label: 3-axis VMC
 config:
   tilt: 0

@@ -1,7 +1,7 @@
 // Reach-study lenses: slice the stored cnc/reach_study result (per
 // (direction, tool) face masks) into single-pair, per-operation and
 // cross-operation views. Pure mask logic over cached fields — no server
-// round-trips beyond field fetches (docs/PLAN-ARCHITECTURE.md, Phase 2).
+// round-trips beyond field fetches (docs/ROUTE-ARCHITECTURE.md, Phase 2).
 
 import { COL, FocusTracker } from '../../colorizers/core';
 import type { FieldDescriptor, Manifest, ResultEntry } from '../../api/types';
@@ -65,22 +65,6 @@ async function fetchAccess(ctx: ReachCtx, d: number): Promise<Uint8Array | null>
   return desc ? (await ctx.getField(desc)) as Uint8Array : null;
 }
 
-/** Sampled direction indices within `tiltDeg` of the primary — the TS
- * mirror of machining.cone_members (3-axis: tilt 0 → just the primary). */
-export function coneMembers(
-  directions: number[][], primary: number, tiltDeg: number,
-): number[] {
-  const p = directions[primary];
-  if (!p) return [];
-  const minDot = Math.cos((tiltDeg * Math.PI) / 180) - 1e-9;
-  const members: number[] = [];
-  for (let i = 0; i < directions.length; i++) {
-    const d = directions[i];
-    if (d[0] * p[0] + d[1] * p[1] + d[2] * p[2] >= minDot) members.push(i);
-  }
-  return members;
-}
-
 /** Per-face triangle areas (mm²), cached per mesh. */
 let areaCache: { key: string; areas: Float64Array } | null = null;
 export function faceAreas(ctx: ViewCtx): Float64Array {
@@ -102,28 +86,30 @@ export function faceAreas(ctx: ViewCtx): Float64Array {
 const toolLabel = (t: ReachStudy['tools'][number], i: number) =>
   `T${i + 1} D${t.diameter}${t.corner_radius ? `:r${t.corner_radius}` : ''}`;
 
-/** Union of reach masks over (cone members ∩ study directions) × all tools,
- * plus the union of accessibility over the same members. */
+/** Union of one operation's reach masks over every tool in the study, plus
+ * its accessibility row.
+ *
+ * An operation is ATOMIC — ONE approach direction. There is no tilt cone to
+ * union over: counting every sampled direction within ±tilt credited an
+ * operation with coverage from directions nobody chose. A 3+2 machine that
+ * really does hold one fixturing across several approaches is several
+ * operations that a later grouping recognises as one setup. */
 export async function opReach(
-  ctx: ReachCtx, study: ReachStudy, primary: number, tiltDeg: number,
-): Promise<{ reach: Uint8Array; visible: Uint8Array; members: number[] }> {
-  const members = coneMembers(ctx.directions, primary, tiltDeg)
-    .filter((d) => study.directions.includes(d));
-  if (!members.length) {
-    throw new Error(`the study covers none of the directions in the `
-      + `operation's ±${tiltDeg}° cone — extend the study's direction list`);
+  ctx: ReachCtx, study: ReachStudy, direction: number,
+): Promise<{ reach: Uint8Array; visible: Uint8Array }> {
+  if (!study.directions.includes(direction)) {
+    throw new Error(`the study does not cover direction ${direction} — `
+      + 'extend the study\'s direction list');
   }
   const reach = new Uint8Array(ctx.faceCount);
   const visible = new Uint8Array(ctx.faceCount);
-  for (const d of members) {
-    for (let t = 0; t < study.tools.length; t++) {
-      const mask = await fetchMask(ctx, study, d, t);
-      for (let f = 0; f < ctx.faceCount; f++) reach[f] |= mask[f];
-    }
-    const access = await fetchAccess(ctx, d);
-    if (access) for (let f = 0; f < ctx.faceCount; f++) visible[f] |= access[f];
+  for (let t = 0; t < study.tools.length; t++) {
+    const mask = await fetchMask(ctx, study, direction, t);
+    for (let f = 0; f < ctx.faceCount; f++) reach[f] |= mask[f];
   }
-  return { reach, visible, members };
+  const access = await fetchAccess(ctx, direction);
+  if (access) for (let f = 0; f < ctx.faceCount; f++) visible[f] |= access[f];
+  return { reach, visible };
 }
 
 const pct = (part: number, whole: number) =>
@@ -192,15 +178,14 @@ export const reachStudyMode: ViewMode = {
 
 export const reachOpMode: ViewMode = {
   id: 'reach_op',
-  label: 'Operation reach (any tool in cone)',
+  label: 'Operation reach (any tool)',
   async paint(ctx): Promise<PaintInfo> {
     const study = findStudy(ctx);
-    const primary = parseInt(ctx.params.opPrimary, 10);
-    if (!Number.isFinite(primary)) {
-      throw new Error('pick the operation\'s primary direction (opPrimary)');
+    const direction = parseInt(ctx.params.opDirection, 10);
+    if (!Number.isFinite(direction)) {
+      throw new Error('pick the operation\'s direction (opDirection)');
     }
-    const tilt = parseFloat(ctx.params.opTilt) || 0;
-    const { reach, visible, members } = await opReach(ctx, study, primary, tilt);
+    const { reach, visible } = await opReach(ctx, study, direction);
     // features scoping: only the faces this operation PRODUCES are judged;
     // the rest of the part renders as neutral context
     const featureMask = ctx.params.reachFeatureMask
@@ -223,10 +208,10 @@ export const reachOpMode: ViewMode = {
           : []),
         { color: COL.ok, label: 'reachable in this operation', focus: tracker.focus('ok') },
         { color: COL.tip, label: 'visible but no tool reaches', focus: tracker.focus('blocked') },
-        { color: COL.inaccess, label: 'undercut for the whole cone', focus: tracker.focus('inaccess') },
+        { color: COL.inaccess, label: 'undercut from this direction', focus: tracker.focus('inaccess') },
       ],
-      stats: `direction ${primary} ±${tilt}° (${members.length} sampled) · `
-        + `${study.tools.length} tools · ${ok} ${scopeTxt} reachable `
+      stats: `direction ${direction} · ${study.tools.length} tools · `
+        + `${ok} ${scopeTxt} reachable `
         + `· blocked ${blocked} (${blockedArea.toFixed(0)} mm²)`,
     };
   },
@@ -237,15 +222,15 @@ export const reachAggregateMode: ViewMode = {
   label: 'Route reach (all operations)',
   async paint(ctx): Promise<PaintInfo> {
     const study = findStudy(ctx);
-    const ops = (ctx.params.reachOps ?? []) as { primary: number; tilt: number; label?: string }[];
+    const ops = (ctx.params.reachOps ?? []) as { direction: number; label?: string }[];
     if (!ops.length) {
-      throw new Error('no operations configured — add CNC operations to the '
-        + 'plan (each contributes its direction cone)');
+      throw new Error('no operations configured — add milling operations to '
+        + 'the route (each contributes its own direction)');
     }
     const anyReach = new Uint8Array(ctx.faceCount);
     const anyVisible = new Uint8Array(ctx.faceCount);
     for (const op of ops) {
-      const { reach, visible } = await opReach(ctx, study, op.primary, op.tilt);
+      const { reach, visible } = await opReach(ctx, study, op.direction);
       for (let f = 0; f < ctx.faceCount; f++) {
         anyReach[f] |= reach[f];
         anyVisible[f] |= visible[f];

@@ -15,7 +15,7 @@ import { StatusBadge } from '../components/status';
 import { useV2 } from '../store';
 import { ComputeInput } from './computeFields';
 import {
-  saveLensCheck, useActiveFieldLens, useActiveLens, usePlanSection,
+  saveLensCheck, useActiveFieldLens, useActiveLens, useRouteSection,
 } from './hooks';
 import { useBusy } from './run';
 import { runAnalysisJob } from '../../viewer/jobs';
@@ -78,7 +78,7 @@ const EMPTY_BAND = { lo: EMPTY_BOUND, hi: EMPTY_BOUND };
 function BandSection({ def, stats }: { def: FieldLensDef; stats: FieldStats }) {
   const setParam = useStore((s) => s.setViewerParam);
   const partId = useStore((s) => s.partId);
-  const section = usePlanSection();
+  const section = useRouteSection();
   const activeCheckId = useV2((s) => s.activeCheckId);
   const bands = useV2((s) => s.bands);
   const setBand = useV2((s) => s.setBand);
@@ -88,7 +88,7 @@ function BandSection({ def, stats }: { def: FieldLensDef; stats: FieldStats }) {
   // scope: navigating via a CHECK edits that check's band (button: Update);
   // navigating via the LENS edits a per-lens scratch band (button: Add) —
   // separate keys in the store, so bands never bleed across lenses/checks
-  const selected = section?.plan.checks.find(
+  const selected = section?.route.checks.find(
     (c) => c.id === activeCheckId
       && c.analysis === `${def.process}/${def.analysis}`) ?? null;
   const bandKey = selected?.id ?? def.lensKey;

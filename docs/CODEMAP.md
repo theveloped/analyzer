@@ -68,7 +68,7 @@ folder and re-uploads dedupe; the human name stays in `part.json`.
 | `results/<process>/<analysis>/<hash>.json[.npz]` | registry analyses | generic results, `<hash>` = `params_hash(params)` (sha1[:12] of canonical JSON); runners salt in schema, `directions` and `mesh` fingerprints so stale results orphan instead of misindexing — mold/setups additionally salt the `splits` fingerprint (of `subfaces.npy`), so cuts orphan assignments and an undo re-validates the older result |
 | `results/<process>/<analysis>/<hash>_overrides.json` | viewer via API | user face-assignment overrides for a mold result |
 | `part.json` | API upload/registration | part metadata (gitignored). `part_info.status` is three-valued: `raw` (nothing built), `preview` (the first-load bundle landed — renderable and inspectable), `meshed` (the fine mesh exists, which is what every result field indexes into) |
-| `plan.json` `decisions.<slot>` | plan API | a decision slot is `{kind, candidates[], selected, value, state}` when it declares a `kind` (validated; `direction_set` today), else the free-form dict it has always been. `value` is DERIVED by `plans.normalize_decisions` on every save and impact preview — checks bind `{"$plan": "decisions.<slot>.value…"}` to it, so moving the selection cannot leave the binding target stale |
+| `route.json` / `route_history.jsonl` | route API (`route.py`) | the part's authored route: `{schema, revision, operations[], checks[]}` plus an append-only snapshot per revision. Operations are ATOMIC (one approach direction — no tilt cone) and store a machine **name**, not a copy. Check params are LITERAL, so what the check says is what `resolver.cache_key` keys. A document under an older `ROUTE_SCHEMA` is discarded, not migrated |
 | `source.stp` / `source.step` | upload / `mesh_part` (STEP input) | the retained source STEP; BREP-level stages (`prep/aag`, sheet unfold, import attributes) reload it — face/edge ids re-derive deterministically from the same bytes |
 | `aag.npz` / `aag.json` | `prep/aag` (`pipeline.compute_aag`) | AAG stage artifact: per-face convexity/curvature/area/normal + C1/C2 group labels, per-edge face pairs/continuity/signed dihedral/polylines over **canonical edge ids**; json header carries schema, `source_sha`, mesh fingerprint and stats — consumers salt `aag_fingerprint` into cache keys |
 | `face_attrs.json` | `step_import` | STEP face colors/names + PMI back-refs, keyed by 0-based BREP face id |
@@ -167,6 +167,9 @@ GET  /api/parts/{id}/export/step                  AP242 STEP re-authored with GD
 GET  /api/parts/{id}/export/step/report           exporter counts + round-trip warnings
 GET  /api/parts/{id}/assembly                     assembly.json (imported assembly record)
 POST /api/parts/{id}/explode                      split an uploaded assembly into child parts
+GET/PUT /api/parts/{id}/route        the part's operations + checks (PUT sends the revision it edited; 409 on mismatch)
+GET  /api/parts/{id}/route/history   append-only revision snapshots
+GET  /api/catalogue/machines         machine profile library (name, label, kind, catalogue path)
 GET  /api/parts/{id}/splits          user face-split state (cuts, sub-face parents, polylines)
 POST /api/parts/{id}/splits          add a cut {face, start, end} (sync, numpy-only; 400 invalid, 409 stale mesh)
 DELETE /api/parts/{id}/splits[/last] clear all cuts / undo the last one
