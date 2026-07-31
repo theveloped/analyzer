@@ -191,12 +191,28 @@ export interface MachineSummary {
   path: string;
 }
 
-export interface RouteCheck {
+/** One result a check reads. A check that interprets several fields carries
+ * `sources` INSTEAD of `analysis`/`params` — route.py validates that it is
+ * one or the other, never both. */
+export interface CheckSource {
   id: string;
   /** Backend analysis id, "process/analysis". */
   analysis: string;
   /** Declared analysis params, literal — these ARE the cache key's input. */
   params: Record<string, any>;
+}
+
+export interface RouteCheck {
+  id: string;
+  /** Author-supplied name (expression checks; others read theirs off the
+   * catalog). */
+  label?: string;
+  /** Backend analysis id, "process/analysis" — single-source checks. */
+  analysis?: string;
+  /** Declared analysis params, literal — these ARE the cache key's input. */
+  params?: Record<string, any>;
+  /** Several results, when one is not enough. */
+  sources?: CheckSource[];
   /** Pinned interpretation thresholds — the verdict's inputs. */
   policy?: Record<string, any>;
   operation?: string | null;
@@ -213,12 +229,17 @@ export interface Route {
 
 /** Server-derived execution facts for one check (never authored). */
 export interface RouteCheckStatus {
+  /** Null on a multi-source check — it has one hash per source, not one. */
   expected_hash: string | null;
   /** Merged params — submit these verbatim to run the check. */
   params: Record<string, any> | null;
+  /** Rolled up over `sources`: `exists` only when EVERY source is on disk,
+   * because an expression over two fields cannot run on one of them. */
   exists: boolean;
   stale: boolean;
   error: string | null;
+  /** Present on multi-source checks: the same facts, per source id. */
+  sources?: Record<string, Omit<RouteCheckStatus, 'sources'>>;
 }
 
 export interface RouteSection {

@@ -127,7 +127,8 @@ python test_vocab.py         # controlled vocabularies: every Python frozenset v
 They build synthetic parts with known-correct answers and assert on them; a green
 run prints assertions passed. Run the test(s) covering the module you touched —
 mapping in docs/RECIPES.md. Frontend: `cd frontend && npm test` runs the vitest
-unit suites (pure math modules, e.g. `src/viewer/measure.test.ts`);
+unit suites (pure math modules, e.g. `src/viewer/measure.test.ts`, and
+`src/fields/expression.test.ts` — the check-expression semantics);
 `frontend/smoke.mjs` (v1) and `frontend/v2-smoke.mjs` (v2, incl. viewport
 styles/section/measure pixel checks) walk the UI against a running server
 (needs `CHROMIUM_PATH`).

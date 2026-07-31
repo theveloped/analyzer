@@ -170,7 +170,7 @@ export function selectRouteCheck(check: RouteCheck) {
   const view = describeCheck(check, section.route);
   if (!view) return;
   const status = section.checks[check.id];
-  const target = view.activate(status?.expected_hash ?? null);
+  const target = view.activate(status);
   useV2.getState().setActiveCheck(check.id);
   for (const [name, value] of Object.entries(target.params)) {
     store.setViewerParam(target.processId, name, value);
@@ -307,6 +307,35 @@ export async function removeCheck(check: RouteCheck): Promise<void> {
     ...section.route,
     checks: section.route.checks.filter((c) => c.id !== check.id),
   }, section.route.revision);
+}
+
+/** Add an empty expression check and open the builder on it.
+ *
+ * Empty on purpose: the check is created so it has an id and a place on the
+ * route, and everything it means is authored in the builder. Nothing is
+ * seeded — a check that says something you did not write is the failure mode
+ * the per-kind defaults had. */
+export async function addExpressionCheck(
+  operation?: string | null,
+): Promise<void> {
+  const section = useStore.getState().manifest?.route;
+  if (!section) return;
+  let id = 'chk-expr';
+  for (let n = 2; section.route.checks.some((c) => c.id === id); n++) {
+    id = `chk-expr-${n}`;
+  }
+  const check: RouteCheck = {
+    id,
+    label: 'Expression',
+    sources: [],
+    policy: { kind: 'expression', terms: [], aggregate: { limit: 0, severity: 'review' } },
+    lens: 'injection_molding:expression',
+    ...(operation ? { operation } : {}),
+  };
+  await storeRoute(
+    { ...section.route, checks: [...section.route.checks, check] },
+    section.route.revision);
+  useV2.getState().setExpressionCheckId(id);
 }
 
 /** Edit one operation's config in place (e.g. its direction). */

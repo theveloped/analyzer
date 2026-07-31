@@ -52,12 +52,16 @@ export interface V2State {
    * is recorded by adding an operation. `part` guards against showing
    * another part's selection. */
   selection: { part: string | null; keys: string[] };
+  /** The expression check the builder is open on (null = closed). Which
+   * check you are EDITING is shell state; what it says lives on the route. */
+  expressionCheckId: string | null;
 
   setAdvanced: (advanced: boolean) => void;
   setSectionRailOpen: (open: boolean) => void;
   setActiveStudy: (id: string | null) => void;
   setRailWidth: (id: string, width: number) => void;
   setSelection: (part: string | null, keys: string[]) => void;
+  setExpressionCheckId: (id: string | null) => void;
   toggleTheme: () => void;
   setCompute: (analysisId: string, key: string, value: unknown) => void;
   setActiveCheck: (id: string | null) => void;
@@ -108,6 +112,7 @@ export const useV2 = create<V2State>()((set) => ({
   activeStudy: null,
   railWidths: loadRailWidths(),
   selection: { part: null, keys: [] },
+  expressionCheckId: null,
 
   setAdvanced: (advanced) => set({ advanced }),
   setSectionRailOpen: (sectionRailOpen) => set({ sectionRailOpen }),
@@ -118,6 +123,7 @@ export const useV2 = create<V2State>()((set) => ({
     return { railWidths };
   }),
   setSelection: (part, keys) => set({ selection: { part, keys } }),
+  setExpressionCheckId: (id) => set({ expressionCheckId: id }),
   setViewport: (patch) =>
     set((s) => ({ viewport: { ...s.viewport, ...patch } })),
   setMeasureActive: (active) =>

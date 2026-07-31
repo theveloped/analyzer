@@ -37,6 +37,7 @@ import {
 } from '../../splits/splits';
 import { SplitControls } from '../../splits/SplitControls';
 import { optimizeParting } from '../parting';
+import { expressionMode } from '../../colorizers/expression';
 import { runCtxAction } from '../../viewer/controller';
 
 const CONFLICT_FEATURE = 254;
@@ -1729,6 +1730,8 @@ export const injectionPlugin: ProcessPlugin = {
           slendernessMode, thinSpanMode,
           thicknessAngleMode, gapAngleMode,
           skeletonMode, voxelFieldMode, brepFacesMode, faceAttrsMode, pmiMode,
+          // process-independent, hosted here beside the other shared modes
+          expressionMode,
           highlightsMode],
   defaults: () => ({
     result: -1, option: 0,

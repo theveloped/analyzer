@@ -9,6 +9,9 @@
 /** Secondary explanatory text under a control or heading. */
 export const hintCls = 'text-xs/5 text-zinc-500 dark:text-zinc-400';
 
+/** A field label above an input. */
+export const labelCls = 'text-sm/6 font-medium text-zinc-950 dark:text-white';
+
 /** In-table/inline buttons: keyboard focus stays visible, mouse focus does
  * not — clicking a value should act on it, not leave a ring behind. */
 export const focusCls = 'focus:outline-none focus-visible:rounded-xs '

@@ -172,6 +172,58 @@ def test_check_status(workdir):
           section["route"]["revision"] == 1)
 
 
+def test_multi_source_checks(workdir):
+    """A check that interprets several fields carries `sources` instead of
+    one analysis, and is `current` only when EVERY source is on disk."""
+    route = route_mod.empty_route()
+    route["checks"] = [{
+        "id": "chk", "label": "Expression",
+        "sources": [
+            {"id": "s1", "analysis": ANALYSIS_ID, "params": {NUM_PARAM: 3.0}},
+            {"id": "s2", "analysis": ANALYSIS_ID, "params": {NUM_PARAM: 9.0}},
+        ],
+        "policy": {"kind": "expression", "terms": []},
+    }]
+    status = route_mod.check_status(workdir, route["checks"][0])
+    check("multi-source status is per source",
+          set(status["sources"]) == {"s1", "s2"}
+          and status["sources"]["s1"]["expected_hash"]
+          != status["sources"]["s2"]["expected_hash"])
+    check("no single expected_hash on a multi-source check",
+          status["expected_hash"] is None and not status["exists"])
+
+    store_for(workdir, {NUM_PARAM: 3.0})
+    status = route_mod.check_status(workdir, route["checks"][0])
+    check("one source stored is not enough to be current",
+          status["sources"]["s1"]["exists"] and not status["exists"])
+
+    store_for(workdir, {NUM_PARAM: 9.0})
+    status = route_mod.check_status(workdir, route["checks"][0])
+    check("current once every source is on disk", status["exists"])
+
+    bad = route_mod.empty_route()
+    bad["checks"] = [{"id": "c", "analysis": ANALYSIS_ID, "params": {},
+                      "sources": [{"id": "s", "analysis": ANALYSIS_ID}]}]
+    expect_raises("analysis and sources together rejected", ValueError,
+                  lambda: route_mod.validate_route(bad))
+    bad["checks"] = [{"id": "c", "sources": []}]
+    expect_raises("empty sources rejected", ValueError,
+                  lambda: route_mod.validate_route(bad))
+    bad["checks"] = [{"id": "c", "sources": [
+        {"id": "s", "analysis": ANALYSIS_ID},
+        {"id": "s", "analysis": ANALYSIS_ID}]}]
+    expect_raises("duplicate source ids rejected", ValueError,
+                  lambda: route_mod.validate_route(bad))
+    bad["checks"] = [{"id": "c", "sources": [{"id": "s", "analysis": "nope"}]}]
+    expect_raises("source analysis must be process/analysis", ValueError,
+                  lambda: route_mod.validate_route(bad))
+
+    good = route_mod.empty_route()
+    good["checks"] = route["checks"]
+    route_mod.validate_route(good)
+    check("multi-source check accepted", True)
+
+
 def test_machines():
     """The machine catalogue is a plain reference library — an operation
     stores the NAME, nothing is copied into the workdir."""
@@ -198,6 +250,8 @@ def main():
         test_schema_mismatch_discards(workdir)
     with tempfile.TemporaryDirectory() as workdir:
         test_check_status(workdir)
+    with tempfile.TemporaryDirectory() as workdir:
+        test_multi_source_checks(workdir)
     test_machines()
 
     print(f"\n{PASSED} passed, {FAILED} failed")

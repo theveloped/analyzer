@@ -1,6 +1,7 @@
 import clsx from 'clsx';
 import {
-  Circle, CircleDashed, Compass, Hammer, Plus, Route, Telescope, X, Zap,
+  Circle, CircleDashed, Compass, Hammer, Plus, Route, Sigma, Telescope, X,
+  Zap,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { fetchMachines } from '../../api/client';
@@ -21,9 +22,9 @@ import { StatusDot } from '../components/status';
 import { useV2 } from '../store';
 import { closeStudy, openStudy, STUDIES } from '../studies';
 import {
-  addOperation, catalogFor, removeCheck, removeOperation, selectAnalysis,
-  selectRouteCheck, updateOperation, useActiveAnalysis, useCheckActive,
-  useRouteSection, useVisibleAnalyses,
+  addExpressionCheck, addOperation, catalogFor, removeCheck, removeOperation,
+  selectAnalysis, selectRouteCheck, updateOperation, useActiveAnalysis,
+  useCheckActive, useRouteSection, useVisibleAnalyses,
 } from './hooks';
 
 function CheckCard({ icon: Icon, label, tier, state, summary, isActive, onClick }: {
@@ -73,7 +74,7 @@ function RouteCheckCard({ check, status, isActive }: {
     check, section!.route, status, manifest);
   const view = describeCheck(check, section!.route);
   if (!view) return null;
-  const [process, analysis] = check.analysis.split('/');
+  const [process, analysis] = (check.analysis ?? '/').split('/');
   const state = planCheckState(status, jobs, partId, { process, analysis },
     evaluation?.verdict ?? 'unknown');
   if (!evaluation && state.execution === 'current') state.note = 'evaluating…';
@@ -405,6 +406,10 @@ export function PipelineRail() {
             <Plus data-slot="icon" /> Add operation
           </Button>
         )}
+        <Button outline onClick={() => void addExpressionCheck()}
+          className="w-full" disabled={!manifest}>
+          <Sigma data-slot="icon" /> Add check
+        </Button>
       </div>
 
       <div className="mt-2 flex items-start gap-2 rounded-lg bg-zinc-950/2.5 p-2.5 text-xs/5 text-zinc-500 dark:bg-white/5 dark:text-zinc-400">

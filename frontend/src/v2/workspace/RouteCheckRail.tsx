@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import { Play, RotateCw } from 'lucide-react';
+import { Pencil, Play, RotateCw } from 'lucide-react';
 import type { Route, RouteCheck, RouteCheckStatus } from '../../api/types';
 import { Button } from '../../catalyst/button';
 import { useStore } from '../../state/store';
@@ -10,6 +10,7 @@ import { FindingRow } from './findings';
 import { useRouteSection, useSelectedRouteCheck } from './hooks';
 import { runRouteCheck, useBusy } from './run';
 import { hintCls } from '../components/styles';
+import { useV2 } from '../store';
 
 
 /**
@@ -40,7 +41,7 @@ function Rail({ check, status, route }: {
   const view = describeCheck(check, route);
   if (!view) return null;
 
-  const [process, analysis] = check.analysis.split('/');
+  const [process, analysis] = (check.analysis ?? '/').split('/');
   const state = planCheckState(status, jobs, partId, { process, analysis },
     evaluation?.verdict ?? 'unknown');
   const evaluating = !evaluation && state.execution === 'current';
@@ -63,6 +64,13 @@ function Rail({ check, status, route }: {
         <p className={clsx('mt-1', hintCls)}>{view.blurb}</p>
       </div>
 
+      {view.kind === 'expression' && (
+        <Button outline className="w-full"
+          onClick={() => useV2.getState().setExpressionCheckId(check.id)}>
+          <Pencil data-slot="icon" /> Edit expression
+        </Button>
+      )}
+
       <Button
         onClick={() => runRouteCheck(check, status)}
         disabled={!meshReady || busy || !!status?.error}
@@ -78,6 +86,13 @@ function Rail({ check, status, route }: {
       </Button>
       {status?.error && (
         <p className="text-xs/5 text-red-600 dark:text-red-500">⚠ {status.error}</p>
+      )}
+      {view.kind === 'expression' && (
+        <p className={hintCls}>
+          Runs every field the expression reads that is not already cached.
+          Editing the rule itself recomputes nothing — a band is
+          interpretation, not a param.
+        </p>
       )}
       {(view.kind === 'reach_op' || view.kind === 'reach_route') && (
         <p className={hintCls}>

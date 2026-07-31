@@ -102,6 +102,9 @@ export const CURATION: Record<string, Curation> = {
   },
   // the candidate-directions view keeps its dedicated toolbar button
   'directions:directions': { icon: Crosshair, hidden: true },
+  // an expression paints only what a check configured, so it is meaningless
+  // to open from the ribbon — the check activates it with its own terms
+  'injection_molding:expression': { hidden: true },
 
   // geometry (process-independent measures, hosted by injection_molding)
   'injection_molding:thickness': { icon: Ruler, category: 'geometry', pinned: true },

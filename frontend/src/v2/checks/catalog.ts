@@ -1,5 +1,5 @@
 import {
-  Axis3d, Drill, Expand, Eye, Layers, ListOrdered, ShieldCheck,
+  Axis3d, Drill, Expand, Eye, Layers, ListOrdered, ShieldCheck, Sigma,
   type LucideIcon,
 } from 'lucide-react';
 import { create } from 'zustand';
@@ -13,9 +13,14 @@ import { ANALYSES, type Analysis } from '../analyses';
 import type { ToolSpec } from '../table/columns';
 import { FIELD_LENSES, type FieldLensDef } from '../fieldLenses';
 import {
-  evaluateBandCheck, evaluateCheck, evaluateReachOp, evaluateReachRoute,
-  evaluateStatsCheck, isStatsRule, type Evaluation, type StatsRule,
+  evaluateBandCheck, evaluateCheck, evaluateExpression, evaluateReachOp,
+  evaluateReachRoute, evaluateStatsCheck, isStatsRule,
+  type Evaluation, type SourceHashes, type StatsRule,
 } from './evaluators';
+import {
+  expressionText, resolveTerms, type ExprTerm, type MaskCtx,
+} from '../../fields/expression';
+import { meshArrays } from '../../viewer/controller';
 import { resultForHash } from './status';
 
 /**
@@ -50,15 +55,18 @@ export function defaultTools(): ToolSpec[] {
 }
 
 export interface CheckView {
-  kind: 'threshold' | 'reach_study' | 'reach_op' | 'reach_route' | 'stats';
+  kind: 'threshold' | 'reach_study' | 'reach_op' | 'reach_route' | 'stats'
+    | 'expression';
   label: string;
   blurb: string;
   icon: LucideIcon;
   tier: 'primary' | 'advanced';
   /** Catalog entry for threshold checks (units, slider vocabulary). */
   analysis: Analysis | null;
-  /** Viewer activation: shared-store mode + viewerParams patch. */
-  activate(expectedHash: string | null): {
+  /** Viewer activation: shared-store mode + viewerParams patch. Takes the
+   * whole status, not just a hash — an expression check has no single hash,
+   * it has one per source. */
+  activate(status: RouteCheckStatus | undefined): {
     processId: string; modeId: string; params: Record<string, unknown>;
   };
 }
@@ -98,6 +106,22 @@ function lensTarget(check: RouteCheck, params: Record<string, unknown> = {}) {
 }
 
 export function describeCheck(check: RouteCheck, route: Route): CheckView | null {
+  if (check.policy?.kind === 'expression') {
+    const terms = (check.policy?.terms ?? []) as ExprTerm[];
+    return {
+      kind: 'expression',
+      label: check.label || 'Expression',
+      blurb: terms.length ? expressionText(terms)
+        : 'No terms yet — open the check to build one.',
+      icon: Sigma,
+      tier: 'primary',
+      analysis: null,
+      activate: (status) => ({
+        processId: EXPRESSION_LENS[0], modeId: EXPRESSION_LENS[1],
+        params: { exprTerms: resolveTerms(terms, sourceHashes(check, status)).resolved },
+      }),
+    };
+  }
   const rule = check.policy?.kind === 'stats'
     ? String(check.policy?.rule ?? '') : null;
   if (rule) {
@@ -147,10 +171,10 @@ export function describeCheck(check: RouteCheck, route: Route): CheckView | null
       icon: Axis3d,
       tier: 'primary',
       analysis: null,
-      activate: (hash) => ({
+      activate: (status) => ({
         processId: 'cnc', modeId: 'reach_op',
         params: {
-          reachHash: hash,
+          reachHash: status?.expected_hash ?? null,
           opDirection: op?.config?.direction_index ?? null,
           reachFeatureMask: check.policy?.mask === 'features',
         },
@@ -165,9 +189,9 @@ export function describeCheck(check: RouteCheck, route: Route): CheckView | null
       icon: ShieldCheck,
       tier: 'primary',
       analysis: null,
-      activate: (hash) => ({
+      activate: (status) => ({
         processId: 'cnc', modeId: 'reach_aggregate',
-        params: { reachHash: hash, reachOps: routeOps(route) },
+        params: { reachHash: status?.expected_hash ?? null, reachOps: routeOps(route) },
       }),
     };
   }
@@ -179,9 +203,9 @@ export function describeCheck(check: RouteCheck, route: Route): CheckView | null
     icon: Eye,
     tier: 'primary',
     analysis: null,
-    activate: (hash) => ({
+    activate: (status) => ({
       processId: 'cnc', modeId: 'reach_study',
-      params: { reachHash: hash },
+      params: { reachHash: status?.expected_hash ?? null },
     }),
   };
 }
@@ -197,6 +221,35 @@ export function routeOps(route: Route) {
       direction: Number(op.config!.direction_index),
       label: op.label ?? op.id,
     }));
+}
+
+/** Which lens paints an expression. Process-independent, so it is hosted on
+ * the injection plugin beside the other shared modes (brepFaces, faceAttrs,
+ * pmi) rather than given a plugin of its own. */
+export const EXPRESSION_LENS: [string, string] = ['injection_molding', 'expression'];
+
+/** (source id) -> the analysis it names and the hash the server derived for
+ * it. This is what binds a stored term — which keeps only (source, member) so
+ * it survives a re-run — to a live field. */
+export function sourceHashes(
+  check: RouteCheck, status: RouteCheckStatus | undefined,
+): SourceHashes {
+  const out: SourceHashes = {};
+  for (const source of check.sources ?? []) {
+    out[source.id] = {
+      analysis: source.analysis,
+      hash: status?.sources?.[source.id]?.expected_hash ?? null,
+    };
+  }
+  return out;
+}
+
+/** MaskCtx from the live mesh — null until the fine mesh is loaded. */
+function maskCtx(manifest: Manifest): MaskCtx | null {
+  const mesh = meshArrays();
+  const faceCount = manifest.part.counts?.faces;
+  if (!mesh || !faceCount) return null;
+  return { manifest, ...mesh, faceCount, getField: fetchField };
 }
 
 // --- async evaluation memo -------------------------------------------------
@@ -225,7 +278,7 @@ function opFor(check: RouteCheck, route: Route): Operation | null {
 }
 
 function checkRef(check: RouteCheck): { process: string; analysis: string } {
-  const [process, analysis] = check.analysis.split('/');
+  const [process, analysis] = (check.analysis ?? '/').split('/');
   return { process, analysis };
 }
 
@@ -314,6 +367,12 @@ function evaluateResolved(
     }
   }
   if (view.kind === 'reach_study') return { verdict: 'na', findings: [] };
+  // an expression is keyed per SOURCE, so the single-hash guard below would
+  // reject it — it has no expected_hash of its own by construction
+  if (view.kind === 'expression') {
+    if (!status?.exists) return { verdict: 'unknown', findings: [] };
+    return null;
+  }
   if (!status?.exists || !status.expected_hash) {
     return { verdict: 'unknown', findings: [] };
   }
@@ -338,8 +397,13 @@ function bandOf(view: CheckView, check: RouteCheck): FieldLensDef | null {
  * for a band, a result that matches it. */
 async function evaluateDeferred(
   view: CheckView, check: RouteCheck, route: Route, hash: string,
-  manifest: Manifest,
+  manifest: Manifest, status?: RouteCheckStatus,
 ): Promise<Evaluation> {
+  if (view.kind === 'expression') {
+    const ctx = maskCtx(manifest);
+    if (!ctx) return { verdict: 'unknown', findings: [] };
+    return evaluateExpression(ctx, check, sourceHashes(check, status));
+  }
   if (view.kind === 'threshold' && view.analysis) {
     const result = resultForHash(manifest, view.analysis, hash);
     if (!result) return { verdict: 'unknown', findings: [] };
@@ -363,8 +427,13 @@ async function evaluateDeferred(
  * the policy masks by it. */
 function deferredKey(
   view: CheckView, check: RouteCheck, route: Route, hash: string,
-  manifest: Manifest,
+  manifest: Manifest, status?: RouteCheckStatus,
 ): string {
+  if (view.kind === 'expression') {
+    // every source hash, so a re-run of ANY of them re-evaluates
+    return ['expr', check.id, JSON.stringify(sourceHashes(check, status)),
+      JSON.stringify(check.policy ?? {})].join('|');
+  }
   if (view.kind === 'threshold') {
     return ['band', check.id, hash, JSON.stringify(check.policy ?? {})].join('|');
   }
@@ -386,7 +455,8 @@ export async function evaluateNow(
   if (!view) return { verdict: 'unknown', findings: [] };
   const resolved = evaluateResolved(view, check, status, manifest);
   if (resolved) return resolved;
-  return evaluateDeferred(view, check, route, status!.expected_hash!, manifest);
+  return evaluateDeferred(view, check, route, status?.expected_hash ?? '',
+    manifest, status);
 }
 
 /** Evaluation of a route check against its pinned policy. Plain threshold and
@@ -402,7 +472,7 @@ export function useCheckEvaluation(
   if (!view || !manifest) return { verdict: 'unknown', findings: [] };
   const resolved = evaluateResolved(view, check, status, manifest);
   if (resolved) return resolved;
-  const hash = status!.expected_hash!;
-  return runMemoized(deferredKey(view, check, route, hash, manifest),
-    () => evaluateDeferred(view, check, route, hash, manifest));
+  const hash = status?.expected_hash ?? '';
+  return runMemoized(deferredKey(view, check, route, hash, manifest, status),
+    () => evaluateDeferred(view, check, route, hash, manifest, status));
 }

@@ -21,17 +21,33 @@ export function runAnalysis(a: Analysis): void {
   );
 }
 
-/** Run a PLAN check: submits the server-materialized params verbatim, so the
- * result lands exactly under the check's expected hash. */
-export function runRouteCheck(check: RouteCheck, status: RouteCheckStatus | undefined): void {
+/** Run a route check: submits the server-materialized params verbatim, so the
+ * result lands exactly under the check's expected hash.
+ *
+ * A multi-source check runs every source that is not already on disk. They
+ * queue behind one another — meshlib is single-worker on purpose — so the
+ * check goes `current` when the last one lands. */
+export function runRouteCheck(
+  check: RouteCheck, status: RouteCheckStatus | undefined,
+): void {
   const partId = useStore.getState().partId;
-  if (!partId || !status?.params) return;
+  if (!partId || !status) return;
+  const fail = (err: unknown) => useStore.getState().set({
+    error: err instanceof Error ? err.message : String(err),
+  });
+
+  if (check.sources?.length) {
+    for (const source of check.sources) {
+      const own = status.sources?.[source.id];
+      if (!own?.params || own.exists) continue;
+      const [process, analysis] = source.analysis.split('/');
+      runAnalysisJob(partId, process, analysis, own.params).catch(fail);
+    }
+    return;
+  }
+  if (!status.params || !check.analysis) return;
   const [process, analysis] = check.analysis.split('/');
-  runAnalysisJob(partId, process, analysis, status.params).catch((err) =>
-    useStore.getState().set({
-      error: err instanceof Error ? err.message : String(err),
-    }),
-  );
+  runAnalysisJob(partId, process, analysis, status.params).catch(fail);
 }
 
 /** True while any job is queued/running for the active part. */
