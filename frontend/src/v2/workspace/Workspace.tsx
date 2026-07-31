@@ -51,7 +51,7 @@ export function Workspace() {
   const measuring = useV2((s) => s.measure.active);
   const sectionRailOpen = useV2((s) => s.sectionRailOpen);
   const activeStudy = useActiveStudy();
-  const buildingExpression = useV2((s) => s.expressionCheckId);
+  const buildingExpression = useV2((s) => s.expressionDraft);
   const setViewport = useV2((s) => s.setViewport);
 
   // PMI reads best as an xray shell with the BREP edges; only the annotated
@@ -80,7 +80,7 @@ export function Workspace() {
       : sectionRailOpen ? ['section', 288, <SectionRail />]
         // the builder outranks the check rail: you opened it to EDIT, and the
         // read-only card is what you would be dropped back onto
-        : buildingExpression ? ['expression', 360, <ExpressionRail />]
+        : buildingExpression ? ['expression', 380, <ExpressionRail />]
         : activeStudy ? ['study', 672, <DirectionsTableRail />]
           : modeId === 'pmi' ? ['pmi', 288, <PmiRail />]
             : directionsActive ? ['directions', 288, <DirectionsRail />]

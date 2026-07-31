@@ -7,10 +7,11 @@ import { describeCheck, useCheckEvaluation } from '../checks/catalog';
 import { planCheckState, statusKindOf } from '../checks/status';
 import { StatusBadge } from '../components/status';
 import { FindingRow } from './findings';
-import { useRouteSection, useSelectedRouteCheck } from './hooks';
+import {
+  editExpressionCheck, useRouteSection, useSelectedRouteCheck,
+} from './hooks';
 import { runRouteCheck, useBusy } from './run';
 import { hintCls } from '../components/styles';
-import { useV2 } from '../store';
 
 
 /**
@@ -66,7 +67,7 @@ function Rail({ check, status, route }: {
 
       {view.kind === 'expression' && (
         <Button outline className="w-full"
-          onClick={() => useV2.getState().setExpressionCheckId(check.id)}>
+          onClick={() => editExpressionCheck(check)}>
           <Pencil data-slot="icon" /> Edit expression
         </Button>
       )}

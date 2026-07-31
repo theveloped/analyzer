@@ -209,6 +209,10 @@ def test_multi_source_checks(workdir):
     bad["checks"] = [{"id": "c", "sources": []}]
     expect_raises("empty sources rejected", ValueError,
                   lambda: route_mod.validate_route(bad))
+    # `all()` of no sources is True, which would report a check that reads
+    # nothing as `current`
+    empty = route_mod.check_status(workdir, {"id": "e", "sources": []})
+    check("a check with no sources is never current", not empty["exists"])
     bad["checks"] = [{"id": "c", "sources": [
         {"id": "s", "analysis": ANALYSIS_ID},
         {"id": "s", "analysis": ANALYSIS_ID}]}]

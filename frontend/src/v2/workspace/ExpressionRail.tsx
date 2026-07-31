@@ -4,18 +4,18 @@ import { useEffect, useState } from 'react';
 import { Button } from '../../catalyst/button';
 import { Input } from '../../catalyst/input';
 import { Select } from '../../catalyst/select';
-import type { CheckSource, RouteCheck } from '../../api/types';
+import type { CheckSource } from '../../api/types';
 import {
   expressionFields, ruleText, type ExprAggregate, type ExprTerm,
   type FieldOption, type TermOp, type TermRule,
 } from '../../fields/expression';
 import { BOUND_UNITS, type BandBound } from '../../fields/stats';
 import { useStore } from '../../state/store';
-import { EXPRESSION_LENS, sourceHashes } from '../checks/catalog';
+import { EXPRESSION_LENS } from '../checks/catalog';
 import { resolveTerms } from '../../fields/expression';
 import { hintCls, labelCls } from '../components/styles';
 import { useV2 } from '../store';
-import { storeRoute, useRouteSection } from './hooks';
+import { saveExpressionCheck, useRouteSection } from './hooks';
 
 /**
  * Build one expression check: a list of terms over stored fields, joined by
@@ -55,27 +55,29 @@ function BoundRow({ label, bound, unit, onChange }: {
   onChange: (next: BandBound) => void;
 }) {
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex min-w-0 items-center gap-1.5">
       <span className="w-8 shrink-0 text-[11px]/5 text-zinc-500 dark:text-zinc-400">
         {label}
       </span>
-      <Input
-        value={bound.value}
-        onChange={(e) => onChange({ ...bound, value: e.target.value })}
-        placeholder="—"
-        aria-label={`${label} value`}
-        className="min-w-0 flex-1"
-      />
-      <Select
-        value={bound.unit}
-        onChange={(e) => onChange({ ...bound, unit: e.target.value as BandBound['unit'] })}
-        aria-label={`${label} unit`}
-        className="w-32 shrink-0"
-      >
-        {BOUND_UNITS(unit).map((u) => (
-          <option key={u.id} value={u.id}>{u.label}</option>
-        ))}
-      </Select>
+      <div className="min-w-0 w-20 shrink-0">
+        <Input
+          value={bound.value}
+          onChange={(e) => onChange({ ...bound, value: e.target.value })}
+          placeholder="—"
+          aria-label={`${label} value`}
+        />
+      </div>
+      <div className="min-w-0 flex-1">
+        <Select
+          value={bound.unit}
+          onChange={(e) => onChange({ ...bound, unit: e.target.value as BandBound['unit'] })}
+          aria-label={`${label} unit`}
+        >
+          {BOUND_UNITS(unit).map((u) => (
+            <option key={u.id} value={u.id}>{u.label}</option>
+          ))}
+        </Select>
+      </div>
     </div>
   );
 }
@@ -86,21 +88,22 @@ function TermCard({ term, index, onChange, onRemove }: {
 }) {
   const rule = term.rule;
   return (
-    <div className="rounded-lg border border-zinc-950/10 p-2 dark:border-white/10">
-      <div className="flex items-center gap-1.5">
+    <div className="min-w-0 rounded-lg border border-zinc-950/10 p-2 dark:border-white/10">
+      <div className="flex min-w-0 items-center gap-1.5">
         {index === 0 ? (
-          <span className="w-16 shrink-0 text-[11px]/5 font-medium text-zinc-400">
+          <span className="w-20 shrink-0 text-[11px]/5 font-medium text-zinc-400">
             where
           </span>
         ) : (
-          <Select
-            value={term.op}
-            onChange={(e) => onChange({ ...term, op: e.target.value as TermOp })}
-            aria-label="combine with"
-            className="w-16 shrink-0"
-          >
-            {OPS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
-          </Select>
+          <div className="w-20 shrink-0">
+            <Select
+              value={term.op}
+              onChange={(e) => onChange({ ...term, op: e.target.value as TermOp })}
+              aria-label="combine with"
+            >
+              {OPS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+            </Select>
+          </div>
         )}
         <span className="min-w-0 flex-1 truncate text-xs/5 font-medium text-zinc-950 dark:text-white"
           title={term.label ?? term.field}
@@ -168,47 +171,60 @@ function TermCard({ term, index, onChange, onRemove }: {
   );
 }
 
+/** Result hashes for a DRAFT's terms, read off the browsed field options.
+ *
+ * The server derives per-source hashes for a STORED check, but a draft has
+ * not been stored yet — and the option a term was picked from already knows
+ * which result it came from. So the preview paints before the first save,
+ * which is the whole point of a builder you watch while you type. */
+function draftSourceHashes(
+  terms: ExprTerm[], options: FieldOption[],
+): Record<string, { analysis: string; hash: string }> {
+  const out: Record<string, { analysis: string; hash: string }> = {};
+  for (const term of terms) {
+    if (out[term.source]) continue;
+    const option = options.find(
+      (o) => sourceIdFor(o) === term.source && o.member === term.field);
+    if (option) {
+      out[term.source] = {
+        analysis: `${option.process}/${option.analysis}`, hash: option.hash,
+      };
+    }
+  }
+  return out;
+}
+
 export function ExpressionRail() {
   const manifest = useStore((s) => s.manifest);
   const section = useRouteSection();
-  const editing = useV2((s) => s.expressionCheckId);
-  const closeBuilder = useV2((s) => s.setExpressionCheckId);
+  const draft = useV2((s) => s.expressionDraft);
+  const setDraft = useV2((s) => s.setExpressionDraft);
 
-  const stored = section?.route.checks.find((c) => c.id === editing) ?? null;
-  const options = expressionFields(manifest);
-
-  const [label, setLabel] = useState('');
-  const [terms, setTerms] = useState<ExprTerm[]>([]);
-  const [aggregate, setAggregate] = useState<ExprAggregate>(
-    { limit: 0, severity: 'review' });
+  const catalog = useStore((s) => s.catalog);
+  const options = expressionFields(manifest, catalog);
+  const terms = draft?.terms ?? [];
   const [picking, setPicking] = useState('');
 
-  // seed from the stored check whenever the builder opens on a different one
+  // paint what the terms currently describe, so the rule is visible while it
+  // is being written rather than only once it is saved
+  const termsKey = JSON.stringify(terms);
   useEffect(() => {
-    setLabel(stored?.label ?? 'Expression');
-    setTerms(((stored?.policy?.terms ?? []) as ExprTerm[]).map((t) => ({ ...t })));
-    setAggregate((stored?.policy?.aggregate as ExprAggregate)
-      ?? { limit: 0, severity: 'review' });
-  }, [editing]);
-
-  // paint what the terms currently describe, so the rule is visible while
-  // it is being written rather than only after it is saved
-  useEffect(() => {
-    if (!terms.length || !stored) return;
-    const status = section?.checks[stored.id];
+    if (!terms.length) return;
     const store = useStore.getState();
-    const { resolved } = resolveTerms(terms, sourceHashes(
-      { ...stored, sources: sourcesFor(terms, options) } as RouteCheck, status));
+    const { resolved } = resolveTerms(terms, draftSourceHashes(terms, options));
     store.setViewerParam(EXPRESSION_LENS[0], 'exprTerms', resolved);
     store.set({ processId: EXPRESSION_LENS[0], modeId: EXPRESSION_LENS[1] });
-  }, [JSON.stringify(terms)]);
+  }, [termsKey]);
 
-  if (!stored || !section) return null;
+  if (!draft || !section) return null;
+
+  const setTerms = (next: ExprTerm[]) => setDraft({ ...draft, terms: next });
+  const closeBuilder = () => setDraft(null);
 
   function addTerm(fieldId: string) {
     const option = options.find((o) => o.id === fieldId);
     if (!option) return;
-    setTerms((prev) => [...prev, {
+    setTerms([...terms, {
       source: sourceIdFor(option),
       field: option.member,
       rule: defaultRule(option),
@@ -219,24 +235,8 @@ export function ExpressionRail() {
     setPicking('');
   }
 
-  async function save() {
-    const sources = sourcesFor(terms, options);
-    const next: RouteCheck = {
-      id: stored!.id,
-      label,
-      sources,
-      policy: { kind: 'expression', terms, aggregate },
-      lens: `${EXPRESSION_LENS[0]}:${EXPRESSION_LENS[1]}`,
-      ...(stored!.operation ? { operation: stored!.operation } : {}),
-    };
-    await storeRoute({
-      ...section!.route,
-      checks: section!.route.checks.map((c) => (c.id === next.id ? next : c)),
-    }, section!.route.revision);
-  }
-
   return (
-    <div className="flex min-h-full flex-col gap-3 p-4">
+    <div className="flex min-h-full min-w-0 flex-col gap-3 p-4">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h2 className="text-sm/6 font-semibold text-zinc-950 dark:text-white">
@@ -247,25 +247,25 @@ export function ExpressionRail() {
             the result as you edit.
           </p>
         </div>
-        <Button plain onClick={() => closeBuilder(null)} aria-label="Close the builder">
+        <Button plain onClick={closeBuilder} aria-label="Close the builder">
           <X data-slot="icon" />
         </Button>
       </div>
 
       <div>
         <div className={labelCls}>Name</div>
-        <Input value={label} onChange={(e) => setLabel(e.target.value)}
+        <Input value={draft.label}
+          onChange={(e) => setDraft({ ...draft, label: e.target.value })}
           aria-label="check name" />
       </div>
 
-      <div className="flex flex-col gap-1.5">
+      <div className="flex min-w-0 flex-col gap-1.5">
         {terms.map((term, i) => (
           <TermCard
             key={i}
             term={term} index={i}
-            onChange={(next) => setTerms((prev) =>
-              prev.map((t, j) => (j === i ? next : t)))}
-            onRemove={() => setTerms((prev) => prev.filter((_, j) => j !== i))}
+            onChange={(next) => setTerms(terms.map((t, j) => (j === i ? next : t)))}
+            onRemove={() => setTerms(terms.filter((_, j) => j !== i))}
           />
         ))}
         {!terms.length && (
@@ -293,31 +293,40 @@ export function ExpressionRail() {
 
       <div>
         <div className={labelCls}>Flag when the selected area exceeds</div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <div className="w-20 shrink-0">
           <Input
             type="number" min="0" max="100"
-            value={String(100 * aggregate.limit)}
-            onChange={(e) => setAggregate({
-              ...aggregate,
-              limit: Math.max(0, (parseFloat(e.target.value) || 0) / 100),
+            value={String(100 * draft.aggregate.limit)}
+            onChange={(e) => setDraft({
+              ...draft,
+              aggregate: {
+                ...draft.aggregate,
+                limit: Math.max(0, (parseFloat(e.target.value) || 0) / 100),
+              },
             })}
             aria-label="area limit"
-            className="min-w-0 flex-1"
           />
-          <span className="shrink-0 text-[11px]/5 text-zinc-500 dark:text-zinc-400">
+          </div>
+          <span className="min-w-0 flex-1 text-[11px]/5 text-zinc-500 dark:text-zinc-400">
             % of the part
           </span>
+          <div className="w-24 shrink-0">
           <Select
-            value={aggregate.severity}
-            onChange={(e) => setAggregate({
-              ...aggregate, severity: e.target.value as ExprAggregate['severity'],
+            value={draft.aggregate.severity}
+            onChange={(e) => setDraft({
+              ...draft,
+              aggregate: {
+                ...draft.aggregate,
+                severity: e.target.value as ExprAggregate['severity'],
+              },
             })}
             aria-label="severity"
-            className="w-24 shrink-0"
           >
             <option value="review">review</option>
             <option value="fail">fail</option>
           </Select>
+          </div>
         </div>
         <p className={clsx('mt-1', hintCls)}>
           0 % means any selected face at all is a finding.
@@ -325,12 +334,15 @@ export function ExpressionRail() {
       </div>
 
       <div className="mt-auto flex gap-1.5 pt-2">
-        <Button outline onClick={() => closeBuilder(null)} className="flex-1">
+        <Button outline onClick={closeBuilder} className="flex-1">
           Close
         </Button>
-        <Button onClick={() => void save()} className="flex-1"
-          disabled={!terms.length}>
-          Save
+        <Button
+          onClick={() => void saveExpressionCheck(draft, sourcesFor(terms, options))}
+          className="flex-1"
+          disabled={!terms.length}
+        >
+          {draft.checkId ? 'Update check' : 'Add check'}
         </Button>
       </div>
     </div>

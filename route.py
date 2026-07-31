@@ -254,7 +254,9 @@ def check_status(workdir, check):
            for source in sources}
     errors = [s["error"] for s in per.values() if s["error"]]
     return {"expected_hash": None, "params": None,
-            "exists": all(s["exists"] for s in per.values()),
+            # `all()` of nothing is True — a check that reads nothing must
+            # never report `current`
+            "exists": bool(per) and all(s["exists"] for s in per.values()),
             "stale": any(s["stale"] for s in per.values()),
             "error": errors[0] if errors else None,
             "sources": per}

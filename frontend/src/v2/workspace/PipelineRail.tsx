@@ -22,7 +22,7 @@ import { StatusDot } from '../components/status';
 import { useV2 } from '../store';
 import { closeStudy, openStudy, STUDIES } from '../studies';
 import {
-  addExpressionCheck, addOperation, catalogFor, removeCheck, removeOperation,
+  addOperation, catalogFor, newExpressionCheck, removeCheck, removeOperation,
   selectAnalysis, selectRouteCheck, updateOperation, useActiveAnalysis,
   useCheckActive, useRouteSection, useVisibleAnalyses,
 } from './hooks';
@@ -406,7 +406,7 @@ export function PipelineRail() {
             <Plus data-slot="icon" /> Add operation
           </Button>
         )}
-        <Button outline onClick={() => void addExpressionCheck()}
+        <Button outline onClick={() => newExpressionCheck()}
           className="w-full" disabled={!manifest}>
           <Sigma data-slot="icon" /> Add check
         </Button>

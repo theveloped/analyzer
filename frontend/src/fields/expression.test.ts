@@ -193,6 +193,24 @@ describe('binding and reading back', () => {
     expect(options.find((o) => o.member === 'flag')?.rule).toBe('mask');
   });
 
+  it('keeps only DECLARED params, so a source re-keys to its own result', () => {
+    // a stored result's params fold in the prep fingerprint salts; handing
+    // those back as declared params derives a hash the result is not under,
+    // and the check sits at `not run` while staring at its own field
+    const salted = {
+      ...MANIFEST,
+      results: [{ ...MANIFEST.results[0],
+        params: { sharp_deg: 25, contact_angles: false, mesh: '997b220b3e8e' } }],
+    } as unknown as Manifest;
+    const catalog = [{ id: 'p', label: 'p', description: '', analyses: [
+      { id: 'a', label: 'a', description: '', requires: [], params: [
+        { name: 'sharp_deg', type: 'int', default: 25 },
+        { name: 'contact_angles', type: 'bool', default: false },
+      ] }] }] as any;
+    const option = expressionFields(salted, catalog)[0];
+    expect(option.params).toEqual({ sharp_deg: 25, contact_angles: false });
+  });
+
   it('reads an expression back as one line', () => {
     expect(expressionText([
       { source: 's', field: 'angle', label: 'angle', unit: '°',

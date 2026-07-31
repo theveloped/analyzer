@@ -22,7 +22,9 @@
 // FieldDescriptor happens at evaluation time from the per-source hashes the
 // server derives, which is what lets a stored expression survive a recompute.
 
-import type { FieldDescriptor, FieldRole, Manifest } from '../api/types';
+import type {
+  FieldDescriptor, FieldRole, Manifest, ProcessInfo,
+} from '../api/types';
 import { fieldStats, resolveBound, boundText, type BandBound } from './stats';
 
 export type TermOp = 'and' | 'or' | 'andNot';
@@ -282,6 +284,24 @@ export interface FieldOption {
   stale: boolean;
 }
 
+/** A stored result's params, filtered to the analysis's DECLARED ones.
+ *
+ * `ResultEntry.params` is what the runner stored, which folds in the prep
+ * FINGERPRINT SALTS (`mesh`, `directions`, `aag`). Handing those back as a
+ * source's params re-adds them as if they were declared, and the key comes
+ * out different from the result they were read off — the check would sit at
+ * `not run` forever while staring at its own field. */
+function declaredParams(
+  catalog: ProcessInfo[], process: string, analysis: string,
+  stored: Record<string, unknown>,
+): Record<string, unknown> {
+  const names = catalog.find((p) => p.id === process)?.analyses
+    .find((a) => a.id === analysis)?.params.map((p) => p.name);
+  if (!names) return {};
+  return Object.fromEntries(
+    Object.entries(stored).filter(([key]) => names.includes(key)));
+}
+
 /**
  * Every stored field a term could interpret, newest result first.
  *
@@ -290,7 +310,9 @@ export interface FieldOption {
  * that is not there yet is one lens click away. That avoids inventing a
  * second catalogue of fields that could drift from the results themselves.
  */
-export function expressionFields(manifest: Manifest | null): FieldOption[] {
+export function expressionFields(
+  manifest: Manifest | null, catalog: ProcessInfo[] = [],
+): FieldOption[] {
   if (!manifest) return [];
   const byResult = new Map(manifest.results.map((r) => [
     `${r.process}.${r.analysis}.${r.hash}`, r]));
@@ -307,7 +329,7 @@ export function expressionFields(manifest: Manifest | null): FieldOption[] {
       id: field.id, process, analysis, hash, member,
       label: `${analysis} · ${member}`,
       role: field.role, rule, unit: field.units ?? '',
-      params: result?.params ?? {},
+      params: declaredParams(catalog, process, analysis, result?.params ?? {}),
       stale: !!result?.stale,
     });
   }
