@@ -19,6 +19,8 @@ const pct = (v: number) => `${(100 * v).toFixed(1)} %`;
 export const expressionMode: ViewMode = {
   id: 'expression',
   label: 'Check expression',
+  // the terms are bound by the check that activates it
+  params: [],
   async paint(ctx: ViewCtx): Promise<PaintInfo> {
     const terms = (ctx.params.exprTerms ?? []) as ResolvedTerm[];
     if (!terms.length) {

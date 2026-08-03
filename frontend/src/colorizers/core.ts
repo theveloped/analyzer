@@ -634,6 +634,11 @@ export async function fetchFaceField(
  * User face splits show as their sub-face pieces when present. */
 export const brepFacesMode: ViewMode = {
   id: 'brep_faces',
+  // no user knobs — this paint reads the manifest, not viewerParams.
+  // Declared (rather than left undefined) so the rail knows it was
+  // audited and suppresses the panel instead of falling back to the
+  // host plugin's, which rendered an empty card here.
+  params: [],
   label: 'BREP faces',
   async paint(ctx) {
     const { ids, desc } = await loadBrepFaceIds(ctx);
@@ -655,6 +660,11 @@ export const brepFacesMode: ViewMode = {
  * click-to-fly legend entries. */
 export const faceAttrsMode: ViewMode = {
   id: 'face_attrs',
+  // no user knobs — this paint reads the manifest, not viewerParams.
+  // Declared (rather than left undefined) so the rail knows it was
+  // audited and suppresses the panel instead of falling back to the
+  // host plugin's, which rendered an empty card here.
+  params: [],
   label: 'STEP colors / names',
   async paint(ctx) {
     const url = ctx.manifest.face_attrs_url;
@@ -746,6 +756,11 @@ export const pmiMode: ViewMode = {
 /** "Last CLI highlights.json" — process-agnostic replay of the legacy result. */
 export const highlightsMode: ViewMode = {
   id: 'highlights',
+  // no user knobs — this paint reads the manifest, not viewerParams.
+  // Declared (rather than left undefined) so the rail knows it was
+  // audited and suppresses the panel instead of falling back to the
+  // host plugin's, which rendered an empty card here.
+  params: [],
   label: 'Last CLI highlights.json',
   async paint(ctx) {
     if (!ctx.highlights) throw new Error('no highlights.json in the working directory');

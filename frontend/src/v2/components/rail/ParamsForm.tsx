@@ -1,5 +1,6 @@
 import type { FC } from 'react';
 import type { ParamSpec } from '../../../api/types';
+import type { ViewParamSpec } from '../../../registry/types';
 import { Input } from '../../../catalyst/input';
 import { Select } from '../../../catalyst/select';
 import { formatDefault, parseValue } from '../../../params/codec';
@@ -45,7 +46,7 @@ export type ParamTarget = 'viewer' | 'compute';
 export function ParamsForm({
   specs, values, onChange, overrides, target = 'viewer',
 }: {
-  specs: ParamSpec[];
+  specs: ViewParamSpec[];
   values: Record<string, unknown>;
   onChange: (name: string, value: unknown) => void;
   overrides?: Record<string, ParamWidget>;
@@ -75,14 +76,14 @@ export function ParamsForm({
 }
 
 function ParamRow({ spec, value, target, onChange }: {
-  spec: ParamSpec; value: unknown; target: ParamTarget;
+  spec: ViewParamSpec; value: unknown; target: ParamTarget;
   onChange: (v: unknown) => void;
 }) {
   const label = spec.label ?? spec.name;
 
   if (spec.type === 'bool') {
     return (
-      <RailBool label={label} hint={spec.unit} checked={!!value}
+      <RailBool label={label} hint={spec.hint} checked={!!value}
         onChange={onChange} />
     );
   }
@@ -120,7 +121,7 @@ function ParamRow({ spec, value, target, onChange }: {
     <RailField
       label={label}
       unit={spec.unit}
-      hint={multiline ? 'One per line.' : undefined}
+      hint={spec.hint ?? (multiline ? 'One per line.' : undefined)}
     >
       <Input
         type={numeric ? 'number' : 'text'}

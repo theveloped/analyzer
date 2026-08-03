@@ -96,6 +96,15 @@ export interface ViewCtx {
   setAnimator(fn: ((tMs: number) => void) | null): void;
 }
 
+/**
+ * A param as a MODE declares it. The shape is `ParamSpec` — the same one the
+ * backend serves for analyses, so one renderer covers both — plus a `hint`,
+ * which a mode often needs ("run Flow voxels below if the view is empty") and
+ * the served DTO has no business carrying: that one is mirrored from
+ * `processes/base.py` and must not grow frontend-only fields.
+ */
+export type ViewParamSpec = ParamSpec & { hint?: string };
+
 export interface ViewMode {
   id: string;
   label: string;
@@ -112,7 +121,7 @@ export interface ViewMode {
    * takes no props, which is why one CNC panel serves eighteen lenses and
    * shows the tool holder to all of them.
    */
-  params?: ParamSpec[];
+  params?: ViewParamSpec[];
 }
 
 /** A process contributes view modes, viewer controls and click-inspection. */

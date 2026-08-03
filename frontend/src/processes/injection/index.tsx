@@ -786,6 +786,12 @@ const voxelFieldMode: ViewMode = {
 const coolingMode: ViewMode = {
   id: 'cooling',
   label: 'Cooling time',
+  params: [{
+    name: 'coolCoef', type: 'number', default: 1, min: 0,
+    label: 'Cooling coefficient', unit: 's/mm²',
+    hint: 'Cooling time ∝ half-thickness² from the flow voxelization — run '
+      + 'Flow voxels (SDF) in Compute if the view is empty.',
+  }],
   async paint(ctx): Promise<PaintInfo> {
     const results = flowVoxelResults(ctx.manifest);
     const result = pickResult(results, ctx.params.flowResult);
@@ -1522,19 +1528,6 @@ function InjectionControls() {
           >
             {busy ? 'computing…' : 'Compute voxels'}
           </button>
-        </>
-      )}
-
-      {modeId === 'cooling' && (
-        <>
-          <NumberParam
-            label="Cooling coefficient (s/mm²)" value={params.coolCoef ?? 1}
-            onChange={(v) => set('coolCoef', v)}
-          />
-          <div className="hint">
-            cooling time ∝ half-thickness² from the flow voxelization —
-            run "Flow voxels (SDF)" below if the view is empty
-          </div>
         </>
       )}
 
