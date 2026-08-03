@@ -61,6 +61,8 @@ async function featureFields(ctx: ViewCtx, result: ResultEntry) {
 
 export const featuresMode: ViewMode = {
   id: 'features',
+  // no user knobs: what this paint reads is bound by the study/check
+  params: [],
   label: 'Machined features',
   async paint(ctx) {
     const result = latestFeatures(ctx);

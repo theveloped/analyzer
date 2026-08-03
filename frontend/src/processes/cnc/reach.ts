@@ -142,6 +142,8 @@ export async function fetchFeatureMask(
 
 export const reachStudyMode: ViewMode = {
   id: 'reach_study',
+  // bound by the check that activates it, not set here
+  params: [],
   label: 'Reach study (direction × tool)',
   async paint(ctx): Promise<PaintInfo> {
     const study = findStudy(ctx);
@@ -178,6 +180,8 @@ export const reachStudyMode: ViewMode = {
 
 export const reachOpMode: ViewMode = {
   id: 'reach_op',
+  // bound by the check that activates it, not set here
+  params: [],
   label: 'Operation reach (any tool)',
   async paint(ctx): Promise<PaintInfo> {
     const study = findStudy(ctx);
@@ -219,6 +223,8 @@ export const reachOpMode: ViewMode = {
 
 export const reachAggregateMode: ViewMode = {
   id: 'reach_aggregate',
+  // bound by the check that activates it, not set here
+  params: [],
   label: 'Route reach (all operations)',
   async paint(ctx): Promise<PaintInfo> {
     const study = findStudy(ctx);

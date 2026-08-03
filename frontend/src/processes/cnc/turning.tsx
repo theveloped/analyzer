@@ -254,6 +254,8 @@ export function TurningControls() {
 
 export const turningResidualMode: ViewMode = {
   id: 'turning_residual',
+  // no user knobs: what this paint reads is bound by the study/check
+  params: [],
   label: 'Revolution error',
   async paint(ctx) {
     const result = require(ctx);
@@ -310,6 +312,8 @@ const AXIS_ROLE_COLORS: RGB[] = [
  */
 export const axisRoleMode: ViewMode = {
   id: 'axis_role',
+  // no user knobs: what this paint reads is bound by the study/check
+  params: [],
   label: 'Turnability about one axis',
   async paint(ctx) {
     const hash = ctx.params.scanHash;
@@ -358,6 +362,8 @@ export const axisRoleMode: ViewMode = {
  */
 export const coverageMode: ViewMode = {
   id: 'coverage',
+  // no user knobs: what this paint reads is bound by the study/check
+  params: [],
   label: 'Combined coverage',
   async paint(ctx) {
     const ids: string[] = ctx.params.coverageFields ?? [];

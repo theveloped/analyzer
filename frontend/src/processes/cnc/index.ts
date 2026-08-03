@@ -4,6 +4,7 @@ import { faceLabel, handleSplitPick } from '../../splits/splits';
 import { useStore } from '../../state/store';
 import { faceAccess, vertexGap, vertexMinStickout } from './compose';
 import { CncControls } from './Controls';
+import { CNC_PARAM_WIDGETS } from './params';
 import {
   accessMode, classMode, gapMode, stickoutMode, unifiedMode,
 } from './modes';
@@ -112,6 +113,7 @@ export const cncPlugin: ProcessPlugin = {
     showCuts: true,
   }),
   Controls: CncControls,
+  paramWidgets: CNC_PARAM_WIDGETS,
   inspect,
   onPick(face, point, ctx) {
     const { modeId, viewerParams } = useStore.getState();

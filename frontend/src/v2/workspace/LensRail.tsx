@@ -125,7 +125,12 @@ export function LensRail() {
   // which is the thing showing the tool holder to eighteen CNC lenses
   const mode = plugin?.modes.find((m) => m.id === lens.modeId);
   const specs = mode?.params ?? [];
-  const Controls = specs.length ? undefined
+  // `params: []` is a DECLARATION that this paint has no user knobs, and is
+  // different from not declaring at all — the first suppresses the panel, the
+  // second still falls back to the process-wide one. Without the distinction
+  // an audited-and-empty mode is indistinguishable from an unaudited one.
+  const declared = mode?.params !== undefined;
+  const Controls = declared ? undefined
     : (lens.hasControls ? plugin?.Controls : undefined);
 
   return (
