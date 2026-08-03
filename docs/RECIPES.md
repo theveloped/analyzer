@@ -7,7 +7,7 @@ in docs/CODEMAP.md; background in APPROACH.md.
 
 | You touched | Run |
 |---|---|
-| `zmap.py` (maps, closings, gaps, DirectionCache) | `python test_zmap.py`, `python test_gap_probes.py`, `python test_accessibility.py` |
+| `zmap.py` (maps, closings, gaps, `point_visibility`, DirectionCache) | `python test_zmap.py`, `python test_gap_probes.py`, `python test_accessibility.py`, `python test_corners.py` |
 | `analysis.py` offsets/closings/undercuts | `python test_endmill.py` (slow, minutes) |
 | `molding.py`, `brep.py`, mold assignment | `python test_mold.py` |
 | `splits.py`, split-aware assignment/manifest | `python test_splits.py` |
@@ -22,6 +22,7 @@ in docs/CODEMAP.md; background in APPROACH.md.
 | `machining_features.py`, `cnc/features` | `python test_features.py` |
 | `turning.py`, `cnc/turning` | `python test_turning.py` |
 | `pipeline.convex_hull_faces`, `cnc/hull` | `python test_hull.py` |
+| `pipeline.corner_access`, `brep.surface_normals_at`, `cnc/corner_access` | `python test_corners.py` + `python test_normals.py` |
 | `sheet.py`, `unfold.py`, `dxfexport.py`, sheet_metal process | `python test_sheet.py` |
 | `tube.py`, tube_laser process | `python test_tube.py` |
 | `pressbrake/` pure core (kinematics, envelope, tooling, search) | `python test_pressbrake.py` |

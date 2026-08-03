@@ -293,6 +293,69 @@ def _vote_sign(areas, candidate, current):
     return 1.0 if vote > 0 else -1.0
 
 
+def surface_normals_at(params, points):
+    """Surface-normal candidates of one analytic BREP face at 3D points.
+
+    ``params`` is a `surface_params` entry (brep_meta.json); ``points`` an
+    (N,3) array assumed to lie on that surface. Returns an (N,3) float array
+    of UNIT normals with NaN rows where the evaluation degenerates (a cone
+    apex, a torus point on the axis), or None when the surface type carries
+    no JSON params (freeform) — the caller decides what to do with either.
+
+    The sign is the underlying surface's own, NOT the face's orientation:
+    a REVERSED face and a hole wall both come back pointing whichever way
+    the quadric does. Callers resolve orientation themselves, by voting
+    against normals they already trust (analytic_face_normals uses the facet
+    normals; pipeline.corner_access uses normals.npy).
+    """
+    if not params:
+        return None
+    points = np.asarray(points, dtype=np.float64)
+    if not len(points):
+        return np.zeros((0, 3))
+    kind = params["type"]
+
+    def unit(v):
+        v = np.asarray(v, dtype=np.float64)
+        return v / np.linalg.norm(v)
+
+    degenerate = np.zeros(len(points), dtype=bool)
+    if kind == "plane":
+        candidate = np.tile(unit(params["normal"]), (len(points), 1))
+    elif kind == "cylinder":
+        axis = unit(params["axis"])
+        v = points - np.asarray(params["point"], dtype=np.float64)
+        candidate = v - np.outer(v @ axis, axis)
+    elif kind == "cone":
+        axis = unit(params["axis"])
+        alpha = float(params["alpha"])
+        v = points - np.asarray(params["apex"], dtype=np.float64)
+        radial = v - np.outer(v @ axis, axis)
+        r = np.linalg.norm(radial, axis=1, keepdims=True)
+        candidate = (np.cos(alpha) * radial / np.maximum(r, 1e-30)
+                     - np.sin(alpha) * axis)
+        degenerate = r[:, 0] < 1e-9  # apex
+    elif kind == "sphere":
+        candidate = points - np.asarray(params["center"], dtype=np.float64)
+    elif kind == "torus":
+        axis = unit(params["axis"])
+        center = np.asarray(params["center"], dtype=np.float64)
+        v = points - center
+        inplane = v - np.outer(v @ axis, axis)
+        ilen = np.linalg.norm(inplane, axis=1, keepdims=True)
+        ring = center + params["major_radius"] * (
+            inplane / np.maximum(ilen, 1e-30))
+        candidate = points - ring
+        degenerate = ilen[:, 0] < 1e-9  # on the axis
+    else:
+        return None
+
+    length = np.linalg.norm(candidate, axis=1, keepdims=True)
+    candidate = candidate / np.maximum(length, 1e-30)
+    candidate[degenerate | (length[:, 0] <= 1e-9)] = np.nan
+    return candidate
+
+
 def analytic_face_normals(verts, faces, face_ids, surface_params,
                           facet_normals):
     """Exact per-triangle surface normals on analytic BREP faces.
@@ -320,54 +383,21 @@ def analytic_face_normals(verts, faces, face_ids, surface_params,
     areas = np.linalg.norm(
         np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), axis=1)
 
-    def unit(v):
-        v = np.asarray(v, dtype=np.float64)
-        return v / np.linalg.norm(v)
-
     for fid, params in enumerate(surface_params):
         if not params:
             continue
         idx = np.flatnonzero(face_ids == fid)
         if not idx.size:
             continue
-        c = centroids[idx]
-        kind = params["type"]
 
-        if kind == "plane":
-            candidate = np.tile(unit(params["normal"]), (len(idx), 1))
-        elif kind == "cylinder":
-            axis = unit(params["axis"])
-            v = c - np.asarray(params["point"], dtype=np.float64)
-            candidate = v - np.outer(v @ axis, axis)
-        elif kind == "cone":
-            axis = unit(params["axis"])
-            alpha = float(params["alpha"])
-            v = c - np.asarray(params["apex"], dtype=np.float64)
-            radial = v - np.outer(v @ axis, axis)
-            r = np.linalg.norm(radial, axis=1, keepdims=True)
-            candidate = (np.cos(alpha) * radial / np.maximum(r, 1e-30)
-                         - np.sin(alpha) * axis)
-            candidate[r[:, 0] < 1e-9] = 0.0  # apex: keep facet normal
-        elif kind == "sphere":
-            candidate = c - np.asarray(params["center"], dtype=np.float64)
-        elif kind == "torus":
-            axis = unit(params["axis"])
-            center = np.asarray(params["center"], dtype=np.float64)
-            v = c - center
-            inplane = v - np.outer(v @ axis, axis)
-            ilen = np.linalg.norm(inplane, axis=1, keepdims=True)
-            ring = center + params["major_radius"] * (
-                inplane / np.maximum(ilen, 1e-30))
-            candidate = c - ring
-            candidate[ilen[:, 0] < 1e-9] = 0.0  # on the axis: keep facet
-        else:
+        # degenerate evaluations (cone apex, torus axis) come back NaN and
+        # keep their facet normals
+        candidate = surface_normals_at(params, centroids[idx])
+        if candidate is None:
             continue
-
-        length = np.linalg.norm(candidate, axis=1, keepdims=True)
-        valid = length[:, 0] > 1e-9
+        valid = np.isfinite(candidate).all(axis=1)
         if not valid.any():
             continue
-        candidate = candidate / np.maximum(length, 1e-30)
 
         sign = _vote_sign(areas[idx[valid]], candidate[valid],
                           normals[idx[valid]])

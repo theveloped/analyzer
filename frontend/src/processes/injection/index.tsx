@@ -37,6 +37,7 @@ import {
 } from '../../splits/splits';
 import { SplitControls } from '../../splits/SplitControls';
 import { optimizeParting } from '../parting';
+import { moldCornersMode } from './corners';
 import { runCtxAction } from '../../viewer/controller';
 
 const CONFLICT_FEATURE = 254;
@@ -1728,7 +1729,8 @@ export const injectionPlugin: ProcessPlugin = {
           thicknessMode, gapsMode, rayThicknessMode, rayGapMode,
           slendernessMode, thinSpanMode,
           thicknessAngleMode, gapAngleMode,
-          skeletonMode, voxelFieldMode, brepFacesMode, faceAttrsMode, pmiMode,
+          skeletonMode, voxelFieldMode, moldCornersMode,
+          brepFacesMode, faceAttrsMode, pmiMode,
           highlightsMode],
   defaults: () => ({
     result: -1, option: 0,
@@ -1749,6 +1751,7 @@ export const injectionPlugin: ProcessPlugin = {
     voxelSurface: false, flowVoxel: '', flowDelta0: '0',
     flowSkinCoef: '0.12', flowFillTime: '2', flowIterations: '3',
     flowNeighborhood: '26', coolCoef: '1',
+    cornerHash: null, cornerDirection: null,
   }),
   Controls: InjectionControls,
   inspect,

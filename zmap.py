@@ -184,6 +184,45 @@ def _bracket_corners(fx, fy, shape):
     return np.stack([x0, x1, x0, x1]), np.stack([y0, y0, y1, y1])
 
 
+def point_visibility(heights, frame, points, offsets=(), pixel=None):
+    """Per-point escape-corridor test against a rendered height map.
+
+    Returns a (P,) bool: True where the point can see the direction the map
+    was rendered along. A point is occluded only when EVERY candidate sample
+    position reads a column top above it — the progressive-narrowing rule
+    face_visibility applies to face centroids, lifted here so callers whose
+    points are not centroids (BREP edge samples) reuse the same predicate
+    instead of re-deriving it.
+
+    ``offsets`` is an ordered list of (P,3) displacements to try; the caller
+    supplies whatever corridors its geometry needs, and an empty list means
+    "sample in place only". The bracket-corner min makes each sample
+    subpixel-stable on walls sitting exactly on pixel boundaries.
+    """
+    points = np.asarray(points, dtype=np.float64)
+    if pixel is None:
+        pixel = float(frame["pixel"])
+    candidates = list(offsets) or [np.zeros_like(points)]
+
+    def column_capped(positions):
+        fx, fy, height = project_vertices_float(positions, frame)
+        ix4, iy4 = _bracket_corners(fx, fy, heights.shape)
+        top = heights[iy4, ix4].min(axis=0)
+        return top > height + 1.5 * pixel
+
+    # only the points every earlier corridor called occluded stay active
+    active = np.arange(len(points))
+    for offset in candidates:
+        if not len(active):
+            break
+        capped = column_capped(points[active] + np.asarray(offset)[active])
+        active = active[capped]
+
+    visible = np.ones(len(points), dtype=bool)
+    visible[active] = False
+    return visible
+
+
 @log_execution_time
 def face_visibility(mesh, verts, faces, direction, *, tolerance_deg=0.1, pixel=0.1,
                     margin=2, normals=None, chord_error=0.0, centroids=None):
@@ -248,25 +287,14 @@ def face_visibility(mesh, verts, faces, direction, *, tolerance_deg=0.1, pixel=0
     if chord_error > 0.0:
         offsets.append(pixel * lateral + chord_error * normals)
 
-    def column_capped(positions):
-        fx, fy, height = project_vertices_float(positions, frame)
-        ix4, iy4 = _bracket_corners(fx, fy, heights.shape)
-        top = heights[iy4, ix4].min(axis=0)
-        return top > height + 1.5 * pixel
-
-    # progressive narrowing over the faces whose verdict can still change:
-    # back-facing faces are invisible regardless, the primary sample settles
-    # most front-facing ones, and each extra corridor only re-examines the
-    # faces every earlier sample called occluded
-    active = np.flatnonzero(facing)
-    for offset in offsets:
-        if not len(active):
-            break
-        capped = column_capped(centroids[active] + offset[active])
-        active = active[capped]
-
+    # back-facing faces are invisible regardless, so only the front-facing
+    # ones are handed to the corridor test (which narrows internally)
+    front = np.flatnonzero(facing)
     visible = facing.copy()
-    visible[active] = False
+    if len(front):
+        visible[front] = point_visibility(
+            heights, frame, centroids[front],
+            offsets=[offset[front] for offset in offsets], pixel=pixel)
     return visible
 
 

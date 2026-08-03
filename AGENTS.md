@@ -121,6 +121,7 @@ python test_pressbrake.py    # press-brake core: kinematics, envelopes, tooling,
 python test_bendplan.py      # bend-plan adapter + analysis on STEP fixtures
 python test_plan.py          # production-plan sidecars: revisions, dispositions, check status, impact
 python test_reach.py         # cnc/reach_study: per-(direction, tool) masks vs compose_tool
+python test_corners.py       # cnc/corner_access: per-BREP-edge sharp-corner verdicts
 python test_vocab.py         # controlled vocabularies: every Python frozenset vs its TS union
 ```
 

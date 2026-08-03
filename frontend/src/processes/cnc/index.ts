@@ -10,6 +10,7 @@ import {
 import { reachAggregateMode, reachOpMode, reachStudyMode } from './reach';
 import { featuresMode, inspectFeature } from './features';
 import { hullMode } from './hull';
+import { cncCornersMode } from './corners';
 import {
   axisRoleMode, coverageMode, inspectTurning, turningResidualMode,
   turningRolesMode, turningSplitHost,
@@ -73,7 +74,7 @@ export const cncPlugin: ProcessPlugin = {
   label: 'CNC machining',
   modes: [setupsMode, featuresMode, turningRolesMode, turningResidualMode,
           axisRoleMode, coverageMode,
-          hullMode, unifiedMode, accessMode,
+          hullMode, cncCornersMode, unifiedMode, accessMode,
           classMode, gapMode, stickoutMode, reachStudyMode,
           reachOpMode, reachAggregateMode, brepFacesMode, faceAttrsMode,
           highlightsMode],
@@ -88,6 +89,8 @@ export const cncPlugin: ProcessPlugin = {
     coverageLabel: 'covered',
     reachDirection: null,
     reachTool: 0,
+    cornerHash: null,
+    cornerDirection: null,
     opPrimary: null,
     opTilt: 90,
     reachOps: [],

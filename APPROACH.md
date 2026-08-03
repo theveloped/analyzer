@@ -299,6 +299,22 @@ Composition then never touches geometry again:
   at this depth" is equivalent to "the semi-infinite cylinder fits", so flat/bull
   silhouettes need no separate flank check.
 
+**The edge-level shortcut, and why it does not agree with the above.** The closing
+model answers "does the tool reach this face", in faces. A designer usually asks a
+narrower question first — *which sharp internal corners can never come out sharp,
+because a cutter is round?* — and that one lives on **edges**, where the AAG already
+holds the convexity, the signed dihedral and a discretized polyline per BREP edge.
+`pipeline.corner_access` (`cnc/corner_access`) answers it with one height map per
+direction and no closing at all: a corner is `sharp` only where the edge runs across
+the tool axis with a floor on one side (a flat endmill's bottom edge is itself a
+sharp circle, so the wall's slope does not matter as long as it does not overhang),
+`radius` where the edge runs along the axis (exactly D/2), and `oblique` otherwise —
+a lower bound, not a computed radius. That crudeness is the point and should not be
+"fixed" into agreement with the closing model: the flank, the holder and the stickout
+are deliberately unmodelled, `reach_study`/`compose` remain the authority on whether
+a tool fits, and what the edge pass buys instead is an answer that names specific
+edges — which is what a fillet decision needs and a face mask cannot give.
+
 **Gap metric.** Tip gaps are *Euclidean* distances from each vertex to the machined
 solid the closed height map describes (material below the closed surface, including
 the vertical sheets between adjacent columns): `euclidean_gap` takes, over a window

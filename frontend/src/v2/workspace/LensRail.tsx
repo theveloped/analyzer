@@ -31,7 +31,7 @@ function RunBacking({ lens }: { lens: Lens }) {
 
   function run() {
     if (!partId) return;
-    runAnalysisJob(partId, ref.process, ref.analysis, {}).catch((err) =>
+    runAnalysisJob(partId, ref.process, ref.analysis, ref.params ?? {}).catch((err) =>
       useStore.getState().set({
         error: err instanceof Error ? err.message : String(err),
       }));
