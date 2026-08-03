@@ -1,6 +1,11 @@
 import type { FC } from 'react';
 import { PmiRail } from './PmiRail';
 import { AssignmentRail } from './rails/AssignmentRail';
+import {
+  BendSequenceRail, FlatPatternDownload,
+} from './rails/BendSequenceRail';
+import { SetupsRail } from './rails/SetupsRail';
+import { TurningRail } from './rails/TurningRail';
 import { EjectorRail } from './rails/EjectorRail';
 import { FlowFillRail } from './rails/FlowFillRail';
 import { SprueRail } from './rails/SprueRail';
@@ -26,6 +31,9 @@ import { VoxelFieldRail } from './rails/VoxelFieldRail';
  * "could a ParamSpec say this?", not "is it complicated".
  */
 export const MODE_RAILS: Record<string, FC> = {
+  'cnc:setups': SetupsRail,
+  'sheet_metal:bend_sequence': BendSequenceRail,
+  'cnc:turning': TurningRail,
   'injection_molding:pmi': PmiRail,
   'injection_molding:assignment': AssignmentRail,
   'injection_molding:sprue': SprueRail,
@@ -36,4 +44,20 @@ export const MODE_RAILS: Record<string, FC> = {
 
 export function modeRailFor(processId: string, modeId: string): FC | null {
   return MODE_RAILS[`${processId}:${modeId}`] ?? null;
+}
+
+/**
+ * Header actions a lens carries — an export, a link out. Distinct from a mode
+ * rail: the lens keeps the normal rail, it just gains one control.
+ *
+ * The DXF download used to live in the sheet-metal process panel and render
+ * for EVERY sheet lens whenever a flat-pattern result existed, so opening
+ * `brep_faces` on a sheet part offered to download one.
+ */
+export const LENS_ACTIONS: Record<string, FC> = {
+  'sheet_metal:flat_pattern': FlatPatternDownload,
+};
+
+export function lensActionFor(processId: string, modeId: string): FC | null {
+  return LENS_ACTIONS[`${processId}:${modeId}`] ?? null;
 }

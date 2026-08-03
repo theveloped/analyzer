@@ -46,8 +46,6 @@ export interface Lens {
   pinned: boolean;
   /** Only listed when advanced mode is on (debug/expert lenses). */
   advanced: boolean;
-  /** The hosting plugin ships a Controls panel (Configure tab). */
-  hasControls: boolean;
   /** The backend analysis whose stored result this lens paints, when it has
    * exactly one. Lets the rail show run state and offer a Run button instead
    * of throwing "run it in the Compute panel" at the user. Scalar-field
@@ -263,7 +261,6 @@ function buildLenses(): Lens[] {
         category,
         pinned: c.pinned ?? false,
         advanced: c.advanced ?? false,
-        hasControls: !!plugin.Controls,
         analysis: c.analysis,
       });
     }

@@ -33,6 +33,8 @@ function place(segments: Float32Array, offset: [number, number, number]): Float3
 
 export const patternMode: ViewMode = {
   id: 'flat_pattern',
+  // no user knobs — the paint reads the stored result
+  params: [],
   label: 'Flat pattern',
   async paint(ctx) {
     const result = latestSheet(ctx, 'flat_pattern');

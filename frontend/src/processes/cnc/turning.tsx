@@ -12,7 +12,6 @@ import type {
 import {
   drawSplitOverlays, effectiveDescriptor, type SplitHost,
 } from '../../splits/splits';
-import { SplitControls } from '../../splits/SplitControls';
 
 // keep in sync with TURNING_SCHEMA in processes/cnc.py
 export const TURNING_SCHEMA = 2;
@@ -246,11 +245,6 @@ export const turningSplitHost: SplitHost = {
   analysisOf: () => 'turning',
   resultParam: 'turningResult',
 };
-
-/** Turning-mode section of the CNC controls: just the split interaction. */
-export function TurningControls() {
-  return <SplitControls host={turningSplitHost} />;
-}
 
 export const turningResidualMode: ViewMode = {
   id: 'turning_residual',

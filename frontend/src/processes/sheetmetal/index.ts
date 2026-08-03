@@ -52,6 +52,8 @@ function verdictLine(result: ResultEntry): string {
 
 const rolesMode: ViewMode = {
   id: 'sheet_roles',
+  // no user knobs — the paint reads the stored result
+  params: [],
   label: 'Sheet face roles',
   async paint(ctx) {
     const result = latestSheet(ctx, 'detect');
@@ -67,6 +69,8 @@ const rolesMode: ViewMode = {
 const bendRadiusMode: ViewMode = {
   id: 'bend_radius',
   label: 'Bend radius',
+  // no user knobs — the paint reads the stored result
+  params: [],
   async paint(ctx) {
     const result = latestSheet(ctx, 'detect');
     if (!result) {
@@ -134,7 +138,6 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
 
 import { bendPlanMode, inspectBendPlan } from './bendplan';
 import { bendSequenceMode } from './bendsequence';
-import { SheetMetalControls } from './Controls';
 import { patternMode } from './pattern';
 
 async function inspectAll(face: number, ctx: ViewCtx): Promise<string[]> {
@@ -149,6 +152,5 @@ export const sheetMetalPlugin: ProcessPlugin = {
   modes: [patternMode, bendPlanMode, bendSequenceMode, rolesMode,
           bendRadiusMode, faceAttrsMode, brepFacesMode, highlightsMode],
   defaults: () => ({}),
-  Controls: SheetMetalControls,
   inspect: inspectAll,
 };

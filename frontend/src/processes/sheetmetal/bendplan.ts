@@ -33,6 +33,8 @@ export function planField(
 
 export const bendPlanMode: ViewMode = {
   id: 'bend_plan',
+  // no user knobs — the paint reads the stored result
+  params: [],
   label: 'Bend plan (press brake)',
   async paint(ctx) {
     const result = latestBendPlan(ctx);

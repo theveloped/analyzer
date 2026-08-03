@@ -1,6 +1,6 @@
 import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 import clsx from 'clsx';
-import { ChevronDown, Play, RotateCw, Settings2 } from 'lucide-react';
+import { ChevronDown, Play, RotateCw } from 'lucide-react';
 import { AnalysisPanel } from '../../components/AnalysisPanel';
 import { Button } from '../../catalyst/button';
 import { getPlugin } from '../../registry';
@@ -14,10 +14,11 @@ import { useBusy } from './run';
 import './v1-controls.css';
 import { hintCls } from '../components/styles';
 import type { ParamSpec } from '../../api/types';
-import { RailSection } from '../components/rail';
+import { RailHeader, RailSection } from '../components/rail';
 import {
   ParamsForm, type ParamWidget,
 } from '../components/rail/ParamsForm';
+import { lensActionFor } from './modeRails';
 
 
 /** Run state + a Run button for a lens that paints one analysis's result.
@@ -120,28 +121,19 @@ export function LensRail() {
   if (!lens) return null;
   const Icon = lens.icon;
   const plugin = getPlugin(lens.processId);
-  // a mode that DECLARES its params gets a generated settings section; only a
-  // mode that declares none still falls back to the process-wide v1 panel,
-  // which is the thing showing the tool holder to eighteen CNC lenses
   const mode = plugin?.modes.find((m) => m.id === lens.modeId);
   const specs = mode?.params ?? [];
-  // `params: []` is a DECLARATION that this paint has no user knobs, and is
-  // different from not declaring at all — the first suppresses the panel, the
-  // second still falls back to the process-wide one. Without the distinction
-  // an audited-and-empty mode is indistinguishable from an unaudited one.
-  const declared = mode?.params !== undefined;
-  const Controls = declared ? undefined
-    : (lens.hasControls ? plugin?.Controls : undefined);
+  // one header control some lenses carry (the flat-pattern DXF export)
+  const Action = lensActionFor(lens.processId, lens.modeId);
 
   return (
     <div className="flex min-h-full flex-col gap-4 p-4">
-      <div>
-        <div className="flex items-center gap-2">
-          <Icon className="size-4 text-blue-600 dark:text-blue-400" />
-          <h2 className="text-sm/6 font-semibold text-zinc-950 dark:text-white">{lens.label}</h2>
-        </div>
-        {lens.blurb && <p className={clsx('mt-1', hintCls)}>{lens.blurb}</p>}
-      </div>
+      <RailHeader
+        icon={Icon}
+        title={lens.label}
+        blurb={lens.blurb}
+        actions={Action ? <Action /> : undefined}
+      />
 
       {specs.length > 0 && (
         <LensParams processId={lens.processId} specs={specs}
@@ -150,30 +142,10 @@ export function LensRail() {
 
       {lens.analysis && <RunBacking lens={lens} />}
 
-      {Controls && (
-        <Disclosure defaultOpen>
-          {({ open }) => (
-            <div>
-              <DisclosureButton className="flex w-full items-center justify-between rounded-lg px-1 py-1 text-xs/5 font-medium text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white">
-                <span className="flex items-center gap-1.5">
-                  <Settings2 className="size-3.5" /> Configure
-                </span>
-                <ChevronDown className={clsx('size-3.5 transition-transform', open && 'rotate-180')} />
-              </DisclosureButton>
-              <DisclosurePanel className="mt-2">
-                <div className="v1-controls">
-                  <Controls />
-                </div>
-              </DisclosurePanel>
-            </div>
-          )}
-        </Disclosure>
-      )}
-
       {/* every analysis stays runnable while lenses grow their own flows:
           the v1 compute panel (catalog picker + auto-generated param form)
           hosted verbatim — enough to materialize any lens's prerequisites */}
-      <Disclosure defaultOpen={!Controls}>
+      <Disclosure>
         {({ open }) => (
           <div>
             <DisclosureButton className="flex w-full items-center justify-between rounded-lg px-1 py-1 text-xs/5 font-medium text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white">
