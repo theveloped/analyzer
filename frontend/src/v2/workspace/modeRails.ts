@@ -1,5 +1,8 @@
 import type { FC } from 'react';
 import { PmiRail } from './PmiRail';
+import { EjectorRail } from './rails/EjectorRail';
+import { FlowFillRail } from './rails/FlowFillRail';
+import { SprueRail } from './rails/SprueRail';
 import { VoxelFieldRail } from './rails/VoxelFieldRail';
 
 /**
@@ -23,6 +26,9 @@ import { VoxelFieldRail } from './rails/VoxelFieldRail';
  */
 export const MODE_RAILS: Record<string, FC> = {
   'injection_molding:pmi': PmiRail,
+  'injection_molding:sprue': SprueRail,
+  'injection_molding:ejector': EjectorRail,
+  'injection_molding:flowFill': FlowFillRail,
   'injection_molding:voxelField': VoxelFieldRail,
 };
 

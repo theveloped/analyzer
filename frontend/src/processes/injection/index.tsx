@@ -20,7 +20,7 @@ import {
   SENTINEL, skeletonResults,
 } from './skeleton';
 import {
-  loadSprue, markerGraph, sprueResults, weldSegments, type Proposal,
+  loadSprue, markerGraph, sprueResults, weldSegments,
 } from './sprue';
 import {
   loadSticking, simulateCached, stickingResults,
@@ -30,7 +30,6 @@ import {
   flowFillResults, flowVoxelResults, FROZEN_OK, FROZEN_UNJUDGED, loadFill,
   loadVertVoxel, loadVoxelGrid, voxelPositions, type FlowFill,
 } from './voxels';
-import { runAnalysisJob } from '../../viewer/jobs';
 import {
   drawSplitOverlays, edgeDescriptors, effectiveDescriptor, faceLabel,
   handleSplitPick, type SplitHost,
@@ -1172,12 +1171,6 @@ function NumberParam({ label, value, placeholder, onChange }: {
   );
 }
 
-/** Form-string to number with a fallback (0 is a valid value, so no ||). */
-function num(value: any, fallback: number): number {
-  const n = parseFloat(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
 function InjectionControls() {
   const manifest = useStore((s) => s.manifest);
   const modeId = useStore((s) => s.modeId);
@@ -1192,278 +1185,8 @@ function InjectionControls() {
   const hasBrep = !!manifest?.fields.some((f) => f.id === 'brep_edges');
 
 
-  const sprueResultList = (manifest?.results ?? []).filter(
-    (r) => r.process === 'injection_molding' && r.analysis === 'sprue_proposals'
-      && r.stats.schema === 2);
-  const sprueResult = pickResult(sprueResultList, params.sprueResult);
-  const proposals: Proposal[] = sprueResult?.stats.proposals ?? [];
-
-  const stickingList = (manifest?.results ?? []).filter(
-    (r) => r.process === 'injection_molding'
-      && r.analysis === 'ejection_sticking' && r.stats.schema === 2);
-  const pins: Pin[] = params.pins ?? [];
-  const ejSim = params.ejSim ?? null;
-
-  const partId = useStore((s) => s.partId);
-  const jobs = useStore((s) => s.jobs);
-  const busy = jobs.some((j) => j.part_id === partId
-    && (j.status === 'queued' || j.status === 'running'));
-  const fillList = manifest ? flowFillResults(manifest) : [];
-
-  function submitFlow(analysis: 'flow_voxels' | 'flow_fill') {
-    if (!partId) return;
-    const voxel = Number.isFinite(parseFloat(params.flowVoxel))
-      ? parseFloat(params.flowVoxel) : null;
-    const jobParams: Record<string, any> = analysis === 'flow_voxels'
-      ? { voxel }
-      : {
-        voxel,
-        gate: params.gate,
-        delta0: num(params.flowDelta0, 0),
-        skin_coef: num(params.flowSkinCoef, 0.12),
-        fill_time: num(params.flowFillTime, 2),
-        iterations: Math.max(1, Math.round(num(params.flowIterations, 3))),
-        neighborhood: String(params.flowNeighborhood ?? '26'),
-      };
-    // the SDF grid is the shared prep/voxels stage; only the fill is an
-    // injection analysis (flowVoxelResults reads both, so older results in
-    // the retired injection_molding/flow_voxels location still load)
-    const [process, id] = analysis === 'flow_voxels'
-      ? ['prep', 'voxels'] : ['injection_molding', analysis];
-    runAnalysisJob(partId, process, id, jobParams)
-      .then(() => set(analysis === 'flow_voxels' ? 'flowResult' : 'fillResult', -1))
-      .catch((err) => useStore.getState().set({
-        error: err instanceof Error ? err.message : String(err),
-      }));
-  }
-
   return (
     <>
-      {modeId === 'sprue' && (
-        <>
-          <label>Result (parameter set)</label>
-          <select
-            value={params.sprueResult ?? -1}
-            onChange={(e) => {
-              set('sprueResult', parseInt(e.target.value));
-              set('proposal', null);
-            }}
-          >
-            {sprueResultList.length > 0 && <option value={-1}>latest</option>}
-            {sprueResultList.map((r, i) => (
-              <option key={r.hash} value={i}>
-                {`${r.stats.proposals?.length ?? 0} proposals · ${r.hash}`}
-              </option>
-            ))}
-            {!sprueResultList.length && <option value={-1}>no results yet</option>}
-          </select>
-
-          <div className="proposal-list">
-            {proposals.map((p) => (
-              <button
-                key={p.rank}
-                className={params.proposal === p.rank ? 'selected' : ''}
-                onClick={() => set('proposal', params.proposal === p.rank ? null : p.rank)}
-              >
-                {`#${p.rank} · ${p.score.toFixed(2)}`}
-                {p.gate_style !== 'unknown' && ` · ${p.gate_style === 'edge' ? 'edge gate' : 'hot tip'}`}
-                {p.side !== 'unknown' && ` · side ${p.side}`}
-              </button>
-            ))}
-          </div>
-
-          {params.proposal != null && proposals[params.proposal] && (
-            <>
-              <div className="hint">
-                {proposals[params.proposal].reasons.pros.map((r) => `+ ${r}`).join(' · ')}
-                {proposals[params.proposal].reasons.cons.length > 0 && (
-                  ` · ${proposals[params.proposal].reasons.cons.map((r) => `− ${r}`).join(' · ')}`)}
-              </div>
-              <button
-                onClick={() => {
-                  set('gate', proposals[params.proposal].point);
-                  useStore.getState().set({ modeId: 'skeleton' });
-                }}
-              >
-                open in fill-flow mode
-              </button>
-              <button onClick={() => set('proposal', null)}>clear selection</button>
-            </>
-          )}
-
-          <div className="row">
-            <label className="check">
-              <input
-                type="checkbox" checked={params.showCandidates === true}
-                onChange={(e) => set('showCandidates', e.target.checked)}
-              />
-              all candidates (score heatmap)
-            </label>
-            <label className="check">
-              <input
-                type="checkbox" checked={params.showWeld !== false}
-                onChange={(e) => set('showWeld', e.target.checked)}
-              />
-              weld indicator
-            </label>
-          </div>
-
-          <div className="hint">
-            click a marker on the part (or a proposal above) to inspect its fill
-          </div>
-        </>
-      )}
-
-      {modeId === 'ejector' && (
-        <>
-          <label>Result (parameter set)</label>
-          <select
-            value={params.stickResult ?? -1}
-            onChange={(e) => set('stickResult', parseInt(e.target.value))}
-          >
-            {stickingList.length > 0 && <option value={-1}>latest</option>}
-            {stickingList.map((r, i) => (
-              <option key={r.hash} value={i}>
-                {`${(r.stats.totals?.sticking_force_n ?? 0).toFixed(0)} N sticking · ${r.hash}`}
-              </option>
-            ))}
-            {!stickingList.length && <option value={-1}>no results yet</option>}
-          </select>
-
-          <div className="row">
-            <div>
-              <label>Pin diameter (mm)</label>
-              <select
-                value={params.pinDiameter ?? 3}
-                onChange={(e) => set('pinDiameter', parseFloat(e.target.value))}
-              >
-                {[2, 3, 4, 6, 8].map((d) => (
-                  <option key={d} value={d}>{`Ø${d}`}</option>
-                ))}
-              </select>
-            </div>
-            <label className="check">
-              <input
-                type="checkbox" checked={params.ejShowDraft === true}
-                onChange={(e) => set('ejShowDraft', e.target.checked)}
-              />
-              draft-angle view
-            </label>
-          </div>
-
-          <div className="row">
-            <NumberParam
-              label="E modulus (MPa)" value={params.ejE ?? 2000}
-              onChange={(v) => set('ejE', v)}
-            />
-            <NumberParam
-              label="Allowable pin pressure (MPa)" value={params.ejAllow ?? 80}
-              onChange={(v) => set('ejAllow', v)}
-            />
-          </div>
-
-          {pins.length > 0 && (
-            <div className="proposal-list">
-              {pins.map((p, i) => (
-                <button
-                  key={i}
-                  className={ejSim?.pins?.[i]?.over_limit ? 'over' : ''}
-                  onClick={() => set('pins', pins.filter((_, j) => j !== i))}
-                  title="remove this pin"
-                >
-                  {`#${i} · Ø${p.diameter}`}
-                  {ejSim?.pins?.[i] && (
-                    ` · ${ejSim.pins[i].force_n.toFixed(1)} N`
-                    + ` · ${ejSim.pins[i].pressure_mpa.toFixed(1)} MPa`
-                    + ` (${(100 * ejSim.pins[i].utilization).toFixed(0)}%)`
-                  )}
-                  {' ✕'}
-                </button>
-              ))}
-            </div>
-          )}
-          {pins.length > 0 && (
-            <button onClick={() => set('pins', [])}>clear pins</button>
-          )}
-
-          <div className="hint">
-            click the part to add a pin at the chosen diameter ·
-            click a pin (marker or list) to remove it
-          </div>
-        </>
-      )}
-
-      {modeId === 'flowFill' && (
-        <>
-          <label>Fill result</label>
-          <select
-            value={params.fillResult ?? -1}
-            onChange={(e) => set('fillResult', parseInt(e.target.value))}
-          >
-            {fillList.length > 0 && <option value={-1}>latest</option>}
-            {fillList.map((r, i) => (
-              <option key={r.hash} value={i}>
-                {`gate (${(r.stats.gate?.point ?? [])
-                  .map((c: number) => c.toFixed(0)).join(', ')})`
-                  + ` · skin ${r.stats.fill?.skin_coef} · ${r.hash}`}
-              </option>
-            ))}
-            {!fillList.length && <option value={-1}>no results yet</option>}
-          </select>
-
-          <div className="row">
-            <NumberParam
-              label="Voxel size (mm)" value={params.flowVoxel ?? ''}
-              placeholder="auto" onChange={(v) => set('flowVoxel', v)}
-            />
-            <NumberParam
-              label="Fill time (s)" value={params.flowFillTime ?? 2}
-              onChange={(v) => set('flowFillTime', v)}
-            />
-          </div>
-          <div className="row">
-            <NumberParam
-              label="Skin growth (mm/√s)" value={params.flowSkinCoef ?? 0.12}
-              onChange={(v) => set('flowSkinCoef', v)}
-            />
-            <NumberParam
-              label="Initial skin (mm)" value={params.flowDelta0 ?? 0}
-              onChange={(v) => set('flowDelta0', v)}
-            />
-          </div>
-          <div className="row">
-            <div>
-              <label>Neighborhood</label>
-              <select
-                value={params.flowNeighborhood ?? '26'}
-                onChange={(e) => set('flowNeighborhood', e.target.value)}
-              >
-                <option value="26">26 (isotropic)</option>
-                <option value="6">6 (fast)</option>
-              </select>
-            </div>
-            <NumberParam
-              label="Skin passes" value={params.flowIterations ?? 3}
-              onChange={(v) => set('flowIterations', v)}
-            />
-          </div>
-
-          <button
-            className="run" disabled={!params.gate || busy || !partId}
-            onClick={() => submitFlow('flow_fill')}
-          >
-            {busy ? 'computing…' : 'Compute fill'}
-          </button>
-          {params.gate && (
-            <button onClick={() => set('gate', null)}>clear gate</button>
-          )}
-          <div className="hint">
-            click the part to place or move the gate, then compute — each
-            parameter set is cached and selectable above
-          </div>
-        </>
-      )}
-
       {modeId === 'assignment' && (
         <>
           <label>Result (parameter set)</label>
