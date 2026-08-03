@@ -2,8 +2,9 @@ import type { FC } from 'react';
 import type { ParamSpec } from '../../../api/types';
 import { Input } from '../../../catalyst/input';
 import { Select } from '../../../catalyst/select';
-import { formatDefault } from '../../../params/codec';
+import { formatDefault, parseValue } from '../../../params/codec';
 import { RailBool, RailField } from './fields';
+import { VectorListField } from './fields/VectorListField';
 
 /**
  * Slot 3, generated. A settings section rendered from the same `ParamSpec`
@@ -97,8 +98,24 @@ function ParamRow({ spec, value, target, onChange }: {
     );
   }
 
+  // a vector list gets a real editor by DEFAULT, not as a per-lens override:
+  // there is no text shape for it that a user can be expected to type, which
+  // is exactly why the codec used to pass it through as a raw string
+  if (spec.type === 'vector_list') {
+    const vectors = (parseValue(spec, value) as number[][] | undefined) ?? [];
+    return (
+      <RailField label={label} unit={spec.unit}>
+        <VectorListField
+          vectors={vectors}
+          onChange={(next) => onChange(
+            next.map((v) => v.join(' ')).join('\n'))}
+        />
+      </RailField>
+    );
+  }
+
   const numeric = spec.type === 'int' || spec.type === 'number';
-  const multiline = spec.type === 'vector_list' || spec.type === 'group_list';
+  const multiline = spec.type === 'group_list';
   return (
     <RailField
       label={label}

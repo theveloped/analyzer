@@ -53,17 +53,21 @@ export function RailAlert({ tone = 'warning', children }: {
  * one — which is why `RailError` sits above it only when there is an error to
  * show, and returns null otherwise.
  */
-export function RailStats({ label = 'In view', text, error, empty, children }: {
+export function RailStats({
+  label = 'In view', text, error, empty, className, children,
+}: {
   label?: string;
   text?: string | null;
   error?: string | null;
   /** Shown when there is neither text nor error. */
   empty?: ReactNode;
+  /** e.g. `mt-auto`, to pin the readout to the bottom of a short rail. */
+  className?: string;
   /** Extra content under the stats line (findings, lists). */
   children?: ReactNode;
 }) {
   return (
-    <RailSection title={label}>
+    <RailSection title={label} className={className}>
       <RailError>{error}</RailError>
       {!error && text && (
         <p className={clsx('whitespace-pre-wrap', hintCls)}>{text}</p>
