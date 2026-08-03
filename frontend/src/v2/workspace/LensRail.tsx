@@ -13,6 +13,11 @@ import { useActiveLens } from './hooks';
 import { useBusy } from './run';
 import './v1-controls.css';
 import { hintCls } from '../components/styles';
+import type { ParamSpec } from '../../api/types';
+import { RailSection } from '../components/rail';
+import {
+  ParamsForm, type ParamWidget,
+} from '../components/rail/ParamsForm';
 
 
 /** Run state + a Run button for a lens that paints one analysis's result.
@@ -82,6 +87,31 @@ function RunBacking({ lens }: { lens: Lens }) {
  * Configure section rendering that panel verbatim under the `.v1-controls`
  * scope (the visual seam is accepted for now; see docs/ROUTE-ARCHITECTURE.md).
  */
+/** The generated settings section: the mode's declared params, bound to the
+ * process's viewerParams bag (which is per-PROCESS, so this is a view onto a
+ * subset of it rather than a private store). */
+function LensParams({ processId, specs, overrides }: {
+  processId: string;
+  specs: ParamSpec[];
+  overrides?: Record<string, ParamWidget>;
+}) {
+  const values = useStore((s) => s.viewerParams[processId]) ?? EMPTY;
+  const setParam = useStore((s) => s.setViewerParam);
+  return (
+    <RailSection title="Settings">
+      <ParamsForm
+        specs={specs}
+        values={values}
+        overrides={overrides}
+        target="viewer"
+        onChange={(name, value) => setParam(processId, name, value)}
+      />
+    </RailSection>
+  );
+}
+
+const EMPTY: Record<string, unknown> = {};
+
 export function LensRail() {
   const lens = useActiveLens();
   const stats = useStore((s) => s.stats);
@@ -89,7 +119,14 @@ export function LensRail() {
   const pick = useStore((s) => s.pick);
   if (!lens) return null;
   const Icon = lens.icon;
-  const Controls = lens.hasControls ? getPlugin(lens.processId)?.Controls : undefined;
+  const plugin = getPlugin(lens.processId);
+  // a mode that DECLARES its params gets a generated settings section; only a
+  // mode that declares none still falls back to the process-wide v1 panel,
+  // which is the thing showing the tool holder to eighteen CNC lenses
+  const mode = plugin?.modes.find((m) => m.id === lens.modeId);
+  const specs = mode?.params ?? [];
+  const Controls = specs.length ? undefined
+    : (lens.hasControls ? plugin?.Controls : undefined);
 
   return (
     <div className="flex min-h-full flex-col gap-4 p-4">
@@ -100,6 +137,11 @@ export function LensRail() {
         </div>
         {lens.blurb && <p className={clsx('mt-1', hintCls)}>{lens.blurb}</p>}
       </div>
+
+      {specs.length > 0 && (
+        <LensParams processId={lens.processId} specs={specs}
+          overrides={plugin?.paramWidgets} />
+      )}
 
       {lens.analysis && <RunBacking lens={lens} />}
 

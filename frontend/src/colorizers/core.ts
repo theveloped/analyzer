@@ -2,7 +2,7 @@
 // ramp, per-face reductions of per-vertex fields, and generic mode
 // factories (mask / highlights) any plugin can reuse.
 
-import type { FieldDescriptor } from '../api/types';
+import type { FieldDescriptor, ParamSpec } from '../api/types';
 import { fetchBin } from '../fields/fields';
 import type {
   ColorBar, LegendEntry, LegendFocus, PaintInfo, RGB, ViewCtx, ViewMode,
@@ -373,6 +373,47 @@ export interface HeatmapOpts {
  * (The CNC gap/stickout modes predate this factory and keep their own
  * angle-dependent thresholds — folding them on is a possible follow-up.)
  */
+/**
+ * The params a HeatmapOpts already describes, in the declared ParamSpec shape.
+ *
+ * These facts were being stated three times — here, and again by hand in
+ * `v2/fieldLenses.ts`, and again as defaults in each plugin's `defaults()` —
+ * with nothing checking they agreed. Emitting them from the factory makes this
+ * the one that the rail reads.
+ *
+ * The band bounds are deliberately NOT included: a band is interpretation, and
+ * the field-lens rail edits it with a two-bound editor that a plain number
+ * field cannot express.
+ */
+function heatmapParams(opts: HeatmapOpts): ParamSpec[] {
+  const specs: ParamSpec[] = [];
+  if (opts.thresholdParam) {
+    specs.push({
+      name: opts.thresholdParam, type: 'number', default: null,
+      label: 'Limit', unit: opts.units,
+    });
+  }
+  if (opts.minParam) {
+    specs.push({
+      name: opts.minParam, type: 'number', default: null,
+      label: 'Scale minimum', unit: opts.units,
+    });
+  }
+  if (opts.scaleParam) {
+    specs.push({
+      name: opts.scaleParam, type: 'number', default: null,
+      label: 'Scale maximum', unit: opts.units,
+    });
+  }
+  if (opts.maskParam) {
+    specs.push({
+      name: opts.maskParam, type: 'bool', default: true,
+      label: 'Hide edge artifacts',
+    });
+  }
+  return specs;
+}
+
 export function heatmapMode(
   id: string, label: string,
   pickField: (ctx: ViewCtx) => FieldDescriptor | null,
@@ -385,6 +426,7 @@ export function heatmapMode(
   return {
     id,
     label,
+    params: heatmapParams(opts),
     async paint(ctx): Promise<PaintInfo> {
       const desc = pickField(ctx);
       if (!desc) {

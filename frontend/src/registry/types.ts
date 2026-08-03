@@ -1,5 +1,5 @@
 import type { FC } from 'react';
-import type { FieldDescriptor, Manifest } from '../api/types';
+import type { FieldDescriptor, Manifest, ParamSpec } from '../api/types';
 
 export type RGB = readonly [number, number, number];
 
@@ -102,6 +102,17 @@ export interface ViewMode {
   paint(ctx: ViewCtx): Promise<PaintInfo>;
   /** Optional click handler; return true when consumed (triggers repaint). */
   onPick?(face: number, ctx: ViewCtx): Promise<boolean>;
+  /**
+   * The `ctx.params` keys this paint reads, declared in the same `ParamSpec`
+   * shape the backend serves for analysis params. The rail generates its
+   * settings from these — so a mode showing no knobs declares none and gets
+   * no settings section, rather than inheriting a panel from its plugin.
+   *
+   * This is per-MODE on purpose. `ProcessPlugin.Controls` is per-PROCESS and
+   * takes no props, which is why one CNC panel serves eighteen lenses and
+   * shows the tool holder to all of them.
+   */
+  params?: ParamSpec[];
 }
 
 /** A process contributes view modes, viewer controls and click-inspection. */
@@ -111,8 +122,25 @@ export interface ProcessPlugin {
   modes: ViewMode[];
   /** Initial viewer params when a part manifest loads. */
   defaults(manifest: Manifest): Record<string, any>;
-  /** Extra viewer-side controls (tolerance, holder, ...). */
+  /** Extra viewer-side controls (tolerance, holder, ...).
+   *
+   * BEING RETIRED. One component per process with no props, so it cannot know
+   * which lens is active and every mode of the process gets the same panel.
+   * Declare `ViewMode.params` instead and supply `paramWidgets` for the knobs
+   * a generated field cannot express. */
   Controls?: FC;
+  /**
+   * Widgets for params the generated form cannot render from the spec alone —
+   * options that come from the manifest rather than a static `options` array
+   * (the CNC direction and tool-tip selects), or a list type that needs a real
+   * editor. Keyed by param name; the mode still declares the param.
+   */
+  paramWidgets?: Record<string, FC<{
+    spec: ParamSpec;
+    value: unknown;
+    values: Record<string, unknown>;
+    onChange: (value: unknown) => void;
+  }>>;
   /** Lines for the click-to-inspect panel. */
   inspect?(face: number, ctx: ViewCtx): Promise<string[]>;
   /**
