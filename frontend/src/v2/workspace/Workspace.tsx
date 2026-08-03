@@ -21,7 +21,7 @@ import { SectionRail } from './SectionRail';
 import { PipelineRail } from './PipelineRail';
 import { RouteCheckRail } from './RouteCheckRail';
 import { PmiCallouts } from './PmiCallout';
-import { PmiRail } from './PmiRail';
+import { modeRailFor } from './modeRails';
 import { RightRail } from './RightRail';
 import { SettingsRail } from './SettingsRail';
 import { TopBar } from './TopBar';
@@ -52,6 +52,10 @@ export function Workspace() {
   const sectionRailOpen = useV2((s) => s.sectionRailOpen);
   const activeStudy = useActiveStudy();
   const buildingExpression = useV2((s) => s.expressionDraft);
+  // lenses that own the whole rail (PMI, the voxel debug view) — a table, so
+  // the next one is an entry rather than another ternary arm
+  const processId = useStore((s) => s.processId);
+  const ModeRail = modeRailFor(processId, modeId);
   const setViewport = useV2((s) => s.setViewport);
 
   // PMI reads best as an xray shell with the BREP edges; only the annotated
@@ -82,7 +86,7 @@ export function Workspace() {
         // read-only card is what you would be dropped back onto
         : buildingExpression ? ['expression', 380, <ExpressionRail />]
         : activeStudy ? ['study', 672, <DirectionsTableRail />]
-          : modeId === 'pmi' ? ['pmi', 288, <PmiRail />]
+          : ModeRail ? [`mode:${modeId}`, 288, <ModeRail />]
             : directionsActive ? ['directions', 288, <DirectionsRail />]
               : planCheckRail ? ['planCheck', 288, <RouteCheckRail />]
                 : activeFieldLens ? ['fieldLens', 288, <FieldLensRail />]

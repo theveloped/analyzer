@@ -1208,7 +1208,6 @@ function InjectionControls() {
   const jobs = useStore((s) => s.jobs);
   const busy = jobs.some((j) => j.part_id === partId
     && (j.status === 'queued' || j.status === 'running'));
-  const flowList = manifest ? flowVoxelResults(manifest) : [];
   const fillList = manifest ? flowFillResults(manifest) : [];
 
   function submitFlow(analysis: 'flow_voxels' | 'flow_fill') {
@@ -1462,56 +1461,6 @@ function InjectionControls() {
             click the part to place or move the gate, then compute — each
             parameter set is cached and selectable above
           </div>
-        </>
-      )}
-
-      {modeId === 'voxelField' && (
-        <>
-          <label>Voxel result</label>
-          <select
-            value={params.flowResult ?? -1}
-            onChange={(e) => set('flowResult', parseInt(e.target.value))}
-          >
-            {flowList.length > 0 && <option value={-1}>latest</option>}
-            {flowList.map((r, i) => (
-              <option key={r.hash} value={i}>
-                {`${r.stats.grid?.voxel?.toFixed(2)} mm · `
-                  + `${r.stats.interior_voxels} voxels · ${r.hash}`}
-              </option>
-            ))}
-            {!flowList.length && <option value={-1}>no results yet</option>}
-          </select>
-
-          <label>Field</label>
-          <select
-            value={params.voxelScalar ?? 'distance'}
-            onChange={(e) => set('voxelScalar', e.target.value)}
-          >
-            <option value="distance">wall distance (SDF)</option>
-            <option value="arrival">fill arrival (needs a fill result)</option>
-            <option value="frozen">frozen state (needs a fill result)</option>
-          </select>
-
-          <label className="check">
-            <input
-              type="checkbox" checked={params.voxelSurface === true}
-              onChange={(e) => set('voxelSurface', e.target.checked)}
-            />
-            project onto the surface
-          </label>
-
-          <div className="row">
-            <NumberParam
-              label="Voxel size (mm)" value={params.flowVoxel ?? ''}
-              placeholder="auto" onChange={(v) => set('flowVoxel', v)}
-            />
-          </div>
-          <button
-            className="run" disabled={busy || !partId}
-            onClick={() => submitFlow('flow_voxels')}
-          >
-            {busy ? 'computing…' : 'Compute voxels'}
-          </button>
         </>
       )}
 
