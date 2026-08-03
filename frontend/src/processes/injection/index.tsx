@@ -34,11 +34,8 @@ import {
   drawSplitOverlays, edgeDescriptors, effectiveDescriptor, faceLabel,
   handleSplitPick, type SplitHost,
 } from '../../splits/splits';
-import { SplitControls } from '../../splits/SplitControls';
-import { optimizeParting } from '../parting';
 import { INJECTION_PARAM_WIDGETS } from './params';
 import { expressionMode } from '../../colorizers/expression';
-import { runCtxAction } from '../../viewer/controller';
 
 const CONFLICT_FEATURE = 254;
 const INTERNAL_FEATURE = 255;
@@ -51,7 +48,7 @@ const ARROW_COLORS: Record<string, RGB> = {
   main_b: [0.62, 0.8, 0.58], // side B
 };
 
-function resultsFor(manifest: Manifest, analysis: string) {
+export function resultsFor(manifest: Manifest, analysis: string) {
   return manifest.results.filter(
     (r) => r.process === 'injection_molding' && r.analysis === analysis
       && (analysis !== 'mold_orientation' || r.stats.schema === MOLD_SCHEMA));
@@ -91,7 +88,7 @@ interface AssignmentData {
   overridesKey: string;
 }
 
-async function loadAssignment(ctx: ViewCtx): Promise<AssignmentData> {
+export async function loadAssignment(ctx: ViewCtx): Promise<AssignmentData> {
   const results = resultsFor(ctx.manifest, 'mold_orientation');
   if (!results.length) {
     const legacy = ctx.manifest.results.some(
@@ -139,7 +136,7 @@ async function loadAssignment(ctx: ViewCtx): Promise<AssignmentData> {
 }
 
 /** Split-interaction wiring for the mold assignment view. */
-const moldSplitHost: SplitHost = {
+export const moldSplitHost: SplitHost = {
   processId: 'injection_molding',
   modeId: 'assignment',
   currentResult: (manifest, params) =>
@@ -1155,221 +1152,7 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
   return lines;
 }
 
-const EMPTY: Record<string, any> = {};
 
-function NumberParam({ label, value, placeholder, onChange }: {
-  label: string; value: any; placeholder?: string; onChange: (v: string) => void;
-}) {
-  return (
-    <div>
-      <label>{label}</label>
-      <input
-        type="number" step="0.1" value={value} placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    </div>
-  );
-}
-
-function InjectionControls() {
-  const manifest = useStore((s) => s.manifest);
-  const modeId = useStore((s) => s.modeId);
-  const params = useStore((s) => s.viewerParams.injection_molding) ?? EMPTY;
-  const setParam = useStore((s) => s.setViewerParam);
-  const set = (name: string, value: any) => setParam('injection_molding', name, value);
-
-  const results = manifest ? resultsFor(manifest, 'mold_orientation') : [];
-  const result = pickResult(results, params.result);
-  const options: any[] = result?.stats.options ?? [];
-  const fieldOptions = options.slice(0, 3);
-  const hasBrep = !!manifest?.fields.some((f) => f.id === 'brep_edges');
-
-
-  return (
-    <>
-      {modeId === 'assignment' && (
-        <>
-          <label>Result (parameter set)</label>
-          <select value={params.result ?? -1} onChange={(e) => set('result', parseInt(e.target.value))}>
-            {results.length > 0 && <option value={-1}>latest</option>}
-            {results.map((r, i) => (
-              <option key={r.hash} value={i}>
-                {`max slides ${r.params.max_slides ?? '?'} · ${r.hash}`}
-              </option>
-            ))}
-            {!results.length && <option value={-1}>no results yet</option>}
-          </select>
-
-          <label>Orientation option</label>
-          <select value={params.option ?? 0} onChange={(e) => set('option', parseInt(e.target.value))}>
-            {fieldOptions.map((o, i) => (
-              <option key={i} value={i}>
-                {`±d${o.pair[0]} · ${o.slides.length} slide(s) · ${o.feasible ? 'feasible' : 'infeasible'}`}
-              </option>
-            ))}
-            {!fieldOptions.length && <option value={0}>—</option>}
-          </select>
-
-          <div className="row">
-            <label className="check">
-              <input
-                type="checkbox" checked={params.showLines !== false}
-                onChange={(e) => set('showLines', e.target.checked)}
-              />
-              parting lines
-            </label>
-            <label className="check">
-              <input
-                type="checkbox" checked={params.showArrows !== false}
-                onChange={(e) => set('showArrows', e.target.checked)}
-              />
-              direction arrows
-            </label>
-          </div>
-
-          <div className="hint">
-            click a face to cycle it between its valid sides/slides ·
-            faded stripes = other valid features
-          </div>
-
-          <button
-            disabled={!hasBrep || !results.length}
-            onClick={() => void runCtxAction(async (ctx) => {
-              const data = await loadAssignment(ctx);
-              const { summary, changed } = await optimizeParting(ctx, {
-                valid: data.valid, defaults: data.defaults, current: data.current,
-                option: data.option, overridesKey: data.overridesKey,
-                overridesUrl: data.result.overrides_url,
-              });
-              useStore.getState().set({ pick: summary });
-              return changed;
-            })}
-          >
-            optimize parting lines
-          </button>
-
-          <SplitControls host={moldSplitHost} />
-
-          {options.length > 0 && (
-            <div className="hint">
-              ranked: {options.map((o, i) =>
-                `#${i} ±d${o.pair[0]} ${o.feasible ? '✓' : '✗'} ${(o.coverage * 100).toFixed(0)}%`).join(' · ')}
-            </div>
-          )}
-        </>
-      )}
-
-      {modeId === 'thickness' && (
-        <>
-          <div className="row">
-            <NumberParam
-              label="Min thickness (mm)" value={params.minThickness ?? 1.0}
-              onChange={(v) => set('minThickness', v)}
-            />
-            <NumberParam
-              label="Heatmap max (mm)" value={params.thicknessScale ?? ''}
-              placeholder="auto" onChange={(v) => set('thicknessScale', v)}
-            />
-          </div>
-          <label className="check">
-            <input
-              type="checkbox" checked={params.maskExplained !== false}
-              onChange={(e) => set('maskExplained', e.target.checked)}
-            />
-            show edge-explained readings as ok
-          </label>
-        </>
-      )}
-
-      {modeId === 'gaps' && (
-        <>
-          <div className="row">
-            <NumberParam
-              label="Min gap (mm)" value={params.minGap ?? 0.5}
-              onChange={(v) => set('minGap', v)}
-            />
-            <NumberParam
-              label="Heatmap max (mm)" value={params.gapScale ?? ''}
-              placeholder="auto" onChange={(v) => set('gapScale', v)}
-            />
-          </div>
-          <label className="check">
-            <input
-              type="checkbox" checked={params.maskExplained !== false}
-              onChange={(e) => set('maskExplained', e.target.checked)}
-            />
-            show edge-explained readings as ok
-          </label>
-        </>
-      )}
-
-      {modeId === 'rayThickness' && (
-        <div className="row">
-          <NumberParam
-            label="Min thickness (mm)" value={params.minRayThickness ?? 1.0}
-            onChange={(v) => set('minRayThickness', v)}
-          />
-          <NumberParam
-            label="Heatmap max (mm)" value={params.rayThicknessScale ?? ''}
-            placeholder="auto" onChange={(v) => set('rayThicknessScale', v)}
-          />
-        </div>
-      )}
-
-      {modeId === 'rayGap' && (
-        <div className="row">
-          <NumberParam
-            label="Min gap (mm)" value={params.minRayGap ?? 0.5}
-            onChange={(v) => set('minRayGap', v)}
-          />
-          <NumberParam
-            label="Heatmap max (mm)" value={params.rayGapScale ?? ''}
-            placeholder="auto" onChange={(v) => set('rayGapScale', v)}
-          />
-        </div>
-      )}
-
-      {modeId === 'slenderness' && (
-        <div className="row">
-          <NumberParam
-            label="Max depth/width (×)" value={params.maxSlenderness ?? 2.0}
-            onChange={(v) => set('maxSlenderness', v)}
-          />
-          <NumberParam
-            label="Heatmap max (×)" value={params.slendernessScale ?? ''}
-            placeholder="auto" onChange={(v) => set('slendernessScale', v)}
-          />
-        </div>
-      )}
-
-      {modeId === 'thinSpan' && (
-        <div className="row">
-          <NumberParam
-            label="Max span/thickness (×)" value={params.maxSpanRatio ?? 5.0}
-            onChange={(v) => set('maxSpanRatio', v)}
-          />
-          <NumberParam
-            label="Heatmap max (×)" value={params.spanScale ?? ''}
-            placeholder="auto" onChange={(v) => set('spanScale', v)}
-          />
-        </div>
-      )}
-
-      {(modeId === 'thicknessAngle' || modeId === 'gapAngle') && (
-        <div className="row">
-          <NumberParam
-            label="Min angle (°)" value={params.minAngle ?? 60}
-            onChange={(v) => set('minAngle', v)}
-          />
-          <NumberParam
-            label="Heatmap max (°)" value={params.angleScale ?? 180}
-            onChange={(v) => set('angleScale', v)}
-          />
-        </div>
-      )}
-    </>
-  );
-}
 
 export const injectionPlugin: ProcessPlugin = {
   processId: 'injection_molding',
@@ -1402,7 +1185,6 @@ export const injectionPlugin: ProcessPlugin = {
     flowSkinCoef: '0.12', flowFillTime: '2', flowIterations: '3',
     flowNeighborhood: '26', coolCoef: '1',
   }),
-  Controls: InjectionControls,
   paramWidgets: INJECTION_PARAM_WIDGETS,
   inspect,
   onPick(face, point, ctx) {
