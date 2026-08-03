@@ -11,7 +11,9 @@ import { useActiveLens } from './hooks';
 import { useBusy } from './run';
 import { hintCls } from '../components/styles';
 import type { ParamSpec } from '../../api/types';
-import { RailHeader, RailSection } from '../components/rail';
+import {
+  Rail, RailDivider, RailHeader, RailSection, RailStats,
+} from '../components/rail';
 import {
   ParamsForm, type ParamWidget,
 } from '../components/rail/ParamsForm';
@@ -20,7 +22,7 @@ import { lensActionFor } from './modeRails';
 
 /** Run state + a Run button for a lens that paints one analysis's result.
  * Without this a lens with nothing cached can only tell the user to go find
- * the analysis in the generic Compute panel — which is where the hole-feature
+ * the analysis in the generic Compute rail — which is where the hole-feature
  * lens dead-ended. */
 function RunBacking({ lens }: { lens: Lens }) {
   const ref = lens.analysis!;
@@ -118,7 +120,7 @@ export function LensRail() {
   const Action = lensActionFor(lens.processId, lens.modeId);
 
   return (
-    <div className="flex min-h-full flex-col gap-4 p-4">
+    <Rail>
       <RailHeader
         icon={Icon}
         title={lens.label}
@@ -133,23 +135,13 @@ export function LensRail() {
 
       {lens.analysis && <RunBacking lens={lens} />}
 
-      <div className="h-px bg-zinc-950/10 dark:bg-white/10" />
+      <RailDivider />
 
-      <div>
-        <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">In view</div>
-        {error ? (
-          <p className="whitespace-pre-wrap text-xs/5 text-red-600 dark:text-red-500">⚠ {error}</p>
-        ) : stats ? (
-          <p className={clsx('whitespace-pre-wrap', hintCls)}>{stats}</p>
-        ) : (
-          <p className={hintCls}>Loading…</p>
-        )}
-      </div>
+      <RailStats text={stats} error={error} empty="Loading…" />
 
-      <div>
-        <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">Inspect</div>
+      <RailSection title="Inspect">
         <p className="whitespace-pre-wrap font-mono text-[11px]/4 text-zinc-500 dark:text-zinc-400">{pick}</p>
-      </div>
-    </div>
+      </RailSection>
+    </Rail>
   );
 }

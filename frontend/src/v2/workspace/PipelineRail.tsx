@@ -18,6 +18,7 @@ import { describeCheck, useCheckEvaluation } from '../checks/catalog';
 import {
   checkState, planCheckState, statusKindOf, type CheckState,
 } from '../checks/status';
+import { RailSection } from '../components/rail';
 import { StatusDot } from '../components/status';
 import { useV2 } from '../store';
 import { closeStudy, openStudy, STUDIES } from '../studies';
@@ -209,49 +210,48 @@ function AddOperationForm({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="rounded-lg border border-zinc-950/10 p-2.5 dark:border-white/10">
-      <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">
-        New operation
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Input placeholder="label (e.g. OP30)" value={label}
-          onChange={(e) => setLabel(e.target.value)} aria-label="operation label" />
-        <Select
-          value={kind}
-          onChange={(e) => {
-            // narrow through the table rather than casting the DOM string
-            const next = OP_KINDS.find((k) => k.id === e.target.value);
-            if (next) { setKind(next.id); setMachine(''); }
-          }}
-          aria-label="operation kind"
-        >
-          {OP_KINDS.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
-        </Select>
-        <Select value={machine} onChange={(e) => setMachine(e.target.value)}
-          aria-label="machine">
-          <option value="">no machine</option>
-          {kindMachines.map((m) => (
-            <option key={m.name} value={m.name}>{m.label}</option>
-          ))}
-        </Select>
-        {directional && (manifest?.directions.length ?? 0) > 0 && (
-          <Select value={direction} onChange={(e) => setDirection(e.target.value)}
-            aria-label="approach direction">
-            {(manifest?.directions ?? []).map((d, i) => (
-              <option key={i} value={String(i)}>
-                {`dir ${i}`}
-                {manifest?.direction_sources?.[i]?.label
-                  ? ` — ${manifest.direction_sources[i].label}` : ''}
-              </option>
+      <RailSection title="New operation">
+        <div className="flex flex-col gap-1.5">
+          <Input placeholder="label (e.g. OP30)" value={label}
+            onChange={(e) => setLabel(e.target.value)} aria-label="operation label" />
+          <Select
+            value={kind}
+            onChange={(e) => {
+              // narrow through the table rather than casting the DOM string
+              const next = OP_KINDS.find((k) => k.id === e.target.value);
+              if (next) { setKind(next.id); setMachine(''); }
+            }}
+            aria-label="operation kind"
+          >
+            {OP_KINDS.map((k) => <option key={k.id} value={k.id}>{k.label}</option>)}
+          </Select>
+          <Select value={machine} onChange={(e) => setMachine(e.target.value)}
+            aria-label="machine">
+            <option value="">no machine</option>
+            {kindMachines.map((m) => (
+              <option key={m.name} value={m.name}>{m.label}</option>
             ))}
           </Select>
-        )}
-        <div className="flex gap-1.5">
-          <Button outline onClick={onClose} className="flex-1">Cancel</Button>
-          <Button onClick={add} disabled={building} className="flex-1">
-            {building ? 'Adding…' : 'Add'}
-          </Button>
+          {directional && (manifest?.directions.length ?? 0) > 0 && (
+            <Select value={direction} onChange={(e) => setDirection(e.target.value)}
+              aria-label="approach direction">
+              {(manifest?.directions ?? []).map((d, i) => (
+                <option key={i} value={String(i)}>
+                  {`dir ${i}`}
+                  {manifest?.direction_sources?.[i]?.label
+                    ? ` — ${manifest.direction_sources[i].label}` : ''}
+                </option>
+              ))}
+            </Select>
+          )}
+          <div className="flex gap-1.5">
+            <Button outline onClick={onClose} className="flex-1">Cancel</Button>
+            <Button onClick={add} disabled={building} className="flex-1">
+              {building ? 'Adding…' : 'Add'}
+            </Button>
+          </div>
         </div>
-      </div>
+      </RailSection>
     </div>
   );
 }
@@ -330,72 +330,72 @@ export function PipelineRail() {
     <div className="flex h-full w-64 shrink-0 flex-col gap-3 overflow-auto border-r border-zinc-950/5 bg-white p-4 dark:border-white/10 dark:bg-zinc-900">
       <StudySection />
 
-      <div className="text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">
-        {hasRoute ? `Route · rev ${section?.route.revision}` : 'Checks'}
-      </div>
-
-      {hasRoute ? (
-        <div className="flex flex-col gap-3">
-          {groups.map((group) => (
-            <div key={group.op?.id ?? '__review'}>
-              {group.op ? (
-                <OperationCard op={group.op} />
-              ) : (
-                <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
-                  <Compass className="size-3" /> {group.label}
-                </div>
-              )}
-              {group.checks.map((check, i) => (
-                <div key={check.id} className="group/check relative">
-                  <RouteCheckCard
-                    check={check}
-                    status={section?.checks[check.id]}
-                    isActive={activeCheckId === check.id}
-                  />
-                  <button
-                    type="button"
-                    title="Remove this check"
-                    onClick={() => { void removeCheck(check); }}
-                    className="absolute right-1.5 top-1.5 rounded p-0.5 text-zinc-400 opacity-0 transition group-hover/check:opacity-100 hover:bg-zinc-950/10 hover:text-zinc-700 dark:hover:bg-white/10 dark:hover:text-zinc-200"
-                  >
-                    <X className="size-3" />
-                  </button>
-                  {i < group.checks.length - 1 && <Connector />}
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="flex flex-col">
-          {catalog.map((a, i) => {
-            const threshold = Number(
-              (viewerParams[a.process] ?? {})[a.thresholdParam] ?? a.thresholdDefault,
-            );
-            const state = checkState(manifest, jobs, partId, a, threshold);
-            const min = (state.result?.stats as Record<string, number> | undefined)?.min;
-            const summary = state.verdict === 'pass'
-              ? `ok · min ${min?.toFixed(2)} ${a.unit}`
-              : state.verdict === 'review'
-                ? `below ${threshold} ${a.unit} — review`
-                : `${state.note} · limit ${threshold} ${a.unit}`;
-            return (
-              <div key={a.id}>
-                <CheckCard
-                  icon={a.icon}
-                  label={a.label}
-                  tier={a.tier}
-                  state={state}
-                  summary={summary}
-                  isActive={checkActive && a.id === active.id}
-                  onClick={() => selectAnalysis(a)}
-                />
-                {i < catalog.length - 1 && <Connector />}
+      <RailSection
+        title={hasRoute ? `Route · rev ${section?.route.revision}` : 'Checks'}
+      >
+        {hasRoute ? (
+          <div className="flex flex-col gap-3">
+            {groups.map((group) => (
+              <div key={group.op?.id ?? '__review'}>
+                {group.op ? (
+                  <OperationCard op={group.op} />
+                ) : (
+                  <div className="mb-1 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+                    <Compass className="size-3" /> {group.label}
+                  </div>
+                )}
+                {group.checks.map((check, i) => (
+                  <div key={check.id} className="group/check relative">
+                    <RouteCheckCard
+                      check={check}
+                      status={section?.checks[check.id]}
+                      isActive={activeCheckId === check.id}
+                    />
+                    <button
+                      type="button"
+                      title="Remove this check"
+                      onClick={() => { void removeCheck(check); }}
+                      className="absolute right-1.5 top-1.5 rounded p-0.5 text-zinc-400 opacity-0 transition group-hover/check:opacity-100 hover:bg-zinc-950/10 hover:text-zinc-700 dark:hover:bg-white/10 dark:hover:text-zinc-200"
+                    >
+                      <X className="size-3" />
+                    </button>
+                    {i < group.checks.length - 1 && <Connector />}
+                  </div>
+                ))}
               </div>
-            );
-          })}
-        </div>
-      )}
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-col">
+            {catalog.map((a, i) => {
+              const threshold = Number(
+                (viewerParams[a.process] ?? {})[a.thresholdParam] ?? a.thresholdDefault,
+              );
+              const state = checkState(manifest, jobs, partId, a, threshold);
+              const min = (state.result?.stats as Record<string, number> | undefined)?.min;
+              const summary = state.verdict === 'pass'
+                ? `ok · min ${min?.toFixed(2)} ${a.unit}`
+                : state.verdict === 'review'
+                  ? `below ${threshold} ${a.unit} — review`
+                  : `${state.note} · limit ${threshold} ${a.unit}`;
+              return (
+                <div key={a.id}>
+                  <CheckCard
+                    icon={a.icon}
+                    label={a.label}
+                    tier={a.tier}
+                    state={state}
+                    summary={summary}
+                    isActive={checkActive && a.id === active.id}
+                    onClick={() => selectAnalysis(a)}
+                  />
+                  {i < catalog.length - 1 && <Connector />}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </RailSection>
 
       <div className="flex flex-col gap-2">
         {adding ? (

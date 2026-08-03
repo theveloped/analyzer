@@ -1,6 +1,5 @@
-import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 import clsx from 'clsx';
-import { BookmarkPlus, ChevronDown, RotateCw, Settings2 } from 'lucide-react';
+import { BookmarkPlus, RotateCw, Settings2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Button } from '../../catalyst/button';
 import { Input } from '../../catalyst/input';
@@ -11,7 +10,9 @@ import {
   latestResult, resolveBound, type BandBound, type BoundUnit,
   type FieldLensDef, type FieldStats,
 } from '../fieldLenses';
-import { StatusBadge } from '../components/status';
+import {
+  Rail, RailDisclosure, RailDivider, RailHeader, RailSection, RailStats,
+} from '../components/rail';
 import { useV2 } from '../store';
 import { ComputeInput } from './computeFields';
 import {
@@ -20,8 +21,6 @@ import {
 import { useBusy } from './run';
 import { runAnalysisJob } from '../../viewer/jobs';
 import { hintCls } from '../components/styles';
-
-const sectionCls = 'text-xs/5 font-medium text-zinc-500 dark:text-zinc-400';
 
 /** The lens's compute payload: v2 store overrides on top of the defaults. */
 function currentCompute(def: FieldLensDef): Record<string, unknown> {
@@ -137,19 +136,16 @@ function BandSection({ def, stats }: { def: FieldLensDef; stats: FieldStats }) {
   };
 
   return (
-    <div>
-      <div className="mb-1.5 flex items-center justify-between">
-        <span className={sectionCls}>
-          Highlight band{selected ? ` — “${selected.id}”` : ''}
-        </span>
-        {active && (
-          <button type="button"
-            onClick={() => setBand(bandKey, EMPTY_BAND)}
-            className="text-[11px]/4 text-zinc-400 transition hover:text-zinc-600 dark:hover:text-zinc-200">
-            clear
-          </button>
-        )}
-      </div>
+    <RailSection
+      title={`Highlight band${selected ? ` — “${selected.id}”` : ''}`}
+      action={active ? (
+        <button type="button"
+          onClick={() => setBand(bandKey, EMPTY_BAND)}
+          className="text-[11px]/4 text-zinc-400 transition hover:text-zinc-600 dark:hover:text-zinc-200">
+          clear
+        </button>
+      ) : undefined}
+    >
       <BoundRow label="from" bound={lo} onChange={setLo}
         fieldUnit={def.unit} resolved={rLo} />
       <BoundRow label="to" bound={hi} onChange={setHi}
@@ -177,7 +173,7 @@ function BandSection({ def, stats }: { def: FieldLensDef; stats: FieldStats }) {
           lens (toolbar) instead.
         </p>
       )}
-    </div>
+    </RailSection>
   );
 }
 
@@ -190,10 +186,10 @@ export function FieldLensRail() {
   const def = useActiveFieldLens();
   const lens = useActiveLens();
   if (!def || !lens) return null;
-  return <Rail def={def} lensLabel={lens.label} lensBlurb={lens.blurb} />;
+  return <Body def={def} lensLabel={lens.label} lensBlurb={lens.blurb} />;
 }
 
-function Rail({ def, lensLabel, lensBlurb }: {
+function Body({ def, lensLabel, lensBlurb }: {
   def: FieldLensDef; lensLabel: string; lensBlurb?: string;
 }) {
   const manifest = useStore((s) => s.manifest);
@@ -225,49 +221,19 @@ function Rail({ def, lensLabel, lensBlurb }: {
   };
 
   return (
-    <div className="flex min-h-full flex-col gap-4 p-4">
-      <div>
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm/6 font-semibold text-zinc-950 dark:text-white">{lensLabel}</h2>
-          {busy ? <StatusBadge status="active">computing…</StatusBadge>
-            : !result ? <StatusBadge status="neutral">not run</StatusBadge>
-            : result.stale ? <StatusBadge status="warning">stale</StatusBadge>
-            : <StatusBadge status="good">current</StatusBadge>}
-        </div>
-        <p className={clsx('mt-1', hintCls)}>
-          {lensBlurb ?? 'Plain field heatmap over the real data range.'}
-          {!result && !busy && ' Runs automatically with plain defaults.'}
-        </p>
-      </div>
+    <Rail>
+      <RailHeader
+        title={lensLabel}
+        status={busy ? 'active' : !result ? 'neutral'
+          : result.stale ? 'warning' : 'good'}
+        statusLabel={busy ? 'computing…' : !result ? 'not run'
+          : result.stale ? 'stale' : 'current'}
+        blurb={(lensBlurb ?? 'Plain field heatmap over the real data range.')
+          + (!result && !busy ? ' Runs automatically with plain defaults.' : '')}
+      />
 
-      {def.computeFields.length > 0 && (
-        <Disclosure>
-          {({ open }) => (
-            <div>
-              <DisclosureButton className="flex w-full items-center justify-between rounded-lg px-1 py-1 text-xs/5 font-medium text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white">
-                <span className="flex items-center gap-1.5">
-                  <Settings2 className="size-3.5" /> Advanced
-                </span>
-                <ChevronDown className={clsx('size-3.5 transition-transform', open && 'rotate-180')} />
-              </DisclosureButton>
-              <DisclosurePanel className="mt-2 flex flex-col gap-4">
-                {def.computeFields.map((field) => (
-                  <ComputeInput key={field.key} computeId={def.modeId} field={field} />
-                ))}
-              </DisclosurePanel>
-            </div>
-          )}
-        </Disclosure>
-      )}
-
-      <Button onClick={rerun} disabled={busy || !changed} className="w-full"
-        title={changed ? undefined : 'nothing changed since the stored run'}>
-        <RotateCw data-slot="icon" className={busy ? 'animate-spin' : undefined} />
-        {busy ? 'Computing…' : result ? 'Re-run analysis' : 'Run analysis'}
-      </Button>
-
-      <div className="h-px bg-zinc-950/10 dark:bg-white/10" />
-
+      {/* the band is slot 3, not slot 6: it is the primary knob, it recolours
+          instantly, and it sits ABOVE the compute knobs that re-run the job */}
       {result && fieldDist ? (
         <BandSection def={def} stats={fieldDist} />
       ) : (
@@ -278,14 +244,23 @@ function Rail({ def, lensLabel, lensBlurb }: {
         </p>
       )}
 
-      <div>
-        <div className={clsx(sectionCls, 'mb-1.5')}>In view</div>
-        {error ? (
-          <p className="whitespace-pre-wrap text-xs/5 text-red-600 dark:text-red-500">⚠ {error}</p>
-        ) : (
-          <p className={clsx('whitespace-pre-wrap', hintCls)}>{stats}</p>
-        )}
-      </div>
-    </div>
+      {def.computeFields.length > 0 && (
+        <RailDisclosure icon={Settings2} label="Advanced">
+          {def.computeFields.map((field) => (
+            <ComputeInput key={field.key} computeId={def.modeId} field={field} />
+          ))}
+        </RailDisclosure>
+      )}
+
+      <Button onClick={rerun} disabled={busy || !changed} className="w-full"
+        title={changed ? undefined : 'nothing changed since the stored run'}>
+        <RotateCw data-slot="icon" className={busy ? 'animate-spin' : undefined} />
+        {busy ? 'Computing…' : result ? 'Re-run analysis' : 'Run analysis'}
+      </Button>
+
+      <RailDivider />
+
+      <RailStats text={stats} error={error} />
+    </Rail>
   );
 }

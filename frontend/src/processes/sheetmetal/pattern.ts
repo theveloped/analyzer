@@ -39,7 +39,7 @@ export const patternMode: ViewMode = {
   async paint(ctx) {
     const result = latestSheet(ctx, 'flat_pattern');
     if (!result) {
-      throw new Error('no flat pattern result — run sheet_metal/flat_pattern in the Compute panel (needs prep/aag)');
+      throw new Error('no flat pattern result — run sheet_metal/flat_pattern in the Compute rail (needs prep/aag)');
     }
 
     // translucent part painted by role for orientation

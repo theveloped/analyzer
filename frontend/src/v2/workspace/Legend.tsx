@@ -18,8 +18,14 @@ const sub = 'text-[10px] tabular-nums text-zinc-500 dark:text-zinc-400';
 
 /** Bottom-left legend. Heatmaps render a colorbar spanning the real data range
  * (min→max, or symmetric with 0 centred for a diverging field); everything else
- * falls back to the discrete swatch list. */
-export function Legend() {
+ * falls back to the discrete swatch list.
+ *
+ * It does NOT normally name what is painted — the rail header does, and saying
+ * it twice on one screen was the duplication this replaces. `showTitle` is for
+ * the rails that name themselves instead (measure, section, compute): there the
+ * lens name appears nowhere else, so the legend keeps claiming it. The unit
+ * lives on the max label either way, because it describes the numbers. */
+export function Legend({ showTitle = false }: { showTitle?: boolean }) {
   const colorbar = useStore((s) => s.colorbar);
   const legend = useStore((s) => s.legend);
   const selection = useStore((s) => s.selection);
@@ -48,7 +54,7 @@ export function Legend() {
     const showLimit = threshold != null && threshold > min && threshold < max;
     return (
       <div data-overlay="legend" className={box}>
-        <div className={title}>{active.label}{unit ? ` · ${unit}` : ''}</div>
+        {showTitle && <div className={title}>{active.label}</div>}
 
         <div className="relative">
           <div className="h-2.5 w-full rounded ring-1 ring-black/10" style={{ background: gradient }} />
@@ -67,7 +73,7 @@ export function Legend() {
         <div className={`relative mt-1 flex justify-between ${sub}`}>
           <span>{min.toFixed(2)}</span>
           {diverging && <span className="absolute left-1/2 -translate-x-1/2">0</span>}
-          <span>{max.toFixed(2)}</span>
+          <span>{max.toFixed(2)}{unit ? ` ${unit}` : ''}</span>
         </div>
 
         {showLimit && (
@@ -84,7 +90,7 @@ export function Legend() {
   if (!legend.length) return null;
   return (
     <div data-overlay="legend" className={box}>
-      <div className={title}>{active.label}</div>
+      {showTitle && <div className={title}>{active.label}</div>}
       <div className="flex flex-col gap-1">
         {legend.map((entry, i) => (
           <button

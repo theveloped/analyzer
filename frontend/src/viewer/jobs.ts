@@ -1,4 +1,4 @@
-// Job submission + poll loop shared by the Compute panel and plugin
+// Job submission + poll loop shared by the Compute rail and plugin
 // controls (e.g. the flow-fill "Compute fill" button). The watched set is
 // module-level so remounts and multiple callers never double-poll a job.
 

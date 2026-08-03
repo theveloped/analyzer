@@ -60,7 +60,7 @@ export async function loadSetups(ctx: ViewCtx): Promise<SetupsData> {
       (r) => r.process === 'cnc' && r.analysis === 'setups');
     throw new Error(stale
       ? 'stored result has an old schema — re-run setup combinations'
-      : 'no setups result yet — run the analysis below');
+      : 'no setups result yet — run cnc/setups in the Compute rail');
   }
   const result = results[ctx.params.setupsResult ?? 0] ?? results[results.length - 1];
   const option = ctx.params.setupsOption ?? 0;

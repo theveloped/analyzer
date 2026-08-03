@@ -48,7 +48,7 @@ export interface Lens {
   advanced: boolean;
   /** The backend analysis whose stored result this lens paints, when it has
    * exactly one. Lets the rail show run state and offer a Run button instead
-   * of throwing "run it in the Compute panel" at the user. Scalar-field
+   * of throwing "run it in the Compute rail" at the user. Scalar-field
    * lenses declare theirs in `fieldLenses.ts` and self-materialize instead. */
   analysis?: { process: string; analysis: string };
 }

@@ -26,7 +26,7 @@ export const hullMode: ViewMode = {
   async paint(ctx) {
     const result = latestHull(ctx);
     if (!result) {
-      throw new Error('no convex hull result — run cnc/hull in the Compute panel');
+      throw new Error('no convex hull result — run cnc/hull in the Compute rail');
     }
     const find = (name: string) => ctx.manifest.fields.find(
       (f) => f.id === `results.cnc.hull.${result.hash}.${name}`);

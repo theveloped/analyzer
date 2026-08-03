@@ -95,7 +95,7 @@ export async function loadAssignment(ctx: ViewCtx): Promise<AssignmentData> {
       (r) => r.process === 'injection_molding' && r.analysis === 'mold_orientation');
     throw new Error(legacy
       ? 'stored result predates the membership model — re-run mold orientation'
-      : 'no mold_orientation result yet — run the analysis below');
+      : 'no mold_orientation result yet — run injection_molding/mold_orientation in the Compute rail');
   }
   const result = pickResult(results, ctx.params.result)!;
   const option = ctx.params.option ?? 0;
@@ -356,7 +356,7 @@ function pickSkeletonResult(ctx: ViewCtx) {
   const results = skeletonResults(ctx);
   const result = pickResult(results, ctx.params.skelResult);
   if (!result) {
-    throw new Error('no wall_skeleton result yet — run the analysis below');
+    throw new Error('no wall_skeleton result yet — run injection_molding/wall_skeleton in the Compute rail');
   }
   return result;
 }
@@ -473,7 +473,7 @@ const sprueMode: ViewMode = {
     const results = sprueResults(ctx);
     const result = pickResult(results, ctx.params.sprueResult);
     if (!result) {
-      throw new Error('no sprue_proposals result yet — run the analysis below');
+      throw new Error('no sprue_proposals result yet — run injection_molding/sprue_proposals in the Compute rail');
     }
     const data = await loadSprue(ctx, result);
     const { skeleton: sk, proposals } = data;
@@ -694,7 +694,7 @@ const voxelFieldMode: ViewMode = {
     const results = flowVoxelResults(ctx.manifest);
     const result = pickResult(results, ctx.params.flowResult);
     if (!result) {
-      throw new Error('no flow_voxels result yet — run the analysis below');
+      throw new Error('no flow_voxels result yet — run injection_molding/flow_voxels in the Compute rail');
     }
     const grid = await loadVoxelGrid(ctx, result);
     const scalar = (VOXEL_SCALARS as readonly string[]).includes(
@@ -809,7 +809,7 @@ const coolingMode: ViewMode = {
     const results = flowVoxelResults(ctx.manifest);
     const result = pickResult(results, ctx.params.flowResult);
     if (!result) {
-      throw new Error('no flow_voxels result yet — run the analysis below');
+      throw new Error('no flow_voxels result yet — run injection_molding/flow_voxels in the Compute rail');
     }
     const { vertHalf } = await loadVertVoxel(ctx, result);
     const coef = parseFloat(ctx.params.coolCoef) || 1.0;
@@ -860,7 +860,7 @@ const ejectorMode: ViewMode = {
     const results = stickingResults(ctx);
     const result = pickResult(results, ctx.params.stickResult);
     if (!result) {
-      throw new Error('no ejection_sticking result yet — run the analysis below');
+      throw new Error('no ejection_sticking result yet — run injection_molding/ejection_sticking in the Compute rail');
     }
     const data = await loadSticking(ctx, result);
     const sk = data.skeleton;

@@ -41,7 +41,7 @@ export function findStudy(ctx: ReachCtx): ReachStudy {
   if (!entry) {
     throw new Error(wanted
       ? 'the plan\'s reach study is not computed yet — run its check first'
-      : 'no reach study yet — run cnc/reach_study in the Compute panel');
+      : 'no reach study yet — run cnc/reach_study in the Compute rail');
   }
   return {
     entry,

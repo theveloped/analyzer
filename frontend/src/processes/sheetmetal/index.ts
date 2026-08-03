@@ -58,7 +58,7 @@ const rolesMode: ViewMode = {
   async paint(ctx) {
     const result = latestSheet(ctx, 'detect');
     if (!result) {
-      throw new Error('no sheet detection result — run sheet_metal/detect in the Compute panel (needs prep/aag)');
+      throw new Error('no sheet detection result — run sheet_metal/detect in the Compute rail (needs prep/aag)');
     }
     const roles = await sheetField(ctx, result, 'face_role') as Uint8Array;
     const info = paintCategory(ctx, roles, ROLE_LABELS, ROLE_COLORS);
@@ -74,7 +74,7 @@ const bendRadiusMode: ViewMode = {
   async paint(ctx) {
     const result = latestSheet(ctx, 'detect');
     if (!result) {
-      throw new Error('no sheet detection result — run sheet_metal/detect in the Compute panel (needs prep/aag)');
+      throw new Error('no sheet detection result — run sheet_metal/detect in the Compute rail (needs prep/aag)');
     }
     const radius = await sheetField(ctx, result, 'bend_radius') as Float32Array;
     // rule of thumb: inner bend radius below the sheet thickness risks

@@ -98,6 +98,11 @@ export function Workspace() {
                     : activeLens ? ['lens', 288, <LensRail />]
                       : ['settings', 288, <SettingsRail />];
 
+  // most rails are named after what is painted, so the legend does not repeat
+  // it; these three name themselves and leave the lens unnamed on screen
+  const railNamesItself = railId === 'measure' || railId === 'section'
+    || railId === 'compute';
+
   return (
     <div className="flex h-full flex-col">
       <TopBar />
@@ -109,7 +114,7 @@ export function Workspace() {
           {modeId === 'pmi' && <PmiCallouts />}
           <AnalysisToolbar />
           {directionsActive && <DirectionTooltip />}
-          <Legend />
+          <Legend showTitle={railNamesItself} />
           <ViewportToolbar />
           {(!partId || !meshReady) && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">

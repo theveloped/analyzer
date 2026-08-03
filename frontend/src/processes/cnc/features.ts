@@ -67,7 +67,7 @@ export const featuresMode: ViewMode = {
   async paint(ctx) {
     const result = latestFeatures(ctx);
     if (!result) {
-      throw new Error('no feature recognition result — run cnc/features in the Compute panel (needs prep/aag)');
+      throw new Error('no feature recognition result — run cnc/features in the Compute rail (needs prep/aag)');
     }
     const { category, ids } = await featureFields(ctx, result);
     const tracker = new FocusTracker(ctx);

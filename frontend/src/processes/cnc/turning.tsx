@@ -60,7 +60,7 @@ async function turningField(ctx: ViewCtx, result: ResultEntry, name: string) {
 function require(ctx: ViewCtx): ResultEntry {
   const result = latestTurning(ctx);
   if (!result) {
-    throw new Error('no turning result — run cnc/turning in the Compute panel');
+    throw new Error('no turning result — run cnc/turning in the Compute rail');
   }
   return result;
 }

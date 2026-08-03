@@ -39,7 +39,7 @@ export const bendPlanMode: ViewMode = {
   async paint(ctx) {
     const result = latestBendPlan(ctx);
     if (!result) {
-      throw new Error('no bend plan result — run sheet_metal/bend_plan in the Compute panel (needs prep/aag)');
+      throw new Error('no bend plan result — run sheet_metal/bend_plan in the Compute rail (needs prep/aag)');
     }
     const s = result.stats;
 
