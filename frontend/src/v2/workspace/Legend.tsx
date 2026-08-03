@@ -47,7 +47,7 @@ export function Legend() {
     const pct = (v: number) => Math.max(0, Math.min(100, ((v - min) / span) * 100));
     const showLimit = threshold != null && threshold > min && threshold < max;
     return (
-      <div className={box}>
+      <div data-overlay="legend" className={box}>
         <div className={title}>{active.label}{unit ? ` · ${unit}` : ''}</div>
 
         <div className="relative">
@@ -83,7 +83,7 @@ export function Legend() {
 
   if (!legend.length) return null;
   return (
-    <div className={box}>
+    <div data-overlay="legend" className={box}>
       <div className={title}>{active.label}</div>
       <div className="flex flex-col gap-1">
         {legend.map((entry, i) => (

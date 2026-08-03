@@ -1,7 +1,5 @@
-import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 import clsx from 'clsx';
-import { ChevronDown, Play, RotateCw } from 'lucide-react';
-import { AnalysisPanel } from '../../components/AnalysisPanel';
+import { Play, RotateCw } from 'lucide-react';
 import { Button } from '../../catalyst/button';
 import { getPlugin } from '../../registry';
 import { useStore } from '../../state/store';
@@ -11,7 +9,6 @@ import { StatusBadge } from '../components/status';
 import type { Lens } from '../lenses';
 import { useActiveLens } from './hooks';
 import { useBusy } from './run';
-import './v1-controls.css';
 import { hintCls } from '../components/styles';
 import type { ParamSpec } from '../../api/types';
 import { RailHeader, RailSection } from '../components/rail';
@@ -82,12 +79,6 @@ function RunBacking({ lens }: { lens: Lens }) {
   );
 }
 
-/**
- * The right rail for an active inspection lens: label/blurb, the shared
- * paint stats, and — when the hosting plugin ships a Controls panel — a
- * Configure section rendering that panel verbatim under the `.v1-controls`
- * scope (the visual seam is accepted for now; see docs/ROUTE-ARCHITECTURE.md).
- */
 /** The generated settings section: the mode's declared params, bound to the
  * process's viewerParams bag (which is per-PROCESS, so this is a view onto a
  * subset of it rather than a private store). */
@@ -141,27 +132,6 @@ export function LensRail() {
       )}
 
       {lens.analysis && <RunBacking lens={lens} />}
-
-      {/* every analysis stays runnable while lenses grow their own flows:
-          the v1 compute panel (catalog picker + auto-generated param form)
-          hosted verbatim — enough to materialize any lens's prerequisites */}
-      <Disclosure>
-        {({ open }) => (
-          <div>
-            <DisclosureButton className="flex w-full items-center justify-between rounded-lg px-1 py-1 text-xs/5 font-medium text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white">
-              <span className="flex items-center gap-1.5">
-                <Play className="size-3.5" /> Compute
-              </span>
-              <ChevronDown className={clsx('size-3.5 transition-transform', open && 'rotate-180')} />
-            </DisclosureButton>
-            <DisclosurePanel className="mt-2">
-              <div className="v1-controls">
-                <AnalysisPanel />
-              </div>
-            </DisclosurePanel>
-          </div>
-        )}
-      </Disclosure>
 
       <div className="h-px bg-zinc-950/10 dark:bg-white/10" />
 

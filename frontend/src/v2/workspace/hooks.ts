@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { putRoute } from '../../api/client';
+import { fetchJobs, putRoute } from '../../api/client';
 import type {
   CheckSource, Operation, OperationKind, Route, RouteCheck, RouteCheckStatus,
   RouteSection,
@@ -8,7 +8,7 @@ import type { ExprAggregate, ExprTerm } from '../../fields/expression';
 import type { ExpressionDraft } from '../store';
 import { useStore } from '../../state/store';
 import { refreshManifest } from '../../viewer/controller';
-import { runAnalysisJob } from '../../viewer/jobs';
+import { runAnalysisJob, watchJob } from '../../viewer/jobs';
 import type { Analysis } from '../analyses';
 import { ANALYSIS_BY_ID, ANALYSES } from '../analyses';
 import { describeCheck } from '../checks/catalog';
@@ -19,6 +19,32 @@ import {
 import type { Lens } from '../lenses';
 import { lensFor } from '../lenses';
 import { useV2 } from '../store';
+
+/**
+ * Re-attach to jobs already running server-side (a reload, a second tab).
+ * Without it the progress display freezes on whatever was last seen while the
+ * worker is still computing.
+ *
+ * This lived inside the v1 compute panel, which v2 hosted in every lens rail —
+ * so it ran only while a lens rail happened to be open. It belongs to the
+ * workspace, which is always mounted.
+ */
+export function useJobResync(): void {
+  const partId = useStore((s) => s.partId);
+  useEffect(() => {
+    if (!partId) return;
+    let cancelled = false;
+    void fetchJobs(partId).then((serverJobs) => {
+      if (cancelled) return;
+      const others = useStore.getState().jobs.filter((j) => j.part_id !== partId);
+      useStore.getState().set({ jobs: [...serverJobs, ...others] });
+      for (const job of serverJobs) {
+        if (job.status === 'queued' || job.status === 'running') void watchJob(job);
+      }
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [partId]);
+}
 
 /** The active analysis is the shared store's modeId (falls back to thickness). */
 export function useActiveAnalysis(): Analysis {

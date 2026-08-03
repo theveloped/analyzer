@@ -3,6 +3,7 @@ import { useStore } from '../../state/store';
 import type { ViewportState } from '../../viewer/viewportState';
 import { catalogAnalysisFor } from '../checks/catalog';
 import { AnalysisToolbar } from './AnalysisToolbar';
+import { ComputeRail } from './ComputeRail';
 import { DirectionsRail } from './DirectionsRail';
 import { DirectionsTableRail } from './DirectionsTableRail';
 import { ExpressionRail } from './ExpressionRail';
@@ -10,7 +11,7 @@ import { DirectionTooltip } from './DirectionTooltip';
 import { FieldLensRail } from './FieldLensRail';
 import {
   useActiveFieldLens, useActiveLens, useAutoRunFieldLens, useCheckActive,
-  useDirectionsActive, useSelectedRouteCheck,
+  useDirectionsActive, useJobResync, useSelectedRouteCheck,
 } from './hooks';
 import { useV2 } from '../store';
 import { useActiveStudy } from '../studies';
@@ -45,11 +46,13 @@ export function Workspace() {
   const activeFieldLens = useActiveFieldLens();
   const selected = useSelectedRouteCheck();
   useAutoRunFieldLens(); // field lenses materialize themselves on first look
+  useJobResync(); // pick up jobs still running server-side after a reload
   // a selected non-threshold plan check (reach study/op/route) gets its own
   // rail; field lenses get the band panel; other checks the SettingsRail
   const planCheckRail = selected && !catalogAnalysisFor(selected.check);
   const measuring = useV2((s) => s.measure.active);
   const sectionRailOpen = useV2((s) => s.sectionRailOpen);
+  const computeRailOpen = useV2((s) => s.computeRailOpen);
   const activeStudy = useActiveStudy();
   const buildingExpression = useV2((s) => s.expressionDraft);
   // lenses that own the whole rail (PMI, the voxel debug view) — a table, so
@@ -82,6 +85,7 @@ export function Workspace() {
   const [railId, railWidth, rightRail]: [string, number, React.ReactNode] =
     measuring ? ['measure', 288, <MeasureRail />]
       : sectionRailOpen ? ['section', 288, <SectionRail />]
+        : computeRailOpen ? ['compute', 320, <ComputeRail />]
         // the builder outranks the check rail: you opened it to EDIT, and the
         // read-only card is what you would be dropped back onto
         : buildingExpression ? ['expression', 380, <ExpressionRail />]

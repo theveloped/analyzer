@@ -21,10 +21,6 @@ const SPEEDS = [
  * The bend-sequence animation. A rail rather than a declaration because the
  * playhead is a module-global the viewer animates — this panel subscribes to
  * it and scrubs it, which is a transport control, not a setting.
- *
- * It was also the only Controls panel using inline styles, and its
- * `.control-group` class was never defined in `v1-controls.css` at all — so
- * the group it named had no styling anywhere.
  */
 export function BendSequenceRail() {
   const stats = useStore((s) => s.stats);

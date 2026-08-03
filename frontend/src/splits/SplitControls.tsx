@@ -2,9 +2,8 @@
 // rails: the split-mode toggle, cut count, undo/clear buttons, a re-run button
 // for stale results and Escape-to-cancel handling.
 //
-// Built on the v2 rail vocabulary rather than the v1 `.check`/`.row`/`.run`
-// classes, because it is embedded in three different surfaces and was the one
-// piece forcing all three to stay inside the dark `.v1-controls` card.
+// Built on the v2 rail vocabulary: it is embedded in three different surfaces,
+// so it was the one piece forcing all three to keep hosting the v1 markup.
 
 import { useEffect, useState } from 'react';
 import { fetchSplits, type SplitsState } from '../api/client';

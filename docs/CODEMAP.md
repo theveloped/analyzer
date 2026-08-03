@@ -205,7 +205,7 @@ Vite + React 18 + three.js + zustand. Build once with `npm run build` (output
 | `processes/injection/` | injection molding plugin: mold assignment view (with "optimize parting lines" button), thickness/gap heatmaps, skeleton overlay |
 | `processes/parting.ts` | shared client-side parting-line optimizer for both categorical assignment views: reassigns every multi-valid face (effective sub-face ids when splits exist) to minimize, lexicographically, parting-line wire count then total length, written through the overrides mechanism (`optimizeParting`, `partingMetrics`) |
 | `splits/` | face-split interaction shared by mold assignment and CNC setups: two-click snap-to-wire FSM (`splits.ts::handleSplitPick`), snap targets (corners/midpoints of boundary chains), cut overlays, auto re-run + overrides carry-forward (`resubmitAssignment`), `SplitControls.tsx` toggle/undo/clear UI |
-| `components/` | `AnalysisPanel` (run analyses via jobs API), `ParamForm` (auto forms from `Param` schemas), `Readouts`, `PartPicker` |
+| `components/` | v1 viewer only: `AnalysisPanel` (run analyses via jobs API), `ParamForm` (auto forms from `Param` schemas), `Readouts`, `PartPicker`. v2 runs analyses from `v2/workspace/ComputeRail.tsx` over the shared codec in `params/codec.ts` |
 
 Interactive thresholds (tolerance, stickout, holder stack) are recomputed
 client-side from cached per-vertex fields — never add a Python round-trip for a

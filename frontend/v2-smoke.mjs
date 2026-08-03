@@ -261,9 +261,12 @@ const intersects = (a, b) => a && b
   && a.x < b.x + b.width && b.x < a.x + a.width
   && a.y < b.y + b.height && b.y < a.y + a.height;
 const overlapCheck = async (tag) => {
-  const toolbar = await page.locator('button[title="Fit part in view"]')
-    .locator('xpath=..').boundingBox();
-  const legend = await page.locator('div[class*="bottom-3"][class*="left-3"]')
+  // address the overlays by data-overlay, not by class: the toolbar row's own
+  // `@max-2xl:left-3` variant matched a `[class*="left-3"]` legend selector, so
+  // this used to measure the toolbar against itself and always "overlap"
+  const toolbar = await page.locator('[data-overlay="viewport-toolbar"]')
+    .boundingBox();
+  const legend = await page.locator('[data-overlay="legend"]')
     .boundingBox().catch(() => null);
   const cv = await page.locator('canvas').boundingBox();
   const gizmo = cv && {

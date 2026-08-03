@@ -50,6 +50,9 @@ export interface V2State {
   measure: MeasureState;
   /** The section controls rail (right side, like the measure rail). */
   sectionRailOpen: boolean;
+  /** The run-any-analysis hatch. Global, so it is shell state rather than
+   * something a lens carries. */
+  computeRailOpen: boolean;
   /** The open study (v2/studies.ts) — a comparison surface over many
    * candidates, opened from the left rail and rendered in the right one.
    * Orthogonal to the active lens and check, like the viewport. */
@@ -72,6 +75,7 @@ export interface V2State {
 
   setAdvanced: (advanced: boolean) => void;
   setSectionRailOpen: (open: boolean) => void;
+  setComputeRailOpen: (open: boolean) => void;
   setActiveStudy: (id: string | null) => void;
   setRailWidth: (id: string, width: number) => void;
   setSelection: (part: string | null, keys: string[]) => void;
@@ -123,6 +127,7 @@ export const useV2 = create<V2State>()((set) => ({
   viewport: DEFAULT_VIEWPORT,
   measure: { active: false, a: null, b: null, frame: 'xyz' },
   sectionRailOpen: false,
+  computeRailOpen: false,
   activeStudy: null,
   railWidths: loadRailWidths(),
   selection: { part: null, keys: [] },
@@ -130,6 +135,7 @@ export const useV2 = create<V2State>()((set) => ({
 
   setAdvanced: (advanced) => set({ advanced }),
   setSectionRailOpen: (sectionRailOpen) => set({ sectionRailOpen }),
+  setComputeRailOpen: (computeRailOpen) => set({ computeRailOpen }),
   setActiveStudy: (activeStudy) => set({ activeStudy }),
   setRailWidth: (id, width) => set((s) => {
     const railWidths = { ...s.railWidths, [id]: width };
