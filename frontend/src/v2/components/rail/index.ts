@@ -5,6 +5,7 @@
 // See Rail.tsx for the seven slots and why they are in that order.
 
 export { Rail, RailHeader } from './Rail';
+export { RailEditorShell } from './EditorShell';
 export { RailSection, RailDivider } from './Section';
 export { RailAlert, RailError, RailStats } from './Feedback';
 export { RailDisclosure } from './Disclosure';

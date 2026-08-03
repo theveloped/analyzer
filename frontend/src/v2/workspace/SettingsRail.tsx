@@ -10,11 +10,11 @@ import {
   planCheckState, resultForHash, statusKindOf, type CheckState,
 } from '../checks/status';
 import {
-  Rail, RailDisclosure, RailDivider, RailHeader, RailRunButton, RailSection,
-  RailStats,
+  Rail, RailBool, RailDisclosure, RailDivider, RailHeader, RailRunButton,
+  RailSection, RailStats,
 } from '../components/rail';
 import { useV2 } from '../store';
-import { BoolRow, ComputeInput } from './computeFields';
+import { ComputeInput } from './computeFields';
 import { FindingRow } from './findings';
 import {
   pinPolicy, useActiveAnalysis, useActiveRouteCheck, useCheckState,
@@ -62,7 +62,7 @@ function DisplayAdvanced({ a }: { a: Analysis }) {
         </div>
       </div>
       {isSphere && (
-        <BoolRow
+        <RailBool
           label="Hide edge artifacts"
           hint="Show readings explained by sharp edges as OK."
           checked={params.maskExplained !== false}

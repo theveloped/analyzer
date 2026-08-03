@@ -57,11 +57,14 @@ export function RailBool({ label, hint, checked, onChange }: {
  * behaviour, and it sits inline with the text it modifies. Two rails were
  * hand-rolling `<input type="checkbox">` while Catalyst's sat unused.
  */
-export function RailCheckbox({ label, checked, onChange }: {
+export function RailCheckbox({ label, checked, onChange, title }: {
   label: ReactNode; checked: boolean; onChange: (v: boolean) => void;
+  /** What ticking it does, when the label alone cannot say it. */
+  title?: string;
 }) {
   return (
-    <label className="flex items-center gap-2 text-[11px]/5 text-zinc-500 dark:text-zinc-400">
+    <label title={title}
+      className="flex items-center gap-2 text-[11px]/5 text-zinc-500 dark:text-zinc-400">
       <Checkbox checked={checked} onChange={onChange} />
       {label}
     </label>
