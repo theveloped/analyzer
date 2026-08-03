@@ -177,8 +177,7 @@ await page.waitForTimeout(300);
 // section: the Slice button opens the section RAIL (right side, like measure)
 const fullPx = await capturePixels();
 await page.locator('button[title^="Section plane"]').click();
-const sectionRail = page.locator('h2', { hasText: /^Section$/ })
-  .locator('xpath=ancestor::div[contains(@class,"w-72")]');
+const sectionRail = page.locator('[data-rail="section"]');
 await page.locator('h2', { hasText: /^Section$/ }).waitFor({ timeout: 5000 });
 check(true, 'section rail opens');
 const setOffset = (fraction) => page.evaluate((t) => {
@@ -232,14 +231,14 @@ await page.waitForTimeout(300);
 await page.mouse.click(cx + 60, cy + 20);
 await page.waitForTimeout(500);
 const railText = await page.locator('h2', { hasText: 'Measure' })
-  .locator('xpath=ancestor::div[contains(@class,"w-72")]').textContent();
+  .locator('xpath=ancestor::div[@data-rail]').textContent();
 check(railText?.includes('picked points'), 'measure rail reports the picked-point distance');
 check(/dX/.test(railText ?? ''), 'measure rail reports signed component deltas');
 // component-frame toggle: normal-A decomposition swaps the readout rows
 await page.locator('button', { hasText: /^Normal A$/ }).first().click();
 await page.waitForTimeout(300);
 const frameText = await page.locator('h2', { hasText: 'Measure' })
-  .locator('xpath=ancestor::div[contains(@class,"w-72")]').textContent();
+  .locator('xpath=ancestor::div[@data-rail]').textContent();
 check(/along A's normal/.test(frameText ?? ''),
   'normal-A frame reports the along-normal split');
 await page.locator('button', { hasText: /^XYZ$/ }).first().click();

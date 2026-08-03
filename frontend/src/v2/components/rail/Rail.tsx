@@ -62,7 +62,12 @@ export function RailHeader({
   onClose?: () => void;
   closeTitle?: string;
 }) {
-  const trailing = actions || onClose;
+  // The title gets its own row. A rail is 288 px by default and 240 at its
+  // narrowest; title + badge + an action on one line wraps the title onto two
+  // lines while the badge sits alone on the first — the name of the thing loses
+  // to its status, which is backwards. Status and actions get a second row, and
+  // that row only exists when there is something on it.
+  const meta = (status && statusLabel != null) || actions;
   return (
     <div>
       <div className="flex min-w-0 items-start gap-2">
@@ -72,22 +77,20 @@ export function RailHeader({
         <h2 className="min-w-0 flex-1 text-sm/6 font-semibold text-zinc-950 dark:text-white">
           {title}
         </h2>
-        {status && statusLabel != null && (
-          <StatusBadge status={status} className="shrink-0">
-            {statusLabel}
-          </StatusBadge>
-        )}
-        {trailing && (
-          <div className="flex shrink-0 items-center gap-1">
-            {actions}
-            {onClose && (
-              <Button plain onClick={onClose} title={closeTitle} aria-label={closeTitle}>
-                <X data-slot="icon" />
-              </Button>
-            )}
-          </div>
+        {onClose && (
+          <Button plain onClick={onClose} title={closeTitle} aria-label={closeTitle}>
+            <X data-slot="icon" />
+          </Button>
         )}
       </div>
+      {meta && (
+        <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
+          {status && statusLabel != null ? (
+            <StatusBadge status={status}>{statusLabel}</StatusBadge>
+          ) : <span />}
+          {actions}
+        </div>
+      )}
       {blurb && <p className={clsx('mt-1', hintCls)}>{blurb}</p>}
     </div>
   );

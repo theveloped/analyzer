@@ -1,6 +1,5 @@
-import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 import clsx from 'clsx';
-import { ChevronDown, Pin, Play, RotateCw, Settings2, Sparkles } from 'lucide-react';
+import { Pin, Settings2, Sparkles } from 'lucide-react';
 import type { RouteCheck, RouteCheckStatus } from '../../api/types';
 import { Button } from '../../catalyst/button';
 import { Input } from '../../catalyst/input';
@@ -10,7 +9,10 @@ import { evaluateCheck } from '../checks/evaluators';
 import {
   planCheckState, resultForHash, statusKindOf, type CheckState,
 } from '../checks/status';
-import { StatusBadge } from '../components/status';
+import {
+  Rail, RailDisclosure, RailDivider, RailHeader, RailRunButton, RailSection,
+  RailStats,
+} from '../components/rail';
 import { useV2 } from '../store';
 import { BoolRow, ComputeInput } from './computeFields';
 import { FindingRow } from './findings';
@@ -18,9 +20,7 @@ import {
   pinPolicy, useActiveAnalysis, useActiveRouteCheck, useCheckState,
 } from './hooks';
 import { runAnalysis, runRouteCheck, useBusy } from './run';
-import { hintCls } from '../components/styles';
-
-const labelCls = 'text-sm/6 font-medium text-zinc-950 dark:text-white';
+import { hintCls, labelCls } from '../components/styles';
 
 function ThresholdField({ a }: { a: Analysis }) {
   const params = useStore((s) => s.viewerParams[a.process]) ?? {};
@@ -146,90 +146,74 @@ export function SettingsRail() {
       : 'computed');
 
   return (
-    <div className="flex min-h-full flex-col gap-4 p-4">
-      <div>
-        <div className="flex items-center gap-2">
-          <a.icon className="size-4 text-blue-600 dark:text-blue-400" />
-          <h2 className="text-sm/6 font-semibold text-zinc-950 dark:text-white">{a.label}</h2>
-          <StatusBadge status={statusKindOf(state)}>{badgeText}</StatusBadge>
-        </div>
-        <p className={clsx('mt-1', hintCls)}>{a.blurb}</p>
-      </div>
+    <Rail>
+      <RailHeader
+        icon={a.icon}
+        title={a.label}
+        status={statusKindOf(state)}
+        statusLabel={badgeText}
+        blurb={a.blurb}
+      />
 
       <ThresholdField a={a} />
       {planCheck && <PolicyRow a={a} check={planCheck.check} />}
 
-      <Button
-        onClick={() => (planCheck
+      {/* slot 4 sits ABOVE the action: these knobs are inputs to the run —
+          this rail's own copy says so — and a Run button above them would
+          read as "run, then configure" */}
+      <RailDisclosure icon={Settings2} label="Advanced settings"
+        defaultOpen={globalAdvanced}>
+        <div className="flex items-start gap-1.5 rounded-lg border border-dashed border-zinc-950/10 bg-zinc-950/2.5 p-2 text-xs/5 text-zinc-500 dark:border-white/10 dark:bg-white/5 dark:text-zinc-400">
+          <Sparkles className="mt-0.5 size-3 shrink-0" />
+          Set correctly by default — change only if you know the part geometry.
+          Compute knobs re-run the check.
+        </div>
+        <DisplayAdvanced a={a} />
+        <RailDivider />
+        {planCheck ? (
+          <div>
+            <div className={clsx(labelCls, 'mb-1')}>Pinned compute params</div>
+            <p className="whitespace-pre font-mono text-[11px]/4 text-zinc-500 dark:text-zinc-400">
+              {Object.entries(planCheck.check.params ?? {})
+                .map(([k, v]) => `${k}: ${v === null ? 'auto' : String(v)}`)
+                .join('\n')}
+            </p>
+            <p className={clsx('mt-1', hintCls)}>
+              Runs use the route's params so results land under the expected
+              hash.
+            </p>
+          </div>
+        ) : (
+          a.advancedFields.map((field) => (
+            <ComputeInput key={field.key} computeId={a.id} field={field} />
+          ))
+        )}
+      </RailDisclosure>
+
+      <RailRunButton
+        execution={state.execution}
+        busy={busy}
+        onRun={() => (planCheck
           ? runRouteCheck(planCheck.check, planCheck.status)
           : runAnalysis(a))}
-        disabled={!meshReady || busy || !!planCheck?.status?.error}
-        className="w-full"
-      >
-        {busy ? (
-          <><RotateCw data-slot="icon" className="animate-spin" /> Running…</>
-        ) : computed ? (
-          <><RotateCw data-slot="icon" /> Re-run check</>
-        ) : (
-          <><Play data-slot="icon" /> Run check</>
-        )}
-      </Button>
+        disabled={!meshReady || !!planCheck?.status?.error}
+        runLabel="Run check"
+        rerunLabel="Re-run check"
+      />
 
-      <Disclosure defaultOpen={globalAdvanced}>
-        {({ open }) => (
-          <>
-            <DisclosureButton className="flex w-full items-center justify-between rounded-lg px-1 py-1 text-xs/5 font-medium text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white">
-              <span className="flex items-center gap-1.5">
-                <Settings2 className="size-3.5" /> Advanced settings
-              </span>
-              <ChevronDown className={clsx('size-3.5 transition-transform', open && 'rotate-180')} />
-            </DisclosureButton>
-            <DisclosurePanel className="mt-2 flex flex-col gap-4">
-              <div className="flex items-start gap-1.5 rounded-lg border border-dashed border-zinc-950/10 bg-zinc-950/2.5 p-2 text-xs/5 text-zinc-500 dark:border-white/10 dark:bg-white/5 dark:text-zinc-400">
-                <Sparkles className="mt-0.5 size-3 shrink-0" />
-                Set correctly by default — change only if you know the part geometry. Compute knobs re-run the check.
-              </div>
-              <DisplayAdvanced a={a} />
-              <div className="h-px bg-zinc-950/10 dark:bg-white/10" />
-              {planCheck ? (
-                <div>
-                  <div className={clsx(labelCls, 'mb-1')}>Pinned compute params</div>
-                  <p className="whitespace-pre-wrap font-mono text-[11px]/4 text-zinc-500 dark:text-zinc-400">
-                    {Object.entries(planCheck.check.params ?? {})
-                      .map(([k, v]) => `${k}: ${v === null ? 'auto' : String(v)}`)
-                      .join('\n')}
-                  </p>
-                  <p className={clsx('mt-1', hintCls)}>
-                    Runs use the plan's params so results land under the
-                    expected hash. Param editing moves into the plan next phase.
-                  </p>
-                </div>
-              ) : (
-                a.advancedFields.map((field) => (
-                  <ComputeInput key={field.key} computeId={a.id} field={field} />
-                ))
-              )}
-            </DisclosurePanel>
-          </>
-        )}
-      </Disclosure>
-
-      <div className="mt-1 h-px bg-zinc-950/10 dark:bg-white/10" />
-
-      <div>
-        <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">Findings</div>
+      <RailSection title="Findings">
         {planCheck ? (
           <PlanFindings a={a} check={planCheck.check} status={planCheck.status} />
-        ) : error ? (
-          <p className="whitespace-pre-wrap text-xs/5 text-red-600 dark:text-red-500">⚠ {error}</p>
-        ) : stats ? (
-          <p className={clsx('whitespace-pre-wrap', hintCls)}>{stats}</p>
         ) : (
           <p className={hintCls}>
-            {computed ? 'Adjust the limit or inspect faces in the viewer.' : 'Run the check to see findings.'}
+            {computed
+              ? 'Adjust the limit or inspect faces in the viewer.'
+              : 'Run the check to see findings.'}
           </p>
         )}
-      </div>
-    </div>
+      </RailSection>
+
+      <RailStats text={stats} error={error} />
+    </Rail>
   );
 }
