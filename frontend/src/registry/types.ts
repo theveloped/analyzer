@@ -103,7 +103,13 @@ export interface ViewCtx {
  * the served DTO has no business carrying: that one is mirrored from
  * `processes/base.py` and must not grow frontend-only fields.
  */
-export type ViewParamSpec = ParamSpec & { hint?: string };
+export type ViewParamSpec = ParamSpec & {
+  hint?: string;
+  /** Friendly text per option value. `ParamSpec.options` is a bare string[] —
+   * fine for a backend enum, not for "cluster" meaning "clustered (medial
+   * skeleton)". */
+  optionLabels?: Record<string, string>;
+};
 
 export interface ViewMode {
   id: string;

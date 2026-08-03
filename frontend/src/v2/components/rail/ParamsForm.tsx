@@ -60,7 +60,8 @@ export function ParamsForm({
         const value = values[spec.name] ?? formatDefault(spec);
         if (Override) {
           return (
-            <RailField key={spec.name} label={spec.label ?? spec.name} unit={spec.unit}>
+            <RailField key={spec.name} label={spec.label ?? spec.name}
+              unit={spec.unit} hint={spec.hint}>
               <Override spec={spec} value={value} values={values}
                 onChange={(v) => onChange(spec.name, v)} />
             </RailField>
@@ -90,10 +91,12 @@ function ParamRow({ spec, value, target, onChange }: {
 
   if (spec.type === 'select') {
     return (
-      <RailField label={label} unit={spec.unit}>
+      <RailField label={label} unit={spec.unit} hint={spec.hint}>
         <Select value={String(value ?? '')} aria-label={label}
           onChange={(e) => onChange(e.target.value)}>
-          {(spec.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+          {(spec.options ?? []).map((o) => (
+            <option key={o} value={o}>{spec.optionLabels?.[o] ?? o}</option>
+          ))}
         </Select>
       </RailField>
     );
@@ -105,7 +108,7 @@ function ParamRow({ spec, value, target, onChange }: {
   if (spec.type === 'vector_list') {
     const vectors = (parseValue(spec, value) as number[][] | undefined) ?? [];
     return (
-      <RailField label={label} unit={spec.unit}>
+      <RailField label={label} unit={spec.unit} hint={spec.hint}>
         <VectorListField
           vectors={vectors}
           onChange={(next) => onChange(

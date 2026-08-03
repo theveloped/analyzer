@@ -37,6 +37,7 @@ import {
 } from '../../splits/splits';
 import { SplitControls } from '../../splits/SplitControls';
 import { optimizeParting } from '../parting';
+import { INJECTION_PARAM_WIDGETS } from './params';
 import { expressionMode } from '../../colorizers/expression';
 import { runCtxAction } from '../../viewer/controller';
 
@@ -369,6 +370,22 @@ const GATE: RGB = [1, 1, 1];
 const skeletonMode: ViewMode = {
   id: 'skeleton',
   label: 'Skeleton & fill flow',
+  params: [
+    {
+      name: 'skelResult', type: 'int', default: -1,
+      label: 'Result (parameter set)',
+    },
+    {
+      name: 'graph', type: 'select', default: 'cluster',
+      label: 'Skeleton graph',
+      options: ['cluster', 'raw'],
+      optionLabels: {
+        cluster: 'clustered (medial skeleton)',
+        raw: 'raw (one node per vertex)',
+      },
+      hint: 'Click the part to place the injection gate; click again to move it.',
+    },
+  ],
   async paint(ctx): Promise<PaintInfo> {
     const result = pickSkeletonResult(ctx);
     const which = ctx.params.graph === 'raw' ? 'raw' : 'cluster';
@@ -1174,8 +1191,6 @@ function InjectionControls() {
   const fieldOptions = options.slice(0, 3);
   const hasBrep = !!manifest?.fields.some((f) => f.id === 'brep_edges');
 
-  const skelResults = (manifest?.results ?? []).filter(
-    (r) => r.process === 'injection_molding' && r.analysis === 'wall_skeleton');
 
   const sprueResultList = (manifest?.results ?? []).filter(
     (r) => r.process === 'injection_molding' && r.analysis === 'sprue_proposals'
@@ -1376,37 +1391,6 @@ function InjectionControls() {
             click the part to add a pin at the chosen diameter ·
             click a pin (marker or list) to remove it
           </div>
-        </>
-      )}
-
-      {modeId === 'skeleton' && (
-        <>
-          <label>Result (parameter set)</label>
-          <select
-            value={params.skelResult ?? -1}
-            onChange={(e) => set('skelResult', parseInt(e.target.value))}
-          >
-            {skelResults.length > 0 && <option value={-1}>latest</option>}
-            {skelResults.map((r, i) => (
-              <option key={r.hash} value={i}>
-                {`max r ${r.params.max_radius ?? '?'} mm · ${r.hash}`}
-              </option>
-            ))}
-            {!skelResults.length && <option value={-1}>no results yet</option>}
-          </select>
-
-          <label>Skeleton graph</label>
-          <select value={params.graph ?? 'cluster'} onChange={(e) => set('graph', e.target.value)}>
-            <option value="cluster">clustered (medial skeleton)</option>
-            <option value="raw">raw (one node per vertex)</option>
-          </select>
-
-          <div className="hint">
-            click the part to place the injection gate; click again to move it
-          </div>
-          {params.gate && (
-            <button onClick={() => set('gate', null)}>clear gate</button>
-          )}
         </>
       )}
 
@@ -1747,6 +1731,7 @@ export const injectionPlugin: ProcessPlugin = {
     flowNeighborhood: '26', coolCoef: '1',
   }),
   Controls: InjectionControls,
+  paramWidgets: INJECTION_PARAM_WIDGETS,
   inspect,
   onPick(face, point, ctx) {
     const { modeId, setViewerParam } = useStore.getState();
