@@ -12,6 +12,7 @@ REACH_STUDY_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/reach.ts
 TURNING_SCHEMA = 2  # keep in sync with frontend/src/processes/cnc/turning.tsx
 TURNING_SCAN_SCHEMA = 2  # no frontend mirror: the scan is read per result hash
 HULL_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/hull.ts
+CORNER_SCHEMA = 1  # keep in sync with frontend/src/processes/cnc/corners.ts
 
 # default library: 3 flat endmills + 2 ball mills, each at its longest
 # practical reach (stickout 5xD) with the shank as the holder cylinder
@@ -158,6 +159,28 @@ def run_hull(workdir, params, progress):
         workdir, tollerance=params["tollerance"], progress=progress)
 
     store_result(workdir, "cnc", "hull", cache_params, result["stats"],
+                 arrays=result["arrays"], field_meta=result["field_meta"])
+    return AnalysisResult(stats=result["stats"],
+                          fields=list(result["arrays"]))
+
+
+def run_corner_access(workdir, params, progress):
+    cache_params = resolver.cache_key(workdir, "cnc/corner_access", params)
+    cached = load_cached_result(workdir, "cnc", "corner_access", cache_params)
+    if cached is not None:
+        return AnalysisResult(stats=cached["stats"],
+                              fields=list(cached["arrays"]))
+
+    result = pipeline.corner_access(
+        workdir, direction_indices=[int(i) for i in params["direction_indices"]],
+        edge_class=params["edge_class"], diameter=params["diameter"],
+        corner_radius=params["corner_radius"],
+        floor_tollerance=params["floor_tollerance"],
+        axis_tollerance=params["axis_tollerance"],
+        min_length=params["min_length"], sample_step=params["sample_step"],
+        pixel=params["pixel"], top_n=params["top_n"], progress=progress)
+
+    store_result(workdir, "cnc", "corner_access", cache_params, result["stats"],
                  arrays=result["arrays"], field_meta=result["field_meta"])
     return AnalysisResult(stats=result["stats"],
                           fields=list(result["arrays"]))
@@ -385,6 +408,45 @@ PROCESS = ProcessDef(
             ],
             run=run_reach_study,
             schema=REACH_STUDY_SCHEMA,
+        ),
+        AnalysisDef(
+            id="corner_access",
+            label="Sharp corner access",
+            description="Which sharp BREP edges can be produced sharp from a "
+                        "direction and which come out carrying at least the "
+                        "cutter radius — the corners that need a fillet. A "
+                        "cheap edge-level complement to cnc/reach_study, "
+                        "which stays the authority on whether a tool fits.",
+            requires=["prep/directions", "prep/aag"],
+            params=[
+                # same reason as reach_study: "directions" would collide with
+                # the prep salt field of that name
+                Param("direction_indices", "int_list", default=[],
+                      label="Direction indices (blank = all sampled)"),
+                Param("edge_class", "select", default="concave",
+                      options=["concave", "convex", "both"],
+                      label="Edge class (concave = the part's internal "
+                            "corners; convex = a mold cavity's)"),
+                Param("diameter", "number", default=6.0, unit="mm", min=1e-3,
+                      label="Cutter diameter"),
+                Param("corner_radius", "number", default=0.0, unit="mm", min=0,
+                      label="Cutter corner radius (0 = flat, D/2 = ball)"),
+                Param("floor_tollerance", "number", default=5.0, unit="deg",
+                      min=0, label="Floor tolerance (normal vs tool axis)"),
+                Param("axis_tollerance", "number", default=5.0, unit="deg",
+                      min=0,
+                      label="Edge/axis tolerance (perpendicular vs parallel)"),
+                Param("min_length", "number", default=0.0, unit="mm", min=0,
+                      label="Ignore edges shorter than"),
+                Param("sample_step", "number", default=None, unit="mm", min=0,
+                      label="Edge sampling step (blank = the height map pixel)"),
+                Param("pixel", "number", default=None, unit="mm", min=0,
+                      label="Height map pixel (blank = resolution/5)"),
+                Param("top_n", "int", default=200, min=1,
+                      label="Edges listed in stats"),
+            ],
+            run=run_corner_access,
+            schema=CORNER_SCHEMA,
         ),
         AnalysisDef(
             id="precompute",

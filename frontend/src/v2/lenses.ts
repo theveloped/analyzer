@@ -51,8 +51,14 @@ export interface Lens {
   /** The backend analysis whose stored result this lens paints, when it has
    * exactly one. Lets the rail show run state and offer a Run button instead
    * of throwing "run it in the Compute panel" at the user. Scalar-field
-   * lenses declare theirs in `fieldLenses.ts` and self-materialize instead. */
-  analysis?: { process: string; analysis: string };
+   * lenses declare theirs in `fieldLenses.ts` and self-materialize instead.
+   *
+   * `params` are non-default arguments the Run button must pass for the run
+   * to produce what THIS lens paints — two lenses can share one analysis and
+   * want different answers from it (the mold corner lens needs
+   * `edge_class: convex`). Without them the button would cheerfully compute a
+   * result the lens then refuses to show. */
+  analysis?: { process: string; analysis: string; params?: Record<string, any> };
 }
 
 interface Curation {
@@ -63,7 +69,7 @@ interface Curation {
   pinned?: boolean;
   advanced?: boolean;
   hidden?: boolean;
-  analysis?: { process: string; analysis: string };
+  analysis?: { process: string; analysis: string; params?: Record<string, any> };
 }
 
 /** Modes registered by several plugins; hosted once, under injection_molding
@@ -161,6 +167,12 @@ export const CURATION: Record<string, Curation> = {
     analysis: { process: 'cnc', analysis: 'hull' },
     blurb: 'Faces on the convex hull — machinable from outside with an infinitely large tool.',
   },
+  'cnc:corners': {
+    icon: Radius,
+    analysis: { process: 'cnc', analysis: 'corner_access' },
+    blurb: 'Sharp internal corners a round cutter cannot reproduce from this '
+      + 'direction, and the fillet radius each one needs.',
+  },
   'cnc:unified': { icon: ShieldCheck },
   'cnc:access': { icon: Eye },
   'cnc:class': { icon: Layers },
@@ -195,6 +207,17 @@ export const CURATION: Record<string, Curation> = {
   'injection_molding:voxelField': {
     icon: Grid3x3, advanced: true,
     analysis: { process: 'prep', analysis: 'voxels' },
+  },
+  // the same cnc/corner_access result read with the convex edge class: a
+  // part's convex edges are the CAVITY's internal corners
+  'injection_molding:moldCorners': {
+    icon: Radius,
+    analysis: {
+      process: 'cnc', analysis: 'corner_access',
+      params: { edge_class: 'convex' },
+    },
+    blurb: 'Corners the mold cavity cannot be milled sharp from the pull '
+      + 'direction — where the part needs a radius.',
   },
 
   // sheet metal

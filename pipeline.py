@@ -1347,6 +1347,397 @@ def reach_study(workdir, *, directions=(), tools=(), tollerance=0.1,
     return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
 
 
+# cnc/corner_access role codes, ordered so "worse" compares greater — the
+# per-edge verdict is the max over its segments. The labels travel with the
+# field (field_meta["types"]), the way machining_features.FEATURE_TYPES does,
+# so the frontend reads them off the descriptor instead of hard-coding a
+# union that could drift (docs/CONCEPTS.md section 3).
+EDGE_ACCESS_ROLES = ["na", "sharp", "radius", "oblique", "blocked"]
+ROLE_NA, ROLE_SHARP, ROLE_RADIUS, ROLE_OBLIQUE, ROLE_BLOCKED = range(5)
+
+EDGE_CLASSES = {"concave": (1,), "convex": (-1,), "both": (-1, 1)}
+
+
+def _resample_polylines(points, offsets, keep, step):
+    """Split polylines so no segment is longer than ``step``.
+
+    ``points``/``offsets`` are the AAG's CSR edge polylines and ``keep`` the
+    candidate edge ids. Returns (seg_points (S,2,3), seg_edge (S,)) — every
+    segment of every kept edge, subdivided. A straight BREP edge is stored as
+    just its two endpoints, so without this a long half-shadowed edge would
+    be classified from a single midpoint sample.
+
+    Fully vectorized: per-segment split counts drive one np.repeat, and the
+    sub-parameter is a per-segment arange built from the repeat boundaries.
+    """
+    starts = offsets[keep]
+    stops = offsets[keep + 1]
+    counts = np.maximum(stops - starts - 1, 0)  # segments per kept edge
+    if not counts.sum():
+        return np.zeros((0, 2, 3)), np.zeros(0, dtype=np.int64)
+
+    # a: index of each raw segment's first point, b: its second
+    edge_of_seg = np.repeat(keep, counts)
+    within = (np.arange(counts.sum())
+              - np.repeat(np.cumsum(counts) - counts, counts))
+    a = np.repeat(starts, counts) + within
+    p0 = points[a].astype(np.float64)
+    p1 = points[a + 1].astype(np.float64)
+
+    lengths = np.linalg.norm(p1 - p0, axis=1)
+    splits = np.maximum(np.ceil(lengths / max(step, 1e-9)).astype(np.int64), 1)
+    seg_edge = np.repeat(edge_of_seg, splits)
+    sub = (np.arange(splits.sum())
+           - np.repeat(np.cumsum(splits) - splits, splits))
+    denom = np.repeat(splits, splits)[:, None]
+    base0 = np.repeat(p0, splits, axis=0)
+    base1 = np.repeat(p1, splits, axis=0)
+    t0 = sub[:, None] / denom
+    t1 = (sub[:, None] + 1) / denom
+    seg_points = np.stack([base0 + (base1 - base0) * t0,
+                           base0 + (base1 - base0) * t1], axis=1)
+    return seg_points, seg_edge
+
+
+def _edge_face_normals(workdir, graph, face_ids, points):
+    """Outward surface normals of ``face_ids[i]`` at ``points[i]``.
+
+    Exact wherever the BREP face is one of the five analytic quadrics
+    (`brep.surface_normals_at` over brep_meta.json's surface_params), which
+    covers essentially all machined geometry. A face's mid-UV normal is
+    useless here — a cylindrical pocket wall's normal AT the edge is nothing
+    like its normal at the middle — so freeform faces are the one
+    approximation, and they are counted rather than hidden.
+
+    Orientation: surface_normals_at returns the quadric's own sign, so each
+    face's normals are flipped to agree with normals.npy (exact and outward)
+    averaged over that face's fine triangles. Returns
+    (normals (N,3), approximate_faces set).
+    """
+    import brep
+
+    meta_path = os.path.join(workdir, BREP_META_FILE)
+    surface_params = []
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            surface_params = json.load(f).get("surface_params") or []
+
+    fine_normals = load_face_normals(workdir)
+    brep_ids = np.load(os.path.join(workdir, BREP_FACES_FILE))
+
+    out = np.zeros((len(points), 3))
+    approximate = set()
+    for fid in np.unique(face_ids):
+        rows = np.flatnonzero(face_ids == fid)
+        params = surface_params[fid] if fid < len(surface_params) else None
+        candidate = brep.surface_normals_at(params, points[rows])
+        reference = fine_normals[brep_ids == fid]
+        reference = (reference.mean(axis=0) if len(reference)
+                     else graph.face_normal[fid])
+        if candidate is None:
+            approximate.add(int(fid))
+            out[rows] = graph.face_normal[fid]
+            continue
+        bad = ~np.isfinite(candidate).all(axis=1)
+        if bad.any():
+            candidate[bad] = graph.face_normal[fid]
+            approximate.add(int(fid))
+        good = ~bad
+        if good.any() and float(candidate[good].mean(axis=0) @ reference) < 0:
+            candidate = -candidate
+        out[rows] = candidate
+    norm = np.linalg.norm(out, axis=1, keepdims=True)
+    return out / np.maximum(norm, 1e-30), approximate
+
+
+def corner_access(workdir, *, direction_indices=(), edge_class="concave",
+                  diameter=6.0, corner_radius=0.0, floor_tollerance=5.0,
+                  axis_tollerance=5.0, min_length=0.0, sample_step=None,
+                  pixel=None, top_n=200, progress=None):
+    """Per-BREP-edge sharp-corner verdict along each approach direction.
+
+    A cheap, deliberately crude complement to the exact reach analysis: a
+    cutter is round, so a sharp INTERNAL corner of the part cannot be
+    reproduced by one, however well the tool reaches the faces either side.
+    That question lives on edges, and `prep/aag` already answers most of it —
+    every BREP edge carries its convexity, its signed dihedral and a
+    discretized polyline. All this adds is one height map per direction.
+
+    Per sampled segment of every candidate edge, along direction ``d``:
+
+    - occluded along d, or both adjacent faces facing away  -> ``blocked``
+    - tangent perpendicular to d, one adjacent face a floor (normal within
+      ``floor_tollerance`` of d), the other not an undercut -> ``sharp``:
+      the corner comes out at the tool's CORNER radius, because a flat
+      endmill's bottom edge is itself a sharp circle. That holds however the
+      wall is sloped, which is why the wall only has to not overhang.
+    - tangent parallel to d (a vertical wall/wall corner) -> ``radius``: the
+      corner comes out at exactly the cutter radius D/2.
+    - anything else visible -> ``oblique``: at least D/2, exact value not
+      modelled.
+
+    ``edge_class`` picks which convexity to judge. On the PART, internal
+    corners are aag.EDGE_CONCAVE (positive dihedral) — that is the CNC
+    question. The part's CONVEX edges are the internal corners of a mold
+    CAVITY, which is the same question asked of the mold, so the molding
+    lens runs this with ``edge_class="convex"``.
+
+    Crude on purpose, and not a substitute for `cnc/reach_study` /
+    `compose`: the tool flank, the holder and the stickout are not modelled,
+    ``oblique`` reports a lower bound, and reachability of the surrounding
+    faces is a separate question. What this buys is an answer in one raster
+    pass that points at specific edges — which is what a fillet decision
+    needs.
+    """
+    import aag as aag_module
+    from zmap import point_visibility, render_heightmap
+
+    if edge_class not in EDGE_CLASSES:
+        raise ValueError(f"unknown edge_class {edge_class!r} — legal values: "
+                         f"{', '.join(sorted(EDGE_CLASSES))}")
+    radius = float(diameter) / 2.0
+    corner_radius = float(corner_radius)
+    if corner_radius > radius + 1e-9:
+        raise ValueError(f"corner radius {corner_radius} exceeds the tool "
+                         f"radius {radius}")
+
+    pixel = resolve_pixel(workdir, pixel)
+    step = float(sample_step) if sample_step else pixel
+    verts, faces = load_mesh_arrays(workdir)
+    all_directions = np.load(os.path.join(workdir, DIRECTIONS_FILE))
+    graph = aag_module.load_aag(workdir)
+
+    selected = (sorted({int(d) for d in direction_indices})
+                or list(range(len(all_directions))))
+    bad = [d for d in selected if not 0 <= d < len(all_directions)]
+    if bad:
+        raise ValueError(f"direction indices out of range: {bad} "
+                         f"(0..{len(all_directions) - 1})")
+
+    _report(progress, 0.05, "selecting candidate edges")
+    wanted = np.isin(graph.edge_convexity, EDGE_CLASSES[edge_class])
+    candidate = (graph.interior_edges()          # two distinct faces
+                 & (graph.edge_continuity == 0)  # sharp: tangent edges are fine
+                 & wanted
+                 & (graph.edge_length >= float(min_length))
+                 & (np.diff(graph.polyline_offsets) >= 2))
+    keep = np.flatnonzero(candidate)
+
+    edge_count = graph.edge_count
+    arrays = {}
+    field_meta = {}
+    seg_points, seg_edge = _resample_polylines(
+        graph.polyline_points, graph.polyline_offsets, keep, step)
+    n_seg = len(seg_points)
+
+    arrays["segment_points"] = seg_points.astype("<f4")
+    field_meta["segment_points"] = {
+        "association": "none", "role": "lines", "dtype": "f4",
+        "kind": "corner_segments", "segments": int(n_seg)}
+    arrays["segment_edge"] = seg_edge.astype(np.uint32)
+    field_meta["segment_edge"] = {
+        "association": "none", "role": "data", "dtype": "u4",
+        "kind": "corner_segment_edge", "segments": int(n_seg)}
+
+    approximate = set()
+    if n_seg:
+        _report(progress, 0.15, f"surface normals at {n_seg} edge samples")
+        midpoints = seg_points.mean(axis=1)
+        tangents = seg_points[:, 1] - seg_points[:, 0]
+        seg_length = np.linalg.norm(tangents, axis=1)
+        tangents = tangents / np.maximum(seg_length[:, None], 1e-30)
+        normal_a, approx_a = _edge_face_normals(
+            workdir, graph, graph.edge_faces[seg_edge, 0], midpoints)
+        normal_b, approx_b = _edge_face_normals(
+            workdir, graph, graph.edge_faces[seg_edge, 1], midpoints)
+        approximate = approx_a | approx_b
+        # the corridor to sample the height map along: away from the material,
+        # which for a corner is the outward bisector of the two face normals
+        bisector = normal_a + normal_b
+        bisector /= np.maximum(np.linalg.norm(bisector, axis=1, keepdims=True),
+                               1e-30)
+    else:
+        midpoints = np.zeros((0, 3))
+        tangents = np.zeros((0, 3))
+        seg_length = np.zeros(0)
+        normal_a = normal_b = bisector = np.zeros((0, 3))
+
+    mesh = mn.meshFromFacesVerts(faces, verts) if n_seg else None
+    floor_cos = np.cos(np.radians(float(floor_tollerance)))
+    axis_sin = np.sin(np.radians(float(axis_tollerance)))
+    axis_cos = np.cos(np.radians(float(axis_tollerance)))
+
+    per_direction = []
+    edge_roles = {}
+    edge_radii = {}
+    for order, d in enumerate(selected):
+        _report(progress, 0.2 + 0.7 * order / max(len(selected), 1),
+                f"direction {d} ({order + 1}/{len(selected)})")
+        direction = all_directions[d]
+        seg_role = np.full(n_seg, ROLE_NA, dtype=np.uint8)
+        if n_seg:
+            heights, frame = render_heightmap(mesh, direction, pixel, margin=2)
+            lateral = bisector - (bisector @ direction)[:, None] * direction
+            visible = point_visibility(
+                heights, frame, midpoints,
+                offsets=[np.zeros_like(lateral), pixel * lateral,
+                         2.0 * pixel * lateral],
+                pixel=pixel)
+
+            a_dot = normal_a @ direction
+            b_dot = normal_b @ direction
+            t_dot = tangents @ direction
+
+            # BOTH faces must face the tool: a corner is where two surfaces
+            # meet, and the cutter has to touch both to cut it. One
+            # back-facing side is what makes a box's bottom rim unmachinable
+            # from +Z even though its side wall is perfectly reachable — and
+            # an outward-drafted pocket wall still passes, because draft
+            # tilts its normal TOWARD the tool
+            facing = np.minimum(a_dot, b_dot) >= -axis_sin
+            open_corner = visible & facing
+            # one side is a floor the tool bottom lies flat on, and the edge
+            # runs across the tool axis (the other side is already known not
+            # to be an undercut, whatever its slope)
+            perpendicular = np.abs(t_dot) <= axis_sin
+            is_floor = (a_dot >= floor_cos) | (b_dot >= floor_cos)
+            sharp = open_corner & perpendicular & is_floor
+            parallel = np.abs(t_dot) >= axis_cos
+
+            seg_role[:] = ROLE_OBLIQUE
+            seg_role[parallel] = ROLE_RADIUS
+            seg_role[sharp] = ROLE_SHARP
+            seg_role[~open_corner] = ROLE_BLOCKED
+
+        name = f"segment_role_{d}"
+        arrays[name] = seg_role
+        field_meta[name] = {
+            "association": "none", "role": "category", "dtype": "u1",
+            "kind": "corner_role", "types": EDGE_ACCESS_ROLES,
+            "direction": d, "segments": int(n_seg)}
+
+        # per edge: the worst verdict any of its segments got, and the radius
+        # the corner will actually come out with
+        edge_role = np.full(edge_count, ROLE_NA, dtype=np.uint8)
+        if n_seg:
+            np.maximum.at(edge_role, seg_edge, seg_role)
+        edge_radius = np.full(edge_count, np.nan)
+        edge_radius[edge_role == ROLE_SHARP] = corner_radius
+        edge_radius[(edge_role == ROLE_RADIUS)
+                    | (edge_role == ROLE_OBLIQUE)] = radius
+        edge_roles[d] = edge_role
+        edge_radii[d] = edge_radius
+
+        arrays[f"edge_role_{d}"] = edge_role
+        field_meta[f"edge_role_{d}"] = {
+            "association": "none", "role": "category", "dtype": "u1",
+            "kind": "corner_edge_role", "types": EDGE_ACCESS_ROLES,
+            "direction": d, "length": int(edge_count)}
+        arrays[f"edge_radius_{d}"] = edge_radius.astype("<f4")
+        field_meta[f"edge_radius_{d}"] = {
+            "association": "none", "role": "data", "dtype": "f4",
+            "kind": "corner_edge_radius", "units": "mm",
+            "direction": d, "length": int(edge_count)}
+
+        flagged = edge_role >= ROLE_RADIUS
+        face_flag = np.zeros(graph.face_count, dtype=np.uint8)
+        if flagged.any():
+            touched = graph.edge_faces[flagged].ravel()
+            face_flag[touched[touched >= 0]] = 1
+        arrays[f"face_flag_{d}"] = face_flag
+        field_meta[f"face_flag_{d}"] = {
+            "association": "brep_face", "role": "mask", "dtype": "u1",
+            "kind": "corner_faces", "direction": d,
+            "length": int(graph.face_count), "count": int(graph.face_count)}
+
+        counts, lengths = {}, {}
+        for code, label in enumerate(EDGE_ACCESS_ROLES):
+            if code == ROLE_NA:
+                continue
+            counts[label] = int((edge_role == code).sum())
+            lengths[label] = round(
+                float(seg_length[seg_role == code].sum()), 3) if n_seg else 0.0
+        per_direction.append({
+            "direction": d,
+            "vector": [round(float(v), 6) for v in direction],
+            "counts": counts,
+            "length": lengths,
+            "flagged_edges": int(flagged.sum()),
+            "flagged_length": round(float(graph.edge_length[flagged].sum()), 3),
+            "max_required_radius": (round(float(np.nanmax(edge_radius)), 4)
+                                    if np.isfinite(edge_radius).any() else 0.0),
+        })
+
+    _report(progress, 0.95, "collecting the edge table")
+
+    def _verdict(e):
+        """(severity, required radius) for one edge over the whole selection.
+
+        The required radius is the SMALLEST any selected direction achieves —
+        you would machine the corner from its best direction — so it is the
+        fillet the designer actually has to draw. An edge no selected
+        direction can see outranks any radius: no fillet fixes it, only
+        another setup.
+        """
+        finite = [float(edge_radii[d][e]) for d in selected
+                  if np.isfinite(edge_radii[d][e])]
+        if not finite:
+            return 2, None
+        best = min(finite)
+        return (1 if best > 0 else 0), best
+
+    verdicts = {e: _verdict(e) for e in keep.tolist()}
+    # worst first, so a truncated table still lists the corners that matter
+    order = sorted(keep.tolist(),
+                   key=lambda e: (-verdicts[e][0], -(verdicts[e][1] or 0.0),
+                                  -float(graph.edge_length[e])))
+    edges = []
+    for e in order[:int(top_n)]:
+        severity, required = verdicts[e]
+        edges.append({
+            "edge": int(e),
+            "faces": [int(f) for f in graph.edge_faces[e]],
+            "length": round(float(graph.edge_length[e]), 4),
+            "dihedral_deg": (round(float(np.degrees(graph.edge_angle[e])), 3)
+                             if np.isfinite(graph.edge_angle[e]) else None),
+            "unreachable": severity == 2,
+            "required_radius": (None if required is None
+                                else round(required, 4)),
+            "role": {str(d): EDGE_ACCESS_ROLES[int(edge_roles[d][e])]
+                     for d in selected},
+            "radius": {str(d): (None if not np.isfinite(edge_radii[d][e])
+                                else round(float(edge_radii[d][e]), 4))
+                       for d in selected},
+        })
+
+    stats = {
+        "directions": selected,
+        "directions_fingerprint": directions_fingerprint(workdir),
+        "edge_class": edge_class,
+        "tool": {"diameter": float(diameter), "corner_radius": corner_radius},
+        "roles": EDGE_ACCESS_ROLES,
+        "edge_count": int(edge_count),
+        "candidate_edges": int(len(keep)),
+        "candidate_length": round(float(graph.edge_length[keep].sum()), 3),
+        "segments": int(n_seg),
+        "sample_step": float(step),
+        "pixel": float(pixel),
+        "floor_tollerance": float(floor_tollerance),
+        "axis_tollerance": float(axis_tollerance),
+        "approximate_faces": len(approximate),
+        "face_count": int(graph.face_count),
+        "per_direction": per_direction,
+        "edges": edges,
+        "truncated": bool(len(order) > int(top_n)),
+    }
+    logger.info(
+        f"corner access ({edge_class}): {len(keep)} candidate edges, "
+        f"{n_seg} segments over {len(selected)} directions; "
+        + ", ".join(f"d{row['direction']} {row['flagged_edges']} flagged"
+                    for row in per_direction[:4]))
+    return {"stats": stats, "arrays": arrays, "field_meta": field_meta}
+
+
 HULL_EDGE_ANGLE_DEG = 10.0  # hull crease edges kept for the viewer overlay
 
 

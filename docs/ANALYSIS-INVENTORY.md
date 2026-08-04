@@ -27,8 +27,8 @@ checks             pinned policy over one analysis result → verdict + findings
 The arrows are "reads", not "produces": a field lens *runs* the analysis it paints when
 nothing is cached, so the dependency points both ways in practice.
 
-Counts as of 2026-07-29: **7 prep stages + 24 results-tier analyses**, surfaced by
-**41 lenses**, of which **7 are self-materializing field lenses**; **9 analyses can
+Counts as of 2026-08-03: **7 prep stages + 25 results-tier analyses**, surfaced by
+**43 lenses**, of which **7 are self-materializing field lenses**; **9 analyses can
 currently become a check**.
 
 ---
@@ -57,7 +57,7 @@ Also non-registry but part of the currency: `face_splits.json` → `subfaces.npy
 
 ## B. Results-tier analyses
 
-### B1. CNC (`processes/cnc.py`) — 9
+### B1. CNC (`processes/cnc.py`) — 10
 
 
 | analysis        | requires                                               | params (default)                                                                                                                | stats out                                                                                                                      | arrays out                                                                                                                         | schema / salts                                                                               |
@@ -69,6 +69,7 @@ Also non-registry but part of the currency: `face_splits.json` → `subfaces.npy
 | `setups`        | `prep/directions`                                      | `indexed` true, `tilt` 90°, `max_setups` 4, `min_setup_area` (auto 0.1 %), `count` 10, `field_options` 3                        | ranked `options[]` (machine, setups, coverage), `total_area`, `field_options`                                                  | per option k: `membership_k` u4/face, `internal_region_k` u4/face, `brep_valid_k`, `brep_default_k`                                | SETUPS_SCHEMA 3, salt `splits`                                                               |
 | `setup_verdict` | `cnc/setups`                                           | all of `setups` + `option` 0, `tools` (5-tool default lib), `tollerance` 0.1, `wall_tollerance` 1°, `pixel`, `window` 0.3       | same shape, `verdict: true`, `options[0].verdict{tools, base_coverage, lost}`                                                  | one option's membership set (k=0)                                                                                                  | SETUPS_SCHEMA 3, `key_extra {verdict:1}`, salt `splits` — **stored in the `cnc/setups` dir** |
 | `reach_study`   | `prep/directions`                                      | `direction_indices` (blank = all), `tools`, `tollerance` 0.1, `wall_tollerance` 1°, `pixel`, `window` 0.3                       | `directions`, `tools`, per-pair `reachable_faces/area`                                                                         | `reach_<d>_<t>` u1 face mask per (direction × tool)                                                                                | REACH_STUDY_SCHEMA 1                                                                         |
+| `corner_access` | `prep/directions`, `prep/aag`                          | `direction_indices` (blank = all), `edge_class` concave, `diameter` 6, `corner_radius` 0, `floor_tollerance` 5°, `axis_tollerance` 5°, `min_length` 0, `sample_step`, `pixel`, `top_n` 200 | per direction: role counts + flagged length; `edges[]` (edge id, faces, dihedral, `required_radius`, `unreachable`) | `segment_points` f4 (S,2,3) lines + `segment_edge` u4 (stored once); per direction `segment_role_<d>` u1, `edge_role_<d>` u1 / `edge_radius_<d>` f4 over canonical BREP **edge** ids, `face_flag_<d>` u1 per BREP face | CORNER_SCHEMA 1                                                                                |
 | `precompute`    | `prep/directions`                                      | `directions` [4], `pixel`, `tips`, `clearances`, `window`                                                                       | timing/counts only                                                                                                             | **none** — writes `zcache/dir_*.npz` (`tip_*`, `clear_*`, `sreq_*`)                                                                | — (no result cache)                                                                          |
 | `compose`       | `cnc/precompute`                                       | `direction` 4, `diameter` 2, `corner_radius`, `tollerance`, `stickout`, `holder`, `sweep`, `wall_tollerance`, `pixel`, `window` | `unreachable`, `accessible`, `sweep`                                                                                           | **none** — writes `highlights.json`                                                                                                | — (no result cache)                                                                          |
 
@@ -139,6 +140,7 @@ modes (`brep_faces`, `face_attrs`, `pmi`, `highlights`) are hosted once under
 | cnc      | `axis_role`             | cnc/turning_scan                                                           |        | advanced, pinned by `scanHash`+`scanAxis` |
 | cnc      | `coverage`              | whichever masks the study total unioned                                    |        | advanced, painted from a study footer  |
 | cnc      | `hull`                  | cnc/hull                                                                   |        |                                        |
+| cnc      | `corners`               | cnc/corner_access                                                          |        | BREP-edge overlay; sharp corners a cutter can't make    |
 | cnc      | `reach_study`           | cnc/reach_study                                                            |        | one (d × t) mask                       |
 | cnc      | `reach_op`              | cnc/reach_study                                                            |        | cone-sliced                            |
 | cnc      | `reach_aggregate`       | cnc/reach_study                                                            |        | route verdict                          |
@@ -155,6 +157,7 @@ modes (`brep_faces`, `face_attrs`, `pmi`, `highlights`) are hosted once under
 | molding  | `slenderness`           | injection_molding/slenderness                                              |        | **not a field lens**                   |
 | molding  | `skeleton`              | injection_molding/wall_skeleton                                            |        |                                        |
 | molding  | `voxelField`            | prep/voxels                                                                |        | advanced                               |
+| molding  | `moldCorners`           | cnc/corner_access (`edge_class: convex`)                                   |        | the cavity's internal corners, at the pull direction    |
 | sheet    | `sheet_roles`           | sheet_metal/detect                                                         |        |                                        |
 | sheet    | `bend_radius`           | sheet_metal/detect                                                         |        |                                        |
 | sheet    | `flat_pattern`          | sheet_metal/flat_pattern                                                   |        |                                        |
