@@ -35,9 +35,19 @@ Check shape (validated by ``validate_route``)::
      "operation": "op10",          # optional owning operation id
      "lens": "cnc:access"}         # preferred inspection lens
 
+A check that reads SEVERAL fields carries ``sources`` instead of
+``analysis``/``params`` — one entry per result it needs::
+
+    {"id": "chk-...",
+     "sources": [{"id": "s1", "analysis": "injection_molding/thickness",
+                  "params": {"contact_angles": true}}],
+     "policy": {"kind": "expression", "terms": [...]}}
+
 Params are literal: what a computation is asked about is a declared param,
-so the check's params ARE the cache key's input. Interpretation-only knobs
-(bands, thresholds, scope) live in ``policy`` and never touch the key.
+so a check's (or a source's) params ARE the cache key's input.
+Interpretation-only knobs — bands, category sets, the operators joining
+terms — live in ``policy`` and never touch the key. That split is what lets
+you re-band an expression without recomputing anything.
 
 Framework-free on purpose: the API routes wrap these functions; tests and
 the CLI import them directly.
@@ -122,12 +132,39 @@ def validate_route(route):
     if len(check_ids) != len(set(check_ids)) or not all(check_ids):
         raise ValueError("check ids must be unique and non-empty")
     for check in route["checks"]:
-        analysis = check.get("analysis", "")
-        if "/" not in analysis:
+        # a check reads EITHER one analysis or several named sources. Both at
+        # once would leave two answers to "what does this check run", which is
+        # the ambiguity the route layer exists to avoid.
+        sources = check.get("sources")
+        if sources is not None and check.get("analysis") is not None:
             raise ValueError(
-                f"check {check['id']}: analysis must be 'process/analysis'")
-        if not isinstance(check.get("params", {}), dict):
-            raise ValueError(f"check {check['id']}: params must be a dict")
+                f"check {check['id']}: give either analysis or sources, "
+                f"not both")
+        if sources is None:
+            analysis = check.get("analysis", "")
+            if "/" not in analysis:
+                raise ValueError(
+                    f"check {check['id']}: analysis must be 'process/analysis'")
+            if not isinstance(check.get("params", {}), dict):
+                raise ValueError(f"check {check['id']}: params must be a dict")
+        else:
+            if not isinstance(sources, list) or not sources:
+                raise ValueError(
+                    f"check {check['id']}: sources must be a non-empty list")
+            source_ids = [s.get("id") for s in sources]
+            if len(source_ids) != len(set(source_ids)) or not all(source_ids):
+                raise ValueError(
+                    f"check {check['id']}: source ids must be unique "
+                    f"and non-empty")
+            for source in sources:
+                if "/" not in source.get("analysis", ""):
+                    raise ValueError(
+                        f"check {check['id']} source {source['id']}: analysis "
+                        f"must be 'process/analysis'")
+                if not isinstance(source.get("params", {}), dict):
+                    raise ValueError(
+                        f"check {check['id']} source {source['id']}: params "
+                        f"must be a dict")
         operation = check.get("operation")
         if operation is not None and operation not in op_ids:
             raise ValueError(
@@ -171,24 +208,23 @@ def route_history(workdir):
     return _read_jsonl(os.path.join(workdir, ROUTE_HISTORY_FILE))
 
 
-def check_status(workdir, check):
-    """Derived execution facts for one check (no geometry, no jobs).
+def _source_status(workdir, analysis_id, params):
+    """Derived execution facts for one (analysis, params) pair.
 
-    Keys the check's params through resolver.cache_key (declared params +
-    schema + prep fingerprints + salts — identical to what the runner will
-    store under), and reports:
+    Keys the params through resolver.cache_key (declared params + schema +
+    prep fingerprints + salts — identical to what the runner will store
+    under), and reports:
 
-    - expected_hash  where this check's result lives / will land
+    - expected_hash  where this result lives / will land
     - params         the merged dict to submit when running it
     - exists         the expected result is on disk (execution: current)
     - stale          not exists, but older results for the analysis exist
     - error          params failed to validate (fix the check)
     """
     try:
-        analysis_id = check["analysis"]
         process_id, name = analysis_id.split("/", 1)
         analysis = get_analysis(process_id, name)
-        merged = apply_defaults(analysis, check.get("params", {}))
+        merged = apply_defaults(analysis, params or {})
         key = resolver.cache_key(workdir, analysis_id, merged)
     except (KeyError, ValueError) as error:
         return {"expected_hash": None, "params": None, "exists": False,
@@ -198,6 +234,32 @@ def check_status(workdir, check):
     stale = not exists and bool(_stored_results(workdir, process_id, name))
     return {"expected_hash": params_hash(key), "params": merged,
             "exists": exists, "stale": stale, "error": None}
+
+
+def check_status(workdir, check):
+    """Derived execution facts for one check (no geometry, no jobs).
+
+    A single-analysis check reports its own status directly. A multi-source
+    check reports one status per source under ``sources``, plus the rolled-up
+    booleans the status model reads: it is `current` only when EVERY source
+    is on disk, because an expression over two fields cannot be evaluated
+    from one of them.
+    """
+    sources = check.get("sources")
+    if not sources:
+        return _source_status(workdir, check.get("analysis") or "",
+                              check.get("params"))
+    per = {source["id"]: _source_status(workdir, source.get("analysis") or "",
+                                        source.get("params"))
+           for source in sources}
+    errors = [s["error"] for s in per.values() if s["error"]]
+    return {"expected_hash": None, "params": None,
+            # `all()` of nothing is True — a check that reads nothing must
+            # never report `current`
+            "exists": bool(per) and all(s["exists"] for s in per.values()),
+            "stale": any(s["stale"] for s in per.values()),
+            "error": errors[0] if errors else None,
+            "sources": per}
 
 
 def route_section(workdir):

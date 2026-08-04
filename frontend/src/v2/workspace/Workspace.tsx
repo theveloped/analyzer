@@ -5,6 +5,7 @@ import { catalogAnalysisFor } from '../checks/catalog';
 import { AnalysisToolbar } from './AnalysisToolbar';
 import { DirectionsRail } from './DirectionsRail';
 import { DirectionsTableRail } from './DirectionsTableRail';
+import { ExpressionRail } from './ExpressionRail';
 import { DirectionTooltip } from './DirectionTooltip';
 import { FieldLensRail } from './FieldLensRail';
 import {
@@ -50,6 +51,7 @@ export function Workspace() {
   const measuring = useV2((s) => s.measure.active);
   const sectionRailOpen = useV2((s) => s.sectionRailOpen);
   const activeStudy = useActiveStudy();
+  const buildingExpression = useV2((s) => s.expressionDraft);
   const setViewport = useV2((s) => s.setViewport);
 
   // PMI reads best as an xray shell with the BREP edges; only the annotated
@@ -76,6 +78,9 @@ export function Workspace() {
   const [railId, railWidth, rightRail]: [string, number, React.ReactNode] =
     measuring ? ['measure', 288, <MeasureRail />]
       : sectionRailOpen ? ['section', 288, <SectionRail />]
+        // the builder outranks the check rail: you opened it to EDIT, and the
+        // read-only card is what you would be dropped back onto
+        : buildingExpression ? ['expression', 380, <ExpressionRail />]
         : activeStudy ? ['study', 672, <DirectionsTableRail />]
           : modeId === 'pmi' ? ['pmi', 288, <PmiRail />]
             : directionsActive ? ['directions', 288, <DirectionsRail />]

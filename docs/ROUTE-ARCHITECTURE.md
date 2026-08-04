@@ -23,8 +23,13 @@ no second record of the same choice to drift away from it.
 
 **Checks are authored deliberately.** Nothing seeds them: no per-kind default
 set, no route template. A check on the route is one somebody meant, which is
-what makes it worth reading. It comes from a lens band ("save band as check") or
-from a study total.
+what makes it worth reading.
+
+**One check kind, configured — not many kinds.** An *expression* check turns
+any stored field into a yes/no region and combines regions with and · or ·
+and-not. That is the general form the others are special cases of, and the
+intent is that it REPLACES them once it has proven itself on real parts (see
+*The general form* below).
 
 **Operations are atomic.** One approach direction, one bend, one turning axis —
 no tilt cone. Grouping several onto one machine setup (two milling ops sharing a
@@ -41,6 +46,57 @@ templates that instantiated operations *and* their checks, per-kind default
 check sets, and seeding buttons. Two authors for an operation's checks
 (`defaultChecksFor` and the route YAML) had already drifted. Reports/dispositions
 went with them — see *Deferred* below.
+
+## The general form: expression checks
+
+Every field-shaped question has the same shape — take a field, decide which of
+its values mean "yes", combine that region with another. So there is one
+configurable check rather than a kind per question.
+
+**A term** is (field, rule). One rule per `FieldRole` that carries a
+per-element value:
+
+| role | rule | reads |
+|---|---|---|
+| `scalar` | **band** — two open-ended bounds | `≥ 50 % of mean`, `10 – 60 °`, `bottom p5` |
+| `mask` | **set / not set** | `on_hull`, `reach_3_0` |
+| `category` | **a set of values**, optionally inverted | `feature_category in {1, 2}` |
+
+Bounds resolve in field units, % of mean, % of median or percentile
+(`fields/stats.ts`), **always against the whole field** — never against the
+region an earlier term scoped to. "Above 50 % of the mean thickness" is then
+one number regardless of what it is combined with; a scoped reference would
+silently move every threshold downstream of an edit.
+
+**Terms fold left to right** with `and` / `or` / `andNot`. The first term's
+operator is ignored, so the same list cannot mean two things depending on
+order. Fields in any index space work: `face` directly, `vertex` by the
+faceValues convention (mean of three corners for a scalar; all three must
+agree for a mask or category, since a mean of category ids is meaningless),
+`brep_face` broadcast through the id map.
+
+**The verdict** is the composed mask's AREA share against a pinned limit —
+area, not a face count, so a dense corner cannot outvote a large flat wall.
+A limit of 0 means "any selected face is a finding".
+
+`fields/expression.ts` owns the model and the mask math; the lens
+(`colorizers/expression.ts`) and the evaluator both call `buildMask`, so the
+number and the picture are one computation. `fields/expression.test.ts` pins
+the semantics, including the worked example
+*"faces where the contact angle is 10–60° and the thickness is above 50 % of
+the mean"*.
+
+### What it already subsumes
+
+A threshold check is one band term. A band check is one band term. "Faces no
+tool reaches" is `visible and not reachable`. When the expression form has
+proven itself, those kinds collapse into it and their evaluators are deleted
+rather than rewritten. The one thing NOT expressible today is a `stats` check,
+which reads stored scalars rather than arrays — the obvious extension is a
+`stat` term kind, deliberately not built yet.
+
+Seeding a common expression from an operation or a lens is also deliberately
+out of scope: seeding is what made checks unreadable before.
 
 ## What already exists (build on it, don't duplicate it)
 
@@ -104,9 +160,19 @@ went with them — see *Deferred* below.
 ```
 
 `route.json`: ordered `operations` (id, kind, label, config, machine name,
-declarative `produces` annotations) and `checks`. Each check: target `analysis`
-id, literal `params`, `operation` (optional owner), pinned `policy`, preferred
-`lens`.
+declarative `produces` annotations) and `checks`. Each check: literal `params`
+plus either one `analysis` id **or** a list of `sources`
+(`{id, analysis, params}`) when it interprets several results at once;
+`operation` (optional owner), pinned `policy`, preferred `lens`.
+
+A multi-source check has no single `expected_hash` — it has one per source, and
+`check_status` rolls them up: `exists` only when EVERY source is on disk,
+because an expression over two fields cannot be evaluated from one of them.
+Running it submits each source that is not already cached.
+
+The split matters for keying: a source's **params** are computation and land in
+the cache key; a term's **rule** is interpretation and lives in `policy`. That
+is what lets you re-band an expression without recomputing anything.
 
 A document written under an older `ROUTE_SCHEMA` is **discarded, not migrated**
 (`route.load_route`): the route is authored, cheap to rebuild, and a

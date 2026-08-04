@@ -3,6 +3,17 @@ import type { MeasureFrame, MeasurePick } from '../viewer/measure';
 import { DEFAULT_VIEWPORT, type ViewportState } from '../viewer/viewportState';
 import { ANALYSES, defaultCompute } from './analyses';
 import type { BandBound } from './fieldLenses';
+import type { ExprAggregate, ExprTerm } from '../fields/expression';
+
+/** An expression being edited. Nothing reaches the route until Save, so
+ * opening the builder and closing it again leaves no trace. */
+export interface ExpressionDraft {
+  /** null = a new check; otherwise the check being edited. */
+  checkId: string | null;
+  label: string;
+  terms: ExprTerm[];
+  aggregate: ExprAggregate;
+}
 
 export interface MeasureState {
   /** The Measure interaction tool owns mesh clicks while active. */
@@ -52,12 +63,19 @@ export interface V2State {
    * is recorded by adding an operation. `part` guards against showing
    * another part's selection. */
   selection: { part: string | null; keys: string[] };
+  /** The expression the builder is editing (null = closed).
+   *
+   * A DRAFT, not a route write: clicking "Add check" must not leave an empty
+   * check behind if you close the panel again. `checkId` is null for a new
+   * one and the check's id when editing an existing one. */
+  expressionDraft: ExpressionDraft | null;
 
   setAdvanced: (advanced: boolean) => void;
   setSectionRailOpen: (open: boolean) => void;
   setActiveStudy: (id: string | null) => void;
   setRailWidth: (id: string, width: number) => void;
   setSelection: (part: string | null, keys: string[]) => void;
+  setExpressionDraft: (draft: ExpressionDraft | null) => void;
   toggleTheme: () => void;
   setCompute: (analysisId: string, key: string, value: unknown) => void;
   setActiveCheck: (id: string | null) => void;
@@ -108,6 +126,7 @@ export const useV2 = create<V2State>()((set) => ({
   activeStudy: null,
   railWidths: loadRailWidths(),
   selection: { part: null, keys: [] },
+  expressionDraft: null,
 
   setAdvanced: (advanced) => set({ advanced }),
   setSectionRailOpen: (sectionRailOpen) => set({ sectionRailOpen }),
@@ -118,6 +137,7 @@ export const useV2 = create<V2State>()((set) => ({
     return { railWidths };
   }),
   setSelection: (part, keys) => set({ selection: { part, keys } }),
+  setExpressionDraft: (draft) => set({ expressionDraft: draft }),
   setViewport: (patch) =>
     set((s) => ({ viewport: { ...s.viewport, ...patch } })),
   setMeasureActive: (active) =>

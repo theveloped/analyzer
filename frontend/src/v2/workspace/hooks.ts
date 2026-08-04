@@ -1,8 +1,11 @@
 import { useEffect } from 'react';
 import { putRoute } from '../../api/client';
 import type {
-  Operation, OperationKind, Route, RouteCheck, RouteCheckStatus, RouteSection,
+  CheckSource, Operation, OperationKind, Route, RouteCheck, RouteCheckStatus,
+  RouteSection,
 } from '../../api/types';
+import type { ExprAggregate, ExprTerm } from '../../fields/expression';
+import type { ExpressionDraft } from '../store';
 import { useStore } from '../../state/store';
 import { refreshManifest } from '../../viewer/controller';
 import { runAnalysisJob } from '../../viewer/jobs';
@@ -170,7 +173,7 @@ export function selectRouteCheck(check: RouteCheck) {
   const view = describeCheck(check, section.route);
   if (!view) return;
   const status = section.checks[check.id];
-  const target = view.activate(status?.expected_hash ?? null);
+  const target = view.activate(status);
   useV2.getState().setActiveCheck(check.id);
   for (const [name, value] of Object.entries(target.params)) {
     store.setViewerParam(target.processId, name, value);
@@ -307,6 +310,62 @@ export async function removeCheck(check: RouteCheck): Promise<void> {
     ...section.route,
     checks: section.route.checks.filter((c) => c.id !== check.id),
   }, section.route.revision);
+}
+
+/** Open the builder on a NEW expression. Writes nothing: a check appears on
+ * the route when it says something, so closing the panel again leaves no
+ * empty check and no wasted revision. */
+export function newExpressionCheck(operation?: string | null): void {
+  useV2.getState().setExpressionDraft({
+    checkId: null,
+    label: 'Expression',
+    terms: [],
+    aggregate: { limit: 0, severity: 'review' },
+    ...(operation ? { operation } : {}),
+  } as ExpressionDraft);
+}
+
+/** Open the builder on an existing expression check. */
+export function editExpressionCheck(check: RouteCheck): void {
+  useV2.getState().setExpressionDraft({
+    checkId: check.id,
+    label: check.label ?? 'Expression',
+    terms: ((check.policy?.terms ?? []) as ExprTerm[]).map((t) => ({ ...t })),
+    aggregate: (check.policy?.aggregate as ExprAggregate)
+      ?? { limit: 0, severity: 'review' },
+  });
+}
+
+/** Create or update the check a draft describes, then select it so the rail
+ * shows the verdict it just produced. */
+export async function saveExpressionCheck(
+  draft: ExpressionDraft, sources: CheckSource[],
+): Promise<void> {
+  const section = useStore.getState().manifest?.route;
+  if (!section) return;
+  let id = draft.checkId;
+  if (!id) {
+    id = 'chk-expr';
+    for (let n = 2; section.route.checks.some((c) => c.id === id); n++) {
+      id = `chk-expr-${n}`;
+    }
+  }
+  const previous = section.route.checks.find((c) => c.id === id);
+  const check: RouteCheck = {
+    id,
+    label: draft.label,
+    sources,
+    policy: {
+      kind: 'expression', terms: draft.terms, aggregate: draft.aggregate,
+    },
+    lens: 'injection_molding:expression',
+    ...(previous?.operation ? { operation: previous.operation } : {}),
+  };
+  const checks = previous
+    ? section.route.checks.map((c) => (c.id === id ? check : c))
+    : [...section.route.checks, check];
+  await storeRoute({ ...section.route, checks }, section.route.revision);
+  useV2.getState().setExpressionDraft({ ...draft, checkId: id });
 }
 
 /** Edit one operation's config in place (e.g. its direction). */

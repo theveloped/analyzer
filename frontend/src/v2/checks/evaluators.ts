@@ -2,6 +2,10 @@ import type {
   Manifest, Operation, ResultEntry, RouteCheck,
 } from '../../api/types';
 import { fetchBin, fetchField } from '../../fields/fields';
+import {
+  buildMask, DEFAULT_AGGREGATE, expressionText, resolveTerms, summarize,
+  type ExprPolicy, type MaskCtx,
+} from '../../fields/expression';
 import { findStudy, opReach, type ReachCtx } from '../../processes/cnc/reach';
 import type { Analysis } from '../analyses';
 import { fieldDescriptor, type FieldLensDef } from '../fieldLenses';
@@ -27,6 +31,10 @@ export interface Finding {
   detail: string;
   severity: 'review' | 'fail';
 }
+
+/** Per-source result hashes, as the server derives them — what binds a
+ * stored term (source id + npz member) to a live field. */
+export type SourceHashes = Record<string, { analysis: string; hash: string | null }>;
 
 export interface Evaluation {
   verdict: VerdictState;
@@ -269,3 +277,45 @@ export async function evaluateReachRoute(
   return { verdict: 'fail', findings };
 }
 
+
+/**
+ * Expression check: the composed mask's AREA SHARE against the pinned limit.
+ *
+ * This is the general form the other field checks are special cases of — a
+ * threshold is one band term, a band check is one band term, an unreachable
+ * region is `visible and not reachable`. It reports area rather than a face
+ * count because a dense corner would otherwise outvote a large flat wall.
+ */
+export async function evaluateExpression(
+  ctx: MaskCtx, check: RouteCheck, sources: SourceHashes,
+): Promise<Evaluation> {
+  const policy = check.policy as unknown as ExprPolicy | undefined;
+  const terms = policy?.terms ?? [];
+  if (!terms.length) return { verdict: 'unknown', findings: [] };
+  const { resolved, missing } = resolveTerms(terms, sources);
+  // an expression evaluated from only some of its fields is not a weaker
+  // answer, it is a different question — say `unknown` instead
+  if (missing.length || resolved.length !== terms.length) {
+    return { verdict: 'unknown', findings: [] };
+  }
+  const { mask, unresolved } = await buildMask(ctx, resolved);
+  if (unresolved.length) return { verdict: 'unknown', findings: [] };
+
+  const summary = summarize(ctx, mask);
+  const aggregate = policy?.aggregate ?? DEFAULT_AGGREGATE;
+  if (summary.share <= aggregate.limit) return { verdict: 'pass', findings: [] };
+  const limitText = aggregate.limit > 0
+    ? ` (limit ${(100 * aggregate.limit).toFixed(1)} %)` : '';
+  return {
+    verdict: aggregate.severity,
+    findings: [{
+      id: `${check.id}:expression`,
+      code: 'expression',
+      label: 'Faces the expression selects',
+      detail: `${summary.faces} faces · ${summary.area.toFixed(0)} mm² · `
+        + `${(100 * summary.share).toFixed(1)} % of the part${limitText}`
+        + ` — ${expressionText(terms)}`,
+      severity: aggregate.severity,
+    }],
+  };
+}

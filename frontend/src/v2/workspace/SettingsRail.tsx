@@ -195,7 +195,7 @@ export function SettingsRail() {
                 <div>
                   <div className={clsx(labelCls, 'mb-1')}>Pinned compute params</div>
                   <p className="whitespace-pre-wrap font-mono text-[11px]/4 text-zinc-500 dark:text-zinc-400">
-                    {Object.entries(planCheck.check.params)
+                    {Object.entries(planCheck.check.params ?? {})
                       .map(([k, v]) => `${k}: ${v === null ? 'auto' : String(v)}`)
                       .join('\n')}
                   </p>
