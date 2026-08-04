@@ -126,15 +126,18 @@ def run_bend_plan(workdir, params, progress):
         min_thickness=params["min_thickness"], keep_unfold=True,
         progress=progress)
 
-    # relative catalogue paths resolve against the WORKDIR first: plan
-    # checks bind machine_path to the content-addressed plan_assets
-    # snapshot, so the stored (portable) relative path is part of the cache
-    # key and changes exactly when the machine content does
+    # relative catalogue paths resolve against the workdir first, then the
+    # repo (so a check can name `catalogue/machines/<name>.yaml` from the
+    # machine library). The stored relative path is part of the cache key,
+    # so pointing at another machine re-keys the result.
+    _repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
     def _catalogue_path(value):
         if value and not os.path.isabs(value):
-            candidate = os.path.join(workdir, value)
-            if os.path.exists(candidate):
-                return candidate
+            for base in (workdir, _repo):
+                candidate = os.path.join(base, value)
+                if os.path.exists(candidate):
+                    return candidate
         return value or None
 
     machine = machine_mod.load_machine(_catalogue_path(params["machine_path"]))

@@ -14,12 +14,12 @@ import { provenanceCss } from '../../processes/directions/state';
 import { useStore } from '../../state/store';
 import {
   aggregateFor, aggregateVersion, showCoverage, subscribeAggregate,
-} from '../decisions/aggregate';
+} from '../table/aggregate';
 import {
   buildRows, columnsFor, openCell, toolColumns,
   type Cell, type DirectionRow,
-} from '../decisions/columns';
-import { selectCandidates, useSelection } from '../decisions/directions';
+} from '../table/columns';
+import { selectCandidates, useSelection } from '../table/selection';
 import {
   closeStudy, showArrows, showArrowsLens, useActiveStudy,
 } from '../studies';
@@ -150,7 +150,7 @@ export function DirectionsTableRail() {
       next = selected.length === 1 && selected[0] === row.key ? [] : [row.key];
       anchor.current = row.key;
     }
-    selectCandidates(candidates, next);
+    selectCandidates(next);
     showArrowsLens();
   }
 
@@ -325,7 +325,7 @@ export function DirectionsTableRail() {
             {selected.length === 0
               ? `${rows.length} candidates. Click a row to show it; click a value to paint it, or a blank cell to compute it.`
               : selected.length === 1
-                ? `1 of ${rows.length} selected — recorded on the plan as decisions.directions.`
+                ? `1 of ${rows.length} selected — add an operation to record it.`
                 : `${selected.length} of ${rows.length} selected — click a total to see what they cover together.`}
           </p>
         </>

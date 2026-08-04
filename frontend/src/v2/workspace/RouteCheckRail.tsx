@@ -1,33 +1,33 @@
 import clsx from 'clsx';
 import { Play, RotateCw } from 'lucide-react';
-import type { Plan, PlanCheck, PlanCheckStatus } from '../../api/types';
+import type { Route, RouteCheck, RouteCheckStatus } from '../../api/types';
 import { Button } from '../../catalyst/button';
 import { useStore } from '../../state/store';
 import { describeCheck, useCheckEvaluation } from '../checks/catalog';
 import { planCheckState, statusKindOf } from '../checks/status';
 import { StatusBadge } from '../components/status';
 import { FindingRow } from './findings';
-import { usePlanSection, useSelectedPlanCheck } from './hooks';
-import { runPlanCheck, useBusy } from './run';
+import { useRouteSection, useSelectedRouteCheck } from './hooks';
+import { runRouteCheck, useBusy } from './run';
 import { hintCls } from '../components/styles';
 
 
 /**
- * Right rail for a non-threshold plan check (reach study / per-operation /
+ * Right rail for a non-threshold route check (reach study / per-operation /
  * route aggregate): execution + verdict against the pinned policy, run
- * control, and the findings with their dispositions. The lens params were
- * bound by selectPlanCheck; the viewer paints the same slice being judged.
+ * control, and its derived findings. The lens params were
+ * bound by selectRouteCheck; the viewer paints the same slice being judged.
  */
-export function PlanCheckRail() {
-  const selected = useSelectedPlanCheck();
-  const section = usePlanSection();
+export function RouteCheckRail() {
+  const selected = useSelectedRouteCheck();
+  const section = useRouteSection();
   if (!selected || !section) return null;
   return <Rail check={selected.check} status={selected.status}
-    plan={section.plan} />;
+    route={section.route} />;
 }
 
-function Rail({ check, status, plan }: {
-  check: PlanCheck; status: PlanCheckStatus | undefined; plan: Plan;
+function Rail({ check, status, route }: {
+  check: RouteCheck; status: RouteCheckStatus | undefined; route: Route;
 }) {
   const manifest = useStore((s) => s.manifest);
   const jobs = useStore((s) => s.jobs);
@@ -36,8 +36,8 @@ function Rail({ check, status, plan }: {
   const error = useStore((s) => s.error);
   const meshReady = useStore((s) => s.meshReady);
   const busy = useBusy();
-  const evaluation = useCheckEvaluation(check, plan, status, manifest);
-  const view = describeCheck(check, plan);
+  const evaluation = useCheckEvaluation(check, route, status, manifest);
+  const view = describeCheck(check, route);
   if (!view) return null;
 
   const [process, analysis] = check.analysis.split('/');
@@ -64,7 +64,7 @@ function Rail({ check, status, plan }: {
       </div>
 
       <Button
-        onClick={() => runPlanCheck(check, status)}
+        onClick={() => runRouteCheck(check, status)}
         disabled={!meshReady || busy || !!status?.error}
         className="w-full"
       >
@@ -104,7 +104,7 @@ function Rail({ check, status, plan }: {
         ) : evaluation?.findings.length ? (
           <div className="flex flex-col gap-2">
             {evaluation.findings.map((f) => (
-              <FindingRow key={f.id} finding={f} partId={partId} />
+              <FindingRow key={f.id} finding={f} />
             ))}
           </div>
         ) : (

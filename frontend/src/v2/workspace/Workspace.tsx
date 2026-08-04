@@ -9,7 +9,7 @@ import { DirectionTooltip } from './DirectionTooltip';
 import { FieldLensRail } from './FieldLensRail';
 import {
   useActiveFieldLens, useActiveLens, useAutoRunFieldLens, useCheckActive,
-  useDirectionsActive, useSelectedPlanCheck,
+  useDirectionsActive, useSelectedRouteCheck,
 } from './hooks';
 import { useV2 } from '../store';
 import { useActiveStudy } from '../studies';
@@ -18,7 +18,7 @@ import { LensRail } from './LensRail';
 import { MeasureRail } from './MeasureRail';
 import { SectionRail } from './SectionRail';
 import { PipelineRail } from './PipelineRail';
-import { PlanCheckRail } from './PlanCheckRail';
+import { RouteCheckRail } from './RouteCheckRail';
 import { PmiCallouts } from './PmiCallout';
 import { PmiRail } from './PmiRail';
 import { RightRail } from './RightRail';
@@ -42,7 +42,7 @@ export function Workspace() {
   const checkActive = useCheckActive();
   const activeLens = useActiveLens();
   const activeFieldLens = useActiveFieldLens();
-  const selected = useSelectedPlanCheck();
+  const selected = useSelectedRouteCheck();
   useAutoRunFieldLens(); // field lenses materialize themselves on first look
   // a selected non-threshold plan check (reach study/op/route) gets its own
   // rail; field lenses get the band panel; other checks the SettingsRail
@@ -79,7 +79,7 @@ export function Workspace() {
         : activeStudy ? ['study', 672, <DirectionsTableRail />]
           : modeId === 'pmi' ? ['pmi', 288, <PmiRail />]
             : directionsActive ? ['directions', 288, <DirectionsRail />]
-              : planCheckRail ? ['planCheck', 288, <PlanCheckRail />]
+              : planCheckRail ? ['planCheck', 288, <RouteCheckRail />]
                 : activeFieldLens ? ['fieldLens', 288, <FieldLensRail />]
                   : checkActive ? ['settings', 288, <SettingsRail />]
                     : activeLens ? ['lens', 288, <LensRail />]

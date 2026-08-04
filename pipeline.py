@@ -1261,7 +1261,7 @@ def reach_study(workdir, *, directions=(), tools=(), tollerance=0.1,
     """Face-reachability study over (candidate direction × tool).
 
     The broad reusable computation behind operation-scoped CNC checks
-    (docs/PLAN-ARCHITECTURE.md): for every selected candidate direction and
+    (docs/ROUTE-ARCHITECTURE.md): for every selected candidate direction and
     every tool in the library, the per-face machinable mask — the same
     ``tool_face_verdict`` rule ``setup_verdict`` applies, but stored
     per-pair instead of OR-folded into one plan's coverage. Downstream

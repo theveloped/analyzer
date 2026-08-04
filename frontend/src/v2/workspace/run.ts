@@ -1,4 +1,4 @@
-import type { PlanCheck, PlanCheckStatus } from '../../api/types';
+import type { RouteCheck, RouteCheckStatus } from '../../api/types';
 import { useStore } from '../../state/store';
 import { runAnalysisJob } from '../../viewer/jobs';
 import type { Analysis } from '../analyses';
@@ -23,7 +23,7 @@ export function runAnalysis(a: Analysis): void {
 
 /** Run a PLAN check: submits the server-materialized params verbatim, so the
  * result lands exactly under the check's expected hash. */
-export function runPlanCheck(check: PlanCheck, status: PlanCheckStatus | undefined): void {
+export function runRouteCheck(check: RouteCheck, status: RouteCheckStatus | undefined): void {
   const partId = useStore.getState().partId;
   if (!partId || !status?.params) return;
   const [process, analysis] = check.analysis.split('/');

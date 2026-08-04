@@ -1,10 +1,10 @@
-import type { Job, Manifest, PlanCheckStatus, ResultEntry } from '../../api/types';
+import type { Job, Manifest, RouteCheckStatus, ResultEntry } from '../../api/types';
 import type { StatusKind } from '../components/status';
 import type { Analysis } from '../analyses';
 
 /**
  * The check status model: independent axes, never one field (see
- * docs/PLAN-ARCHITECTURE.md). Execution says whether/where the computation
+ * docs/ROUTE-ARCHITECTURE.md). Execution says whether/where the computation
  * ran; verdict says what it found. "Computed" is not "good".
  *
  * The verdict here is PROVISIONAL: it reads the live viewer threshold against
@@ -97,7 +97,7 @@ export function checkState(
  * hash (exists/stale) plus the live job overlay; the verdict is evaluated
  * separately against the pinned policy (evaluators.ts) and merged here. */
 export function planCheckState(
-  status: PlanCheckStatus | undefined,
+  status: RouteCheckStatus | undefined,
   jobs: Job[],
   partId: string | null,
   a: AnalysisRef,

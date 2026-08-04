@@ -1,7 +1,5 @@
 """Pydantic request models for the API."""
 
-from typing import Literal
-
 from pydantic import BaseModel, Field
 
 
@@ -25,10 +23,10 @@ class SplitRequest(BaseModel):
     end: int
 
 
-class PlanPutRequest(BaseModel):
-    """Store a new plan revision. ``revision`` is the revision the client
+class RoutePutRequest(BaseModel):
+    """Store a new route revision. ``revision`` is the revision the client
     edited (optimistic concurrency — a mismatch is a 409)."""
-    plan: dict
+    route: dict
     revision: int
 
 
@@ -37,37 +35,6 @@ class PmiPutRequest(BaseModel):
     (dimensions/tolerances/datums); it is validated and its round-trip warnings
     re-derived server-side before the file is written."""
     pmi: dict
-
-
-class PlanImpactRequest(BaseModel):
-    """Dry-run a plan edit: decisions deep-merge, operations/checks replace
-    when present. Never enqueues work."""
-    patch: dict = Field(default_factory=dict)
-
-
-class RouteInstantiateRequest(BaseModel):
-    """Instantiate a catalogue route template into the part's plan."""
-    name: str
-
-
-class ReportPublishRequest(BaseModel):
-    """Publish an immutable report bundle: per-check verdict/findings/
-    evidence plus optional PNG data-URL shots."""
-    title: str = ""
-    part: str = ""
-    checks: list[dict]
-
-
-class DispositionRequest(BaseModel):
-    """One human judgment on a finding (appended, never overwritten)."""
-    finding_id: str
-    # a Literal, not a str-with-a-comment: FastAPI then rejects a bad state at
-    # the request boundary with a field error, instead of letting it reach
-    # plans.append_disposition and surface as a generic 400
-    state: Literal["open", "accepted", "customer_approval", "resolved"]
-    by: str
-    why: str = ""
-    evidence: dict = Field(default_factory=dict)
 
 
 class EjectorSimRequest(BaseModel):

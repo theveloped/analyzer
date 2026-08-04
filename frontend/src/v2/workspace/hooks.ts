@@ -1,14 +1,14 @@
 import { useEffect } from 'react';
-import { postPlanMachine, putPlan } from '../../api/client';
+import { putRoute } from '../../api/client';
 import type {
-  OperationKind, Plan, PlanCheck, PlanCheckStatus, PlanOperation, PlanSection,
+  Operation, OperationKind, Route, RouteCheck, RouteCheckStatus, RouteSection,
 } from '../../api/types';
 import { useStore } from '../../state/store';
 import { refreshManifest } from '../../viewer/controller';
 import { runAnalysisJob } from '../../viewer/jobs';
 import type { Analysis } from '../analyses';
-import { ANALYSIS_BY_ID, ANALYSES, defaultCompute } from '../analyses';
-import { defaultTools, describeCheck } from '../checks/catalog';
+import { ANALYSIS_BY_ID, ANALYSES } from '../analyses';
+import { describeCheck } from '../checks/catalog';
 import { checkState, type CheckState } from '../checks/status';
 import {
   FIELD_LENSES, fieldLensCompute, latestResult, type FieldLensDef,
@@ -38,8 +38,8 @@ export function useVisibleAnalyses(): Analysis[] {
  * Scopes the rail to the matching plan check when the plan has one. */
 export function selectAnalysis(a: Analysis) {
   useStore.getState().set({ processId: a.process, modeId: a.id });
-  const section = useStore.getState().manifest?.plan;
-  const check = section?.plan.checks.find(
+  const section = useStore.getState().manifest?.route;
+  const check = section?.route.checks.find(
     (c) => c.analysis === `${a.process}/${a.analysis}`);
   useV2.getState().setActiveCheck(check?.id ?? null);
 }
@@ -136,38 +136,38 @@ export function useAutoRunFieldLens() {
 }
 
 // ---------------------------------------------------------------------------
-// Production plan (manifest.plan → plans.py sidecars)
+// The route: operations + checks (manifest.route → route.py sidecars)
 
-/** The manifest's plan section (plan + derived per-check status). */
-export function usePlanSection(): PlanSection | null {
-  return useStore((s) => s.manifest?.plan ?? null);
+/** The manifest's route section (route + derived per-check status). */
+export function useRouteSection(): RouteSection | null {
+  return useStore((s) => s.manifest?.route ?? null);
 }
 
-/** Catalog UI metadata for a plan check (icon/label/threshold vocabulary). */
-export function catalogFor(check: PlanCheck): Analysis | null {
+/** Catalog UI metadata for a check (icon/label/threshold vocabulary). */
+export function catalogFor(check: RouteCheck): Analysis | null {
   return ANALYSES.find(
     (a) => `${a.process}/${a.analysis}` === check.analysis) ?? null;
 }
 
-/** The plan check matching the active analysis, with its derived status. */
-export function useActivePlanCheck():
-{ check: PlanCheck; status: PlanCheckStatus | undefined } | null {
-  const section = usePlanSection();
+/** The check matching the active analysis, with its derived status. */
+export function useActiveRouteCheck():
+{ check: RouteCheck; status: RouteCheckStatus | undefined } | null {
+  const section = useRouteSection();
   const active = useActiveAnalysis();
   const checkActive = useCheckActive();
   if (!section || !checkActive) return null;
-  const check = section.plan.checks.find(
+  const check = section.route.checks.find(
     (c) => c.analysis === `${active.process}/${active.analysis}`);
   return check ? { check, status: section.checks[check.id] } : null;
 }
 
-/** Activate a plan check: scope the rail to it and drive the viewer to its
+/** Activate a check: scope the rail to it and drive the viewer to its
  * preferred lens with the check's scope bound into the viewer params. */
-export function selectPlanCheck(check: PlanCheck) {
+export function selectRouteCheck(check: RouteCheck) {
   const store = useStore.getState();
-  const section = store.manifest?.plan;
+  const section = store.manifest?.route;
   if (!section) return;
-  const view = describeCheck(check, section.plan);
+  const view = describeCheck(check, section.route);
   if (!view) return;
   const status = section.checks[check.id];
   const target = view.activate(status?.expected_hash ?? null);
@@ -180,60 +180,49 @@ export function selectPlanCheck(check: PlanCheck) {
   });
 }
 
-/** The plan check the rail is scoped to (validated against the live plan). */
-export function useSelectedPlanCheck():
-{ check: PlanCheck; status: PlanCheckStatus | undefined } | null {
-  const section = usePlanSection();
+/** The check the rail is scoped to (validated against the live route). */
+export function useSelectedRouteCheck():
+{ check: RouteCheck; status: RouteCheckStatus | undefined } | null {
+  const section = useRouteSection();
   const activeCheckId = useV2((s) => s.activeCheckId);
   if (!section || !activeCheckId) return null;
-  const check = section.plan.checks.find((c) => c.id === activeCheckId);
+  const check = section.route.checks.find((c) => c.id === activeCheckId);
   return check ? { check, status: section.checks[check.id] } : null;
 }
 
-export async function storePlan(plan: Plan, revision: number) {
+export async function storeRoute(route: Route, revision: number) {
   const partId = useStore.getState().partId;
   if (!partId) return;
   try {
-    await putPlan(partId, plan, revision);
+    await putRoute(partId, route, revision);
     await refreshManifest();
   } catch (err) {
     useStore.getState().set({
       error: err instanceof Error ? err.message : String(err),
     });
+    return;
   }
+  // re-bind the active check: its lens params carry route values (the
+  // operation's direction, the tool list), which the edit may have moved
+  const activeId = useV2.getState().activeCheckId;
+  const active = useStore.getState().manifest?.route?.route.checks
+    .find((c) => c.id === activeId);
+  if (active) selectRouteCheck(active);
 }
 
-/** Seed the part's plan with one check per catalog analysis, pinning the
- * default thresholds as policies (the "standard checks" template). */
-export async function seedPlan() {
-  const section = useStore.getState().manifest?.plan;
-  const plan: Plan = section
-    ? { ...section.plan }
-    : { schema: 1, revision: 0, decisions: {}, operations: [], checks: [] };
-  plan.checks = ANALYSES.map((a) => ({
-    id: `chk-${a.id}`,
-    analysis: `${a.process}/${a.analysis}`,
-    params: defaultCompute(a),
-    policy: { threshold: a.thresholdDefault, unit: a.unit },
-    lens: `${a.process}:${a.id}`,
-    visible: true,
-  }));
-  await storePlan(plan, plan.revision);
-}
-
-/** Pin a new policy value on one check (a plan revision). */
-export async function pinPolicy(check: PlanCheck, policy: Record<string, unknown>) {
-  const section = useStore.getState().manifest?.plan;
+/** Pin a new policy value on one check (a route revision). */
+export async function pinPolicy(check: RouteCheck, policy: Record<string, unknown>) {
+  const section = useStore.getState().manifest?.route;
   if (!section) return;
-  const plan: Plan = {
-    ...section.plan,
-    checks: section.plan.checks.map((c) =>
+  const route: Route = {
+    ...section.route,
+    checks: section.route.checks.map((c) =>
       c.id === check.id ? { ...c, policy: { ...c.policy, ...policy } } : c),
   };
-  await storePlan(plan, plan.revision);
+  await storeRoute(route, route.revision);
 }
 
-/** Save a field lens's band as a plan check: the compute params become the
+/** Save a field lens's band as a check: the compute params become the
  * check's params (its cache identity) and the band its pinned policy.
  * With `checkId` the existing check updates in place; without it a NEW
  * check is added (unique id) — several checks may interpret one lens, each
@@ -242,78 +231,26 @@ export async function saveLensCheck(
   def: FieldLensDef, policy: Record<string, unknown>,
   compute: Record<string, unknown>, checkId: string | null,
 ): Promise<string | null> {
-  const section = useStore.getState().manifest?.plan;
+  const section = useStore.getState().manifest?.route;
   if (!section) return null;
   let id = checkId;
   let checks;
-  if (id && section.plan.checks.some((c) => c.id === id)) {
-    checks = section.plan.checks.map((c) => (c.id === id
+  if (id && section.route.checks.some((c) => c.id === id)) {
+    checks = section.route.checks.map((c) => (c.id === id
       ? { ...c, params: compute, policy: { ...c.policy, ...policy } } : c));
   } else {
     const base = `chk-${def.modeId}`;
     id = base;
-    for (let n = 2; section.plan.checks.some((c) => c.id === id); n++) {
+    for (let n = 2; section.route.checks.some((c) => c.id === id); n++) {
       id = `${base}-${n}`;
     }
-    checks = [...section.plan.checks, {
+    checks = [...section.route.checks, {
       id, analysis: `${def.process}/${def.analysis}`, params: compute,
-      policy, lens: def.lensKey, visible: true,
+      policy, lens: def.lensKey,
     }];
   }
-  await storePlan({ ...section.plan, checks }, section.plan.revision);
+  await storeRoute({ ...section.route, checks }, section.route.revision);
   return id;
-}
-
-/** Apply an already-previewed plan edit (the impact modal's Apply). The
- * active check re-binds afterwards: its lens params carry plan values
- * (direction, tilt, tools), which the edit may have changed. */
-export async function applyPlanEdit(edit: Partial<Plan>) {
-  const section = useStore.getState().manifest?.plan;
-  if (!section) return;
-  await storePlan({ ...section.plan, ...edit }, section.plan.revision);
-  const activeId = useV2.getState().activeCheckId;
-  const fresh = useStore.getState().manifest?.plan;
-  const active = fresh?.plan.checks.find((c) => c.id === activeId);
-  if (active) selectPlanCheck(active);
-}
-
-/** The standard checks an operation of a kind brings along — the same set
- * the route templates seed, so hand-built routes behave identically. */
-function defaultChecksFor(
-  kind: OperationKind, opId: string,
-  machineData: Record<string, any>, snapshotPath: string | null,
-): PlanCheck[] {
-  if (kind === 'laser') {
-    return [
-      { id: `chk-${opId}-detect`, analysis: 'sheet_metal/detect', params: {},
-        policy: { kind: 'stats', rule: 'sheet_detect' },
-        operation: opId, lens: 'sheet_metal:sheet_roles', visible: true },
-      { id: `chk-${opId}-pattern`, analysis: 'sheet_metal/flat_pattern',
-        params: {}, policy: { kind: 'stats', rule: 'flat_pattern' },
-        operation: opId, lens: 'sheet_metal:flat_pattern', visible: true },
-    ];
-  }
-  if (kind === 'cnc_setup') {
-    return [
-      { id: `chk-${opId}-features`, analysis: 'cnc/features', params: {},
-        policy: { kind: 'stats', rule: 'features' },
-        operation: opId, lens: 'cnc:features', visible: true },
-      { id: `chk-${opId}-reach`, analysis: 'cnc/reach_study',
-        params: { direction_indices: [],
-          tools: machineData.tools ?? defaultTools() },
-        policy: { scope: 'operation', mask: 'features' },
-        operation: opId, lens: 'cnc:reach_op', visible: true },
-    ];
-  }
-  if (kind === 'press_brake') {
-    return [
-      { id: `chk-${opId}-bend`, analysis: 'sheet_metal/bend_plan',
-        params: snapshotPath ? { machine_path: snapshotPath } : {},
-        policy: { kind: 'stats', rule: 'bend_plan' },
-        operation: opId, lens: 'sheet_metal:bend_sequence', visible: true },
-    ];
-  }
-  return [];
 }
 
 export interface AddOperationInput {
@@ -323,135 +260,64 @@ export interface AddOperationInput {
   directionIndex?: number | null;
 }
 
-/** Build the plan edit adding one operation (with its kind's standard
- * checks) — the caller stages it through the impact modal. Snapshots the
- * chosen machine template server-side first. */
-export async function buildAddOperationEdit(
-  input: AddOperationInput,
-): Promise<{ title: string; patch: Partial<Plan> } | null> {
-  const state = useStore.getState();
-  const section = state.manifest?.plan;
-  const partId = state.partId;
-  if (!section || !partId) return null;
+/** Add one operation. NOTHING is seeded with it — no checks, no machine copy.
+ * A check on the route is one somebody meant to author, and an operation
+ * names a machine from the catalogue rather than snapshotting it. */
+export async function addOperation(input: AddOperationInput): Promise<void> {
+  const section = useStore.getState().manifest?.route;
+  if (!section) return;
 
-  const existing = new Set(section.plan.operations.map((op) => op.id));
+  const existing = new Set(section.route.operations.map((op) => op.id));
   const base = input.label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '') || input.kind;
   let id = base;
   for (let n = 2; existing.has(id); n++) id = `${base}-${n}`;
 
-  let machineRef: PlanOperation['machine'];
-  let machineData: Record<string, any> = {};
-  let snapshotPath: string | null = null;
-  if (input.machine) {
-    const snap = await postPlanMachine(partId, input.machine);
-    machineRef = { template: snap.template, sha: snap.sha };
-    machineData = snap.machine;
-    snapshotPath = snap.path;
-  }
-
-  const operation: PlanOperation = {
+  // an operation is ATOMIC: one approach direction, no tilt cone. Grouping
+  // ops onto one machine setup is a later inference over the list.
+  const operation: Operation = {
     id,
     kind: input.kind,
     label: input.label.trim() || id,
-    config: {
-      ...machineData.config,
-      ...(input.kind === 'cnc_setup' ? {
-        direction_index: input.directionIndex ?? 0,
-        tilt: machineData.config?.tilt ?? 0,
-      } : {}),
-    },
-    ...(machineRef ? { machine: machineRef } : {}),
-    ...(input.kind === 'cnc_setup'
-      ? { produces: { features: 'holes' } } : {}),
+    config: input.kind === 'milling' || input.kind === 'turning'
+      ? { direction_index: input.directionIndex ?? 0 } : {},
+    ...(input.machine ? { machine: input.machine } : {}),
   };
-  return {
-    title: `Add operation ${operation.label}`,
-    patch: {
-      operations: [...section.plan.operations, operation],
-      checks: [...section.plan.checks,
-        ...defaultChecksFor(input.kind, id, machineData, snapshotPath)],
-    },
-  };
+  await storeRoute(
+    { ...section.route, operations: [...section.route.operations, operation] },
+    section.route.revision);
 }
 
-/** The plan edit removing one operation and every check it owns. */
-export function buildRemoveOperationEdit(
-  op: PlanOperation,
-): { title: string; patch: Partial<Plan> } | null {
-  const section = useStore.getState().manifest?.plan;
-  if (!section) return null;
-  return {
-    title: `Remove operation ${op.label ?? op.id}`,
-    patch: {
-      operations: section.plan.operations.filter((o) => o.id !== op.id),
-      checks: section.plan.checks.filter((c) => c.operation !== op.id),
-    },
-  };
-}
-
-/** The plan edit removing one check. */
-export function buildRemoveCheckEdit(
-  check: PlanCheck, label: string,
-): { title: string; patch: Partial<Plan> } | null {
-  const section = useStore.getState().manifest?.plan;
-  if (!section) return null;
-  return {
-    title: `Remove check ${label}`,
-    patch: {
-      checks: section.plan.checks.filter((c) => c.id !== check.id),
-    },
-  };
-}
-
-/** Seed the CNC exploration route: OP10/OP20 (±Z when sampled) plus a reach
- * study over every candidate direction and the default tool library, with
- * per-operation and route-aggregate checks slicing the SAME study result —
- * flipping an operation's direction never recomputes geometry. */
-export async function seedExploration() {
-  const state = useStore.getState();
-  const section = state.manifest?.plan;
+/** Remove one operation and every check it owns. */
+export async function removeOperation(op: Operation): Promise<void> {
+  const section = useStore.getState().manifest?.route;
   if (!section) return;
-  const directions = state.manifest?.directions ?? [];
-  if (!directions.length) {
-    state.set({ error: 'no candidate directions yet — run prep/directions '
-      + '(the crosshair view) before seeding the exploration' });
-    return;
-  }
-  // default the two ops to the most ±Z-like candidates (by vector, not by
-  // index — the axes prefix is a convention, not a guarantee)
-  const dotZ = directions.map((d) => d[2]);
-  const d10 = dotZ.indexOf(Math.max(...dotZ));
-  const d20 = dotZ.indexOf(Math.min(...dotZ));
-  const studyParams = { direction_indices: [], tools: defaultTools() };
-  const plan: Plan = {
-    ...section.plan,
-    operations: [
-      ...section.plan.operations,
-      // tilt 0 = plain 3-axis: each op covers exactly its own direction, so
-      // flipping a direction visibly changes the slice (tilt 90 would make
-      // every direction's cone identical over a small study)
-      { id: 'op10', kind: 'cnc_setup', label: 'OP10',
-        config: { direction_index: d10, tilt: 0 } },
-      { id: 'op20', kind: 'cnc_setup', label: 'OP20',
-        config: { direction_index: d20, tilt: 0 } },
-    ],
-    checks: [
-      ...section.plan.checks,
-      { id: 'chk-reach-study', analysis: 'cnc/reach_study',
-        params: studyParams, policy: { scope: 'study' },
-        lens: 'cnc:reach_study', visible: false },
-      { id: 'chk-reach-op10', analysis: 'cnc/reach_study',
-        params: studyParams, operation: 'op10',
-        policy: { scope: 'operation' }, lens: 'cnc:reach_op', visible: true },
-      { id: 'chk-reach-op20', analysis: 'cnc/reach_study',
-        params: studyParams, operation: 'op20',
-        policy: { scope: 'operation' }, lens: 'cnc:reach_op', visible: true },
-      { id: 'chk-reach-route', analysis: 'cnc/reach_study',
-        params: studyParams,
-        policy: { scope: 'route', aggregation: 'geometry-union' },
-        lens: 'cnc:reach_aggregate', visible: true },
-    ],
-  };
-  await storePlan(plan, plan.revision);
+  await storeRoute({
+    ...section.route,
+    operations: section.route.operations.filter((o) => o.id !== op.id),
+    checks: section.route.checks.filter((c) => c.operation !== op.id),
+  }, section.route.revision);
+}
+
+/** Remove one check. */
+export async function removeCheck(check: RouteCheck): Promise<void> {
+  const section = useStore.getState().manifest?.route;
+  if (!section) return;
+  await storeRoute({
+    ...section.route,
+    checks: section.route.checks.filter((c) => c.id !== check.id),
+  }, section.route.revision);
+}
+
+/** Edit one operation's config in place (e.g. its direction). */
+export async function updateOperation(
+  id: string, config: Record<string, unknown>,
+): Promise<void> {
+  const section = useStore.getState().manifest?.route;
+  if (!section) return;
+  await storeRoute({
+    ...section.route,
+    operations: section.route.operations.map((op) => (op.id === id
+      ? { ...op, config: { ...op.config, ...config } } : op)),
+  }, section.route.revision);
 }

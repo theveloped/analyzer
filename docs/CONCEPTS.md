@@ -28,8 +28,8 @@ Every concept sits in exactly one layer, and each layer has one job.
 | **Data** | what is true about the part | artifact · result · field · mask · array · association · effective face id · fingerprint |
 | **Computation** | how it is produced | process · analysis · prep stage · param · cache key · salt · job · manifest |
 | **Presentation** | how it is seen | lens · study · viewer param |
-| **Judgement** | what it means | check · policy · scope · finding · disposition · status axes |
-| **Intent** | what we will do | plan · operation · decision · candidate · assignment · route · machine template · report |
+| **Judgement** | what it means | check · policy · scope · finding · status axes |
+| **Intent** | what we will do | route · operation · assignment · machine profile |
 
 The rules that hold the layers apart:
 
@@ -37,12 +37,14 @@ The rules that hold the layers apart:
   currency gate; there is no second kind. A *study* is not a computation.
 - **A lens is never a verdict. A check never computes.** A lens shows data; a check
   interprets a stored result against a pinned policy.
+- **An operation is the only place a choice is recorded.** Lenses and studies
+  persist nothing; adding an operation is the act of deciding. There is no second
+  record of the same choice to drift away from it.
 - **What a computation was asked about is a declared param; which answer you read is
   not.** This is why browsing candidates costs nothing and changing a selection
   re-keys nothing.
 - **A field's `association` names its index space.** It is the only thing standing
   between the coarse preview and a silently wrong paint.
-- **A decision's `value` is derived, never authored.**
 
 ---
 
@@ -92,42 +94,41 @@ Status column: **modelled** (a type or validator enforces it) · **convention**
 
 | Term | Definition | Anchor | Status |
 |---|---|---|---|
-| **check** | A scoped interpretation of one stored result against a **pinned policy**, producing a verdict and findings. A check computes nothing; it may *trigger* the analysis it reads. | `plans.py` module docstring (shape); `frontend/src/v2/checks/catalog.ts` `CheckView` | modelled |
-| **policy** | The interpretation knobs pinned on a check — threshold, band, scope, aggregation. Never in the cache key. | `plans.py` module docstring; `frontend/src/v2/checks/evaluators.ts` | modelled |
-| **scope** | What a check interprets *over*: the whole part, one operation's cone, or the route. Lives in `policy.scope`. | `frontend/src/v2/checks/catalog.ts` `CheckView` | convention |
-| **finding** | An atomic issue derived from (result, policy, scope). Never hand-authored. Identity is `check id + finding code` — deliberately excluding the result hash, so a disposition survives a re-run that reproduces the same issue. | `frontend/src/v2/checks/evaluators.ts` `Finding` | modelled |
+| **check** | A scoped interpretation of one stored result against a **pinned policy**, producing a verdict and findings. A check computes nothing; it may *trigger* the analysis it reads. **Always authored** — nothing seeds checks, so a check on the route is one somebody meant. | `route.py` module docstring (shape); `frontend/src/v2/checks/catalog.ts` `CheckView` | modelled |
+| **policy** | The interpretation knobs pinned on a check — threshold, band, scope, aggregation. Never in the cache key. | `route.py` module docstring; `frontend/src/v2/checks/evaluators.ts` | modelled |
+| **scope** | What a check interprets *over*: the whole part, one operation, or the route. Lives in `policy.scope`. | `frontend/src/v2/checks/catalog.ts` `CheckView` | convention |
+| **finding** | An atomic issue derived from (result, policy, scope). Never hand-authored, and never acknowledged — there is no disposition layer, so a finding is purely derived and lives only as long as its evaluation. Identity is `check id + finding code`. | `frontend/src/v2/checks/evaluators.ts` `Finding` | modelled |
 | **severity** | A per-finding axis (`review` / `fail`), distinct from the check's verdict. | `frontend/src/v2/checks/evaluators.ts` `Finding.severity` | modelled |
-| **disposition** | An authored human judgement on a finding — who, when, why. Append-only; latest per finding wins. | `plans.py` `DISPOSITION_STATES` | modelled |
 | **eval key** | The memo key for a derived evaluation: expected result hash + policy + scope. In-memory today, not a stored derivation cache. | `frontend/src/v2/checks/catalog.ts` | convention |
 
-**Status is four independent axes, never one field. "Computed" is not "good."**
+**Status is two independent axes, never one field. "Computed" is not "good" — and
+"no checks" is not "passing."**
 
 | Axis | Values | Anchor | Status |
 |---|---|---|---|
 | **execution** | `not_run` · `queued` · `running` · `current` · `stale` · `error` | `frontend/src/v2/checks/status.ts` `ExecutionState` | modelled |
 | **verdict** | `pass` · `review` · `fail` · `na` · `unknown` — `unknown` is load-bearing: a verdict only counts when execution is current or stale. | `frontend/src/v2/checks/status.ts` `VerdictState` | modelled |
-| **disposition** | `open` · `accepted` · `customer_approval` · `resolved` (the UI writes only the first two) | `plans.py` `DISPOSITION_STATES` | modelled |
-| **audience** | Who a check is for. Documented historically as `internal/customer/report`; **in code it is a boolean** `visible`, consumed only by the publish flow. Called *audience*, not visibility — see §5. | `frontend/src/api/types.ts` `PlanCheck.visible` | aspiration (as an enum) |
+
+There were four. **disposition** (an authored human judgement on a finding) and
+**audience** (who a check is for) both belonged to the report/publish flow and
+were cut with it — see §6. A route with no checks reads as *unassessed*, and the
+rail says so rather than showing a clean slate.
 
 A part also carries its own execution-ish state — `raw` (nothing built) · `preview`
 (the first-load bundle landed, renderable and inspectable) · `meshed` (the fine mesh
-exists). Not one of the four axes; it describes the part, not a check.
+exists). Not one of the axes; it describes the part, not a check.
 
 ### Intent
 
 | Term | Definition | Anchor | Status |
 |---|---|---|---|
-| **plan** | The per-part production plan: decisions, ordered operations, checks, a revision counter. Authored; it never stores computed data. Always qualify — a *setup plan* and a *bend plan* are different objects. | `plans.py` `save_plan`, `validate_plan` | modelled |
-| **revision** | The plan's optimistic-concurrency counter. A write sends the revision it edited; a mismatch is a 409. A report freezes exactly one. | `plans.py` `save_plan` | modelled |
-| **operation** | One ordered manufacturing step in the plan: `kind`, `config`, a machine template, and its checks. This is the only word for it — see §4 on *step*. | `frontend/src/api/types.ts` `PlanOperation` | modelled |
-| **decision** | A slot holding a candidate set, a selection and a lifecycle state. `value` is derived from the selection on every save, and is the stable path checks bind to via `{"$plan": …}`. | `plans.py` `DECISION_STATES`, `normalize_decisions`; `frontend/src/api/types.ts` `DecisionSlot` | modelled |
-| **slot** | The name a decision is filed under (`decisions.directions`). The addressing unit. | `plans.py` `normalize_decisions` | convention |
-| **candidate** | One option in a decision's candidate set, with a stable id. Generated or hand-added, then curated — never implicit. | `frontend/src/api/types.ts` `Candidate` | modelled |
-| **assignment** | The partition a decision induces over the part: face → chosen candidate. Exists as `membership_k` / `brep_default_k`, indexed by **effective face id**, with `254` = conflict (wants a user cut) and `255` = unreachable. | `molding.py` `brep_defaults`, `machining.py` `setup_defaults` | convention |
-| **route** | A template that instantiates a set of operations and their checks in one go, snapshotting each machine template into the plan. | `catalogue/routes/*.yaml`; `plans.py` `instantiate_route` | modelled |
-| **machine template** | A YAML machine definition in `catalogue/machines/`, content-addressed and **copied** into `plan_assets/` on assignment so plans stay self-contained. Not the tilt-cone "machine" of a setup search — see §4. | `catalogue/machines/*.yaml` | modelled |
-| **report** | An immutable published bundle freezing one plan revision: per-check verdict, findings, screenshots, and copies of the referenced results. Always *report bundle*, never just "bundle". | `plans.py` `publish_report` | modelled |
-| **evidence** | Whatever a report copies in to make a finding checkable later — result JSON, a screenshot, a camera pose. Loose by design; say which kind. | `plans.py` `publish_report` | convention |
+| **route** | The per-part production route: ordered operations, checks, a revision counter. Authored; it never stores computed data. Was called *plan*, which meant three things — see §5. | `route.py` `save_route`, `validate_route` | modelled |
+| **revision** | The route's optimistic-concurrency counter. A write sends the revision it edited; a mismatch is a 409. | `route.py` `save_route` | modelled |
+| **operation** | One ordered manufacturing step: `kind`, `config`, an optional machine name, and the checks that name it. **Atomic** — one approach direction, one bend, one turning axis; a tilt cone is a property of a *grouping*, not of an operation. This is the only word for it — see §4 on *step*. | `route.py` `OPERATION_KINDS`; `frontend/src/api/types.ts` `Operation` | modelled |
+| **candidate** | One option a study lays out — a direction, an axis, a ranked setup plan. Free: generated client-side or computed by an analysis that takes a *set*. Comparing them persists nothing; committing to one means adding an operation. | `frontend/src/processes/directions/build.ts` `GeneratedDir`; `frontend/src/v2/table/columns.ts` | convention |
+| **assignment** | The partition induced over the part: face → chosen operation. Exists as `membership_k` / `brep_default_k`, indexed by **effective face id**, with `254` = conflict (wants a user cut) and `255` = unreachable. | `molding.py` `brep_defaults`, `machining.py` `setup_defaults` | convention |
+| **machine profile** | A YAML machine definition in `catalogue/machines/`. A plain reference library: an operation stores the **name**, nothing is copied into the workdir. Not the tilt-cone "machine" of a setup search — see §5. | `catalogue/machines/*.yaml`; `route.py` `list_machines` | modelled |
+| **grouping** | *(not built)* The object that says "these two milling ops share one 3+2 fixturing" or "these three bends share brake tooling". An inference over the operation list, never authored per operation. | — | aspiration |
 
 ---
 
@@ -142,22 +143,21 @@ then silently doing nothing:
 | param type | `processes/base.py` `PARAM_TYPES` | `Param.__post_init__` (import time) |
 | field association / role / dtype | `processes/base.py` `FIELD_ASSOCIATIONS`, `FIELD_ROLES`, `FIELD_DTYPES` | `store_result` — the one boundary every result passes through |
 | salt name | `processes/base.py` `KNOWN_SALTS` | `AnalysisDef.__post_init__`, plus an assert that `resolver._OPT_IN_SALTS` implements each |
-| decision kind, decision state, disposition state, operation kind, **stats rule** | `plans.py` (`DECISION_PROJECTIONS` is the kind vocabulary — a kind exists exactly when its `value` can be derived) | `validate_plan`, `append_disposition`, and a Pydantic `Literal` on the request |
+| operation kind, **stats rule** | `route.py` `OPERATION_KINDS`, `STATS_RULES` | `validate_route` — the one boundary every stored route passes through |
 | stats rule (frontend half) | `frontend/src/v2/checks/evaluators.ts` `StatsRule` | TS: the evaluator table and the card table are both `Record<StatsRule, …>`, so a rule with logic but no card will not compile |
-| lens curation keys, and the lenses route templates name | derived from `ProcessPlugin.modes` | `frontend/src/v2/lenses.test.ts` |
+| lens curation keys, and the lens keys named in code | derived from `ProcessPlugin.modes` | `frontend/src/v2/lenses.test.ts` |
 
 Adding a vocabulary means adding both halves, and the halves are compared by a
 test rather than by a comment: **`test_vocab.py`** parses each named TS union
 (`ParamType`, `FieldAssociation`, `FieldRole`, `FieldDtype`, `OperationKind`,
-`DecisionKind`, `DecisionState`, `DispositionState`, `StatsRule`) and asserts it
-equals the Python set. Two consequences worth knowing before you add one:
+`StatsRule`) and asserts it equals the Python set. Two consequences worth knowing before you add one:
 
 - **Declare the mirror as a named exported union**, never inline in an interface
   member. `association: 'vertex' | 'face' | …` inside `FieldDescriptor` cannot be
   found by name, so it cannot be checked; `export type FieldAssociation = …` can.
 - **A vocabulary that lives only on one side still needs its own test.** Lens keys
-  exist only in TS, so `lenses.test.ts` owns them — including the `lens:` keys
-  route templates name, which no Python check can see.
+  exist only in TS, so `lenses.test.ts` owns them — including the keys
+  `fieldLenses.ts` and `analyses.ts` name, which no Python check can see.
 
 `FieldRole` was missing `fold` for an entire schema version before this existed.
 
@@ -170,8 +170,9 @@ Adding something? It is one of these, or it does not exist yet:
 - It **compares** many candidates → a study (a surface), reading candidate-indexed
   analyses (computations).
 - It **judges** a stored result against a pinned threshold → a check.
-- It **records what we chose** → a decision on the plan.
-- It **records what we will do** → an operation.
+- It **records a choice** → an **operation**. There is no other place. If the
+  choice does not yet correspond to something you will run, it is not recorded —
+  it is a selection in a study, and studies persist nothing.
 
 If it seems to be two of these, it is two things.
 
@@ -187,10 +188,12 @@ Words that were being used for more than one thing. These are decisions.
 | **step** — retired | Say **operation**. "Step" also means the STEP file format, a bend-plan step, and a route loop variable; the UI "Step" it was competing with never existed in code or on screen. |
 | **study** — presentation only | A study is the UI comparison surface. The backend sense is now *candidate-indexed analysis*. Ids like `cnc/reach_study` keep their names — they are ids, not claims. |
 | **verdict** — the status axis only | Other senses get their own words: `stats.classification` for a sheet/tube/turning classification string; *setup re-check* for what `cnc/setup_verdict` does; *reach test* for `zmap.py` `tool_face_verdict`; *feasibility* for a mold option. The `cnc:unified` lens must not be called a verdict view. |
-| **audience**, not *visibility* | The publication status axis is **audience**. `visibility` is reserved for line-of-sight — `zmap.py` `face_visibility`, `accessibility.npy` — which is the analyzer's central primitive, and for UI show/hide. |
+| **visibility** — line-of-sight only | `zmap.py` `face_visibility`, `accessibility.npy` — the analyzer's central primitive — plus UI show/hide. The publication sense (*audience*) was cut with the report flow. |
 | **stage** — prep only | *Prep stage* is the only stage. Pipeline narratives name their commands (`mesh`, `directions`, `setups`) rather than numbering stages. |
 | **segment** — struck | The word had four unrelated uses and no definition. The concept it kept being reached for is **assignment**. Tooling *sections*, cut *paths* and line *segments* keep their own names. |
-| **plan / machine / report / bundle / catalogue** | Kept, always qualified: *production plan* vs *setup plan* vs *bend plan*; *machine template* vs the tilt-cone *machine* of a setup option; *report bundle* vs the *first-load bundle* prep stage; the YAML *catalogue* vs a *tool library*. |
+| **plan** — retired for the per-part document | Say **route**: the part's ordered operations, which is what routing means in a shop. *Plan* survives only where it is qualified and means something else — a *setup plan* (one ranked option out of `cnc/setups`) and a *bend plan* (`sheet_metal/bend_plan`). It used to mean all three at once. |
+| **route** — the part's own, not a template | A route is THIS part's operations. It used to also mean a YAML template that instantiated operations and checks; templates are gone, so the word is free. |
+| **machine / bundle / catalogue** | Kept, always qualified: *machine profile* (the YAML) vs the tilt-cone *machine* of a setup option; the *first-load bundle* prep stage; the YAML *catalogue* vs a *tool library*. |
 | **`Analysis` in `v2/analyses.ts`** | A misnomer — it is a **check preset**: its `id` is a viewer modeId and it carries a field called `analysis` pointing at the real one. Renaming is out of scope; treat the name as wrong when reading it. |
 
 ---
@@ -202,16 +205,17 @@ nothing implements them.
 
 | Term | Definition |
 |---|---|
-| **stock / workpiece state** | A decision whose candidates are stock primitives (bounding box, PCA box, bar, tube), held **declaratively** over the final-part face space — stock plus allowances, never intermediate geometry. Hard rule 3 makes intermediate meshes toxic to the cache. |
-| **material** | A decision whose value materializes into analysis params (and later, cost). |
-| **sequence** | A decision whose selection is *ordered* rather than a set — bend order being the first. |
-| **quotation input** | A structured field on an operation feeding a price. Nothing declares one: `PlanOperation.outputs` held the slot for a while with no producer or consumer and has been deleted — the shape should be decided by whatever first needs to read it. |
+| **stock / workpiece state** | Stock primitives (bounding box, PCA box, bar, tube) held **declaratively** over the final-part face space — stock plus allowances, never intermediate geometry. Hard rule 3 makes intermediate meshes toxic to the cache. Likely an operation's config rather than an object of its own. |
+| **material** | Materializes into analysis params (and later, cost). |
+| **grouping** | See §2 — the object that assigns several operations to one machine setup. `machining.cone_members` and `pressbrake/tooling.solve_setup` are the engines; the input is the authored operation list. |
+| **quotation input** | A structured field on an operation feeding a price. Nothing declares one — the shape should be decided by whatever first needs to read it. |
+| **restricted view** | The replacement for report bundles: the same app with lenses and analyses hidden, so an outside reader sees only checks. Consequence to respect now — results GC must never delete a result some check's `expected_hash` names. **disposition** (acknowledging a known finding) comes back with it. |
 
 ---
 
 ## Related
 
-- [PLAN-ARCHITECTURE.md](PLAN-ARCHITECTURE.md) — how the plan layer is built: keying
-  rules, storage, phases.
+- [ROUTE-ARCHITECTURE.md](ROUTE-ARCHITECTURE.md) — how the route layer is built:
+  the model, keying rules, storage.
 - [ANALYSIS-INVENTORY.md](ANALYSIS-INVENTORY.md) — what exists today, with counts.
 - [CODEMAP.md](CODEMAP.md) — file map and on-disk contracts.

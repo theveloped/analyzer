@@ -12,7 +12,7 @@ import { PROCESS_PLUGINS } from '../registry';
  * small curation overlay (icon, category, blurb, pinned/advanced flags).
  * A lens is anything paintable over the model — it is never a verdict; the
  * runnable checks in `analyses.ts` reference lenses but are a separate
- * concept (see docs/PLAN-ARCHITECTURE.md).
+ * concept (see docs/ROUTE-ARCHITECTURE.md).
  */
 
 /** The lens categories, in rail order. One table: the id union, the rail's

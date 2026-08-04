@@ -161,140 +161,69 @@ export interface HoleCandidate {
   detail: Record<string, any>;
 }
 
-/** Mirror of OPERATION_KINDS in plans.py, which rejects an unknown kind in
- * validate_plan. Dispatches the operation's default checks (defaultChecksFor)
- * and its card icon, so a kind nobody handles is a card with neither. */
-export type OperationKind = 'laser' | 'cnc_setup' | 'press_brake';
+/** Mirror of OPERATION_KINDS in route.py, which rejects an unknown kind in
+ * validate_route. Dispatches the operation card's icon and its configurable
+ * fields, so a kind nobody handles is a card with neither. */
+export type OperationKind = 'laser' | 'milling' | 'turning' | 'press_brake';
 
-/** Production plan sidecars + derived check status (plans.py, plan.json). */
-export interface PlanOperation {
+/** One ordered operation on the part's route (route.py, route.json).
+ *
+ * ATOMIC: one approach direction, one bend, one turning axis. Grouping
+ * several onto one machine setup is a later inference over the list, never
+ * authored here — which is why there is no tilt cone on an operation. */
+export interface Operation {
   id: string;
   kind?: OperationKind;
   label?: string;
   config?: Record<string, any>;
-  machine?: { template: string; sha: string };
+  /** Machine profile NAME from the catalogue library, not a copy. */
+  machine?: string;
   /** Declarative workpiece-state annotation: what this operation produces
    * over the final-part face space (e.g. {features: "holes"}). */
   produces?: Record<string, any>;
 }
 
-export interface RouteSummary {
+export interface MachineSummary {
   name: string;
-  title: string;
-  operations: number;
+  label: string;
+  kind?: string | null;
+  /** Repo-relative catalogue path, for check params that name a machine. */
+  path: string;
 }
 
-export interface PlanCheck {
+export interface RouteCheck {
   id: string;
   /** Backend analysis id, "process/analysis". */
   analysis: string;
-  /** Declared analysis params; values may be {"$plan": "dotted.path"}. */
+  /** Declared analysis params, literal — these ARE the cache key's input. */
   params: Record<string, any>;
   /** Pinned interpretation thresholds — the verdict's inputs. */
   policy?: Record<string, any>;
   operation?: string | null;
   /** Preferred inspection lens key ("processId:modeId"). */
   lens?: string;
-  visible?: boolean;
 }
 
-/** One option in a decision's candidate set (plans.py decision slots). */
-export interface Candidate {
-  id: string;
-  /** Row index into the artifact the study indexes by (directions.npy). */
-  index?: number;
-  label?: string;
-  source?: string;
-  [key: string]: any;
-}
-
-/** Mirror of DECISION_PROJECTIONS in plans.py — a kind exists exactly when the
- * backend can derive a `value` for it, which is why the two are one table. */
-export type DecisionKind = 'direction_set';
-
-/** Mirror of DECISION_STATES in plans.py. */
-export type DecisionState = 'provisional' | 'selected' | 'locked';
-
-/** A curated candidate set plus its selection: propose → compare → commit.
- * `value` is DERIVED server-side from `selected` (plans.normalize_decisions)
- * — it is the stable path checks bind to via {"$plan": …}. */
-export interface DecisionSlot {
-  kind: DecisionKind;
-  candidates: Candidate[];
-  selected: string[] | string;
-  value?: Record<string, any>;
-  state?: DecisionState;
-}
-
-export interface Plan {
+export interface Route {
   schema: number;
   revision: number;
-  decisions: Record<string, any>;
-  operations: PlanOperation[];
-  checks: PlanCheck[];
+  operations: Operation[];
+  checks: RouteCheck[];
 }
 
-/** Server-derived execution facts for one plan check (never authored). */
-export interface PlanCheckStatus {
+/** Server-derived execution facts for one check (never authored). */
+export interface RouteCheckStatus {
   expected_hash: string | null;
-  /** Materialized params — submit these verbatim to run the check. */
+  /** Merged params — submit these verbatim to run the check. */
   params: Record<string, any> | null;
   exists: boolean;
   stale: boolean;
   error: string | null;
 }
 
-/** Mirror of DISPOSITION_STATES in plans.py, which validates it in
- * append_disposition and again as a Literal on the request model. */
-export type DispositionState = 'open' | 'accepted' | 'customer_approval'
-  | 'resolved';
-
-export interface DispositionEvent {
-  finding_id: string;
-  state: DispositionState;
-  by: string;
-  at: string;
-  why: string;
-  evidence: Record<string, any>;
-}
-
-export interface PlanSection {
-  plan: Plan;
-  checks: Record<string, PlanCheckStatus>;
-  /** Latest disposition per finding id. */
-  dispositions: Record<string, DispositionEvent>;
-}
-
-/** Published report bundle (plans.py reports/<rid>/report.json). */
-export interface ReportCheck {
-  id: string;
-  label: string;
-  verdict: string;
-  findings: { id: string; code?: string; label?: string; detail?: string;
-    severity?: string }[];
-  evidence: Record<string, any>;
-  /** Bundle-relative shot filename, when captured. */
-  shot?: string | null;
-}
-
-export interface Report {
-  schema: number;
-  rid: string;
-  title: string;
-  part: string;
-  plan_revision: number;
-  published_at: string;
-  dispositions: Record<string, DispositionEvent>;
-  checks: ReportCheck[];
-}
-
-export interface ReportSummary {
-  rid: string;
-  title: string;
-  part: string;
-  plan_revision: number;
-  published_at: string;
-  check_count: number;
+export interface RouteSection {
+  route: Route;
+  checks: Record<string, RouteCheckStatus>;
 }
 
 export interface Manifest {
@@ -332,8 +261,8 @@ export interface Manifest {
   assembly_url?: string;
   /** AAG stage summary (prep/aag): stats + mesh staleness */
   aag?: { schema: number; stats: Record<string, any>; stale: boolean };
-  /** production plan + derived check status (docs/PLAN-ARCHITECTURE.md) */
-  plan?: PlanSection;
+  /** operations + checks + derived check status (docs/ROUTE-ARCHITECTURE.md) */
+  route?: RouteSection;
 }
 
 /** Mirror of PARAM_TYPES in processes/base.py, which validates it in

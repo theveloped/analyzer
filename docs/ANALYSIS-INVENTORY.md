@@ -2,7 +2,7 @@
 
 A complete audit of the analysis surface as of 2026-07-29, written to drive the
 "keep / clean up / how to visualize" pass over the v2 UI. Vocabulary comes from
-docs/CONCEPTS.md, plan-layer rules from docs/PLAN-ARCHITECTURE.md; contracts from
+docs/CONCEPTS.md, plan-layer rules from docs/ROUTE-ARCHITECTURE.md; contracts from
 docs/CODEMAP.md. When code and this
 file disagree, the code wins.
 
@@ -180,8 +180,10 @@ Three evaluator kinds in `v2/checks/evaluators.ts`, dispatched by
 | `stats`                                    | `STATS_VIEWS` rules                                                                | 4 analyses: `sheet_detect`, `flat_pattern`, `bend_plan`, `features` | stored stats predicate; `features` is `na` (exploration only)   |
 
 
-Route template `catalogue/routes/laser_cnc_brake.yaml` wires: sheet detect →
-flat pattern → cnc features → reach (op-scoped, feature-masked) → bend plan.
+Nothing wires these automatically any more: route templates and per-kind default
+checks were cut 2026-07-31, so a check reaches the route only by being authored
+(a lens band, or a study total). A mixed laser → milling → brake route is a
+matter of adding those operations and the checks you want on them.
 
 **So 9 of 24 analyses can become a check. The other 15 are lens-only.**
 

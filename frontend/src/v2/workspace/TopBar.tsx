@@ -5,7 +5,7 @@ import { useStore } from '../../state/store';
 /**
  * Slim workspace header: breadcrumb + units. Part selection lives in the
  * global sidebar (nav/AppSidebar); process is not a top-level switch — the
- * inspection lenses and checks carry it (see docs/PLAN-ARCHITECTURE.md).
+ * inspection lenses and checks carry it (see docs/ROUTE-ARCHITECTURE.md).
  */
 export function TopBar() {
   const manifest = useStore((s) => s.manifest);

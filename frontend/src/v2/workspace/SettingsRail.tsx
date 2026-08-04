@@ -1,7 +1,7 @@
 import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 import clsx from 'clsx';
 import { ChevronDown, Pin, Play, RotateCw, Settings2, Sparkles } from 'lucide-react';
-import type { PlanCheck, PlanCheckStatus } from '../../api/types';
+import type { RouteCheck, RouteCheckStatus } from '../../api/types';
 import { Button } from '../../catalyst/button';
 import { Input } from '../../catalyst/input';
 import { useStore } from '../../state/store';
@@ -15,9 +15,9 @@ import { useV2 } from '../store';
 import { BoolRow, ComputeInput } from './computeFields';
 import { FindingRow } from './findings';
 import {
-  pinPolicy, useActiveAnalysis, useActivePlanCheck, useCheckState,
+  pinPolicy, useActiveAnalysis, useActiveRouteCheck, useCheckState,
 } from './hooks';
-import { runAnalysis, runPlanCheck, useBusy } from './run';
+import { runAnalysis, runRouteCheck, useBusy } from './run';
 import { hintCls } from '../components/styles';
 
 const labelCls = 'text-sm/6 font-medium text-zinc-950 dark:text-white';
@@ -75,7 +75,7 @@ function DisplayAdvanced({ a }: { a: Analysis }) {
 
 /** Pinned policy vs the live exploration slider: the slider recolors freely;
  * only pinning it changes what the verdict is judged against (plan revision). */
-function PolicyRow({ a, check }: { a: Analysis; check: PlanCheck }) {
+function PolicyRow({ a, check }: { a: Analysis; check: RouteCheck }) {
   const params = useStore((s) => s.viewerParams[a.process]) ?? {};
   const slider = Number(params[a.thresholdParam] ?? a.thresholdDefault);
   const pinned = Number(check.policy?.threshold ?? a.thresholdDefault);
@@ -100,7 +100,7 @@ function PolicyRow({ a, check }: { a: Analysis; check: PlanCheck }) {
 }
 
 function PlanFindings({ a, check, status }: {
-  a: Analysis; check: PlanCheck; status: PlanCheckStatus | undefined;
+  a: Analysis; check: RouteCheck; status: RouteCheckStatus | undefined;
 }) {
   const manifest = useStore((s) => s.manifest);
   const partId = useStore((s) => s.partId);
@@ -115,7 +115,7 @@ function PlanFindings({ a, check, status }: {
   }
   return (
     <div className="flex flex-col gap-2">
-      {findings.map((f) => <FindingRow key={f.id} finding={f} partId={partId} />)}
+      {findings.map((f) => <FindingRow key={f.id} finding={f} />)}
     </div>
   );
 }
@@ -131,7 +131,7 @@ export function SettingsRail() {
   const partId = useStore((s) => s.partId);
   const busy = useBusy();
   const heuristic = useCheckState(a);
-  const planCheck = useActivePlanCheck();
+  const planCheck = useActiveRouteCheck();
 
   let state: CheckState = heuristic;
   if (planCheck) {
@@ -161,7 +161,7 @@ export function SettingsRail() {
 
       <Button
         onClick={() => (planCheck
-          ? runPlanCheck(planCheck.check, planCheck.status)
+          ? runRouteCheck(planCheck.check, planCheck.status)
           : runAnalysis(a))}
         disabled={!meshReady || busy || !!planCheck?.status?.error}
         className="w-full"

@@ -47,9 +47,10 @@ export interface V2State {
    * a settings panel, so one shared number would over-widen everything.
    * Survives reload (the only other persisted state is the direction setup). */
   railWidths: Record<string, number>;
-  /** Optimistic view of the direction selection, so a row click lands on the
-   * frame it happened rather than a plan round trip later. The plan write
-   * follows behind; `part` guards against showing another part's selection. */
+  /** Which candidate directions the study is comparing. Exploration state:
+   * a study persists NOTHING, so this never leaves the browser — the choice
+   * is recorded by adding an operation. `part` guards against showing
+   * another part's selection. */
   selection: { part: string | null; keys: string[] };
 
   setAdvanced: (advanced: boolean) => void;

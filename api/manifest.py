@@ -14,7 +14,7 @@ import re
 import numpy as np
 
 import pipeline
-import plans
+import route as route_mod
 from loguru import logger
 
 from processes import prep as prep_stage
@@ -347,10 +347,11 @@ def build_manifest(root, part):
             "stale": not prep_stage.aag_current(workdir, {}),
         }
 
-    # the production plan + derived per-check status (docs/PLAN-ARCHITECTURE.md);
-    # pure fingerprint/hash arithmetic, so it stays cheap enough to rebuild here.
-    # Present even before meshing — plans are independent of the mesh.
-    manifest["plan"] = _json_safe(plans.plan_section(workdir))
+    # the route (operations + checks) + derived per-check status
+    # (docs/ROUTE-ARCHITECTURE.md); pure fingerprint/hash arithmetic, so it
+    # stays cheap enough to rebuild here. Present even before meshing — the
+    # route is independent of the mesh.
+    manifest["route"] = _json_safe(route_mod.route_section(workdir))
 
     if not is_meshed:
         # Results that do not live in the fine index space are meaningful on
