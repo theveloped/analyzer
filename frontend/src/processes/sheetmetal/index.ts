@@ -52,11 +52,13 @@ function verdictLine(result: ResultEntry): string {
 
 const rolesMode: ViewMode = {
   id: 'sheet_roles',
+  // no user knobs — the paint reads the stored result
+  params: [],
   label: 'Sheet face roles',
   async paint(ctx) {
     const result = latestSheet(ctx, 'detect');
     if (!result) {
-      throw new Error('no sheet detection result — run sheet_metal/detect in the Compute panel (needs prep/aag)');
+      throw new Error('no sheet detection result — run sheet_metal/detect in the Compute rail (needs prep/aag)');
     }
     const roles = await sheetField(ctx, result, 'face_role') as Uint8Array;
     const info = paintCategory(ctx, roles, ROLE_LABELS, ROLE_COLORS);
@@ -67,10 +69,12 @@ const rolesMode: ViewMode = {
 const bendRadiusMode: ViewMode = {
   id: 'bend_radius',
   label: 'Bend radius',
+  // no user knobs — the paint reads the stored result
+  params: [],
   async paint(ctx) {
     const result = latestSheet(ctx, 'detect');
     if (!result) {
-      throw new Error('no sheet detection result — run sheet_metal/detect in the Compute panel (needs prep/aag)');
+      throw new Error('no sheet detection result — run sheet_metal/detect in the Compute rail (needs prep/aag)');
     }
     const radius = await sheetField(ctx, result, 'bend_radius') as Float32Array;
     // rule of thumb: inner bend radius below the sheet thickness risks
@@ -134,7 +138,6 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
 
 import { bendPlanMode, inspectBendPlan } from './bendplan';
 import { bendSequenceMode } from './bendsequence';
-import { SheetMetalControls } from './Controls';
 import { patternMode } from './pattern';
 
 async function inspectAll(face: number, ctx: ViewCtx): Promise<string[]> {
@@ -149,6 +152,5 @@ export const sheetMetalPlugin: ProcessPlugin = {
   modes: [patternMode, bendPlanMode, bendSequenceMode, rolesMode,
           bendRadiusMode, faceAttrsMode, brepFacesMode, highlightsMode],
   defaults: () => ({}),
-  Controls: SheetMetalControls,
   inspect: inspectAll,
 };

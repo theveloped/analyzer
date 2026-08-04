@@ -1,24 +1,10 @@
 import clsx from 'clsx';
 import { Input } from '../../catalyst/input';
-import { Switch } from '../../catalyst/switch';
 import type { ComputeField } from '../analyses';
 import { useV2 } from '../store';
+import { RailBool } from '../components/rail';
 import { hintCls, labelCls } from '../components/styles';
 
-
-export function BoolRow({ label, hint, checked, onChange }: {
-  label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <div>
-        <div className={labelCls}>{label}</div>
-        {hint && <p className={hintCls}>{hint}</p>}
-      </div>
-      <Switch checked={checked} onChange={onChange} aria-label={label} />
-    </div>
-  );
-}
 
 /** One compute-time knob bound to the v2 store's per-analysis payload
  * (keyed by an arbitrary id — the catalog analysis id or a lens key). */
@@ -29,7 +15,7 @@ export function ComputeInput({ computeId, field }: {
   const setCompute = useV2((s) => s.setCompute);
   if (field.type === 'bool') {
     return (
-      <BoolRow
+      <RailBool
         label={field.label}
         hint={field.hint}
         checked={value === true}

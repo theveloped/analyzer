@@ -1,10 +1,14 @@
 import clsx from 'clsx';
-import { Check, MousePointerClick, Plus, Save, Trash2 } from 'lucide-react';
+import { Check, MousePointerClick, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { PmiDatum, PmiDimension, PmiTolerance } from '../../api/types';
 import { putPmi } from '../../api/client';
+import { Button } from '../../catalyst/button';
 import { useStore } from '../../state/store';
 import { refreshManifest } from '../../viewer/controller';
+import {
+  RailDisclosure, RailEditorShell, RailError, RailSection,
+} from '../components/rail';
 import { hintCls } from '../components/styles';
 import { lensByMode } from '../lenses';
 import { ToleranceFrame } from './ControlFrame';
@@ -20,9 +24,12 @@ import {
 } from './pmiVocab';
 
 const PROCESS = lensByMode('pmi')!.processId;
-const section = 'mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400';
+// The dense inline field of a control-frame row — fifteen of them sit at a
+// pinned width (w-10 … w-28) inside a single line of GD&T. Deliberately NOT
+// Catalyst's `Input`/`Select`: those are block controls with their own ring and
+// 10px vertical padding, which is right for a settings form and wrong inside a
+// frame. Buttons and section titles here DO use the shared components.
 const field = 'w-full rounded-md border border-zinc-500/40 bg-transparent px-2 py-1 text-sm text-zinc-800 dark:text-zinc-100';
-const smallBtn = 'inline-flex items-center gap-1 rounded-md border border-zinc-500/40 px-2 py-1 text-xs font-medium text-zinc-600 transition hover:bg-zinc-950/5 dark:text-zinc-300 dark:hover:bg-white/5';
 
 const num = (v: string): number | null => (v.trim() === '' ? null : Number(v));
 
@@ -71,26 +78,21 @@ export function PmiEditor({ onDone }: { onDone: () => void }) {
     }
   }
 
-  const container = 'flex min-h-full flex-col gap-4 p-4';
-
   return (
-    <div className={container}>
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm/6 font-semibold text-zinc-950 dark:text-white">Edit PMI / GD&T</h2>
-        <div className="flex items-center gap-1.5">
-          <button type="button" onClick={save} disabled={!dirty || saving}
-            className={clsx(smallBtn, 'border-blue-500/40 text-blue-700 disabled:opacity-40 dark:text-blue-300')}>
-            <Save className="size-3.5" /> {saving ? 'Saving…' : 'Save'}
-          </button>
-          <button type="button" onClick={onDone} className={smallBtn}>Done</button>
-        </div>
-      </div>
-      <p className={hintCls}>
-        Author tolerance <b>features</b>: define the frame, then pick the faces it
-        controls. Datums are referenced by letter. Only constructs that survive an
-        AP242 export are offered.
-      </p>
-
+    <RailEditorShell
+      title="Edit PMI / GD&T"
+      blurb={(
+        <>
+          Author tolerance <b>features</b>: define the frame, then pick the faces
+          it controls. Datums are referenced by letter. Only constructs that
+          survive an AP242 export are offered.
+        </>
+      )}
+      dirty={dirty}
+      saving={saving}
+      onSave={() => { void save(); }}
+      onDone={onDone}
+    >
       {pick && (
         <div className="flex items-center justify-between gap-2 rounded-md bg-blue-500/10 p-2 text-xs/5 text-blue-700 dark:text-blue-300">
           <span className="flex items-center gap-1.5">
@@ -100,19 +102,20 @@ export function PmiEditor({ onDone }: { onDone: () => void }) {
           <button type="button" onClick={() => setPick(null)} className="shrink-0 hover:underline">done</button>
         </div>
       )}
-      {error && <p className={clsx(hintCls, 'rounded-md bg-red-500/10 p-2 text-red-600 dark:text-red-400')}>⚠ {error}</p>}
+      <RailError>{error}</RailError>
       {!dirty && warnings.length > 0 && (
-        <details className="rounded-md bg-amber-500/5 p-2">
-          <summary className={clsx(hintCls, 'cursor-pointer text-amber-700 dark:text-amber-500')}>
-            saved · {warnings.length} round-trip caveat{warnings.length > 1 ? 's' : ''}
-          </summary>
-          <ul className={clsx('mt-1 list-disc pl-4', hintCls)}>{warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
-        </details>
+        <RailDisclosure
+          label={`saved · ${warnings.length} round-trip caveat`
+            + `${warnings.length > 1 ? 's' : ''}`}
+          gap={2}
+        >
+          <ul className={clsx('list-disc pl-4', hintCls)}>
+            {warnings.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </RailDisclosure>
       )}
 
-      {/* datums */}
-      <div>
-        <div className={section}>Datums</div>
+      <RailSection title="Datums">
         <div className="flex flex-col gap-1.5">
           {doc.datums.map((d) => (
             <DatumRow key={d.id} datum={d} pickActive={pick?.key === 'datums' && pick.id === d.id}
@@ -122,13 +125,13 @@ export function PmiEditor({ onDone }: { onDone: () => void }) {
               onDelete={() => { setPick(null); apply((p) => deleteEntity(p, 'datums', d.id)); }} />
           ))}
         </div>
-        <button type="button" onClick={() => apply((p) => addEntity(p, 'datums', newDatum(p)))}
-          className={clsx(smallBtn, 'mt-1.5')}><Plus className="size-3.5" /> Add datum</button>
-      </div>
+        <Button outline className="mt-1.5"
+          onClick={() => apply((p) => addEntity(p, 'datums', newDatum(p)))}>
+          <Plus data-slot="icon" /> Add datum
+        </Button>
+      </RailSection>
 
-      {/* control frames */}
-      <div>
-        <div className={section}>Control frames</div>
+      <RailSection title="Control frames">
         <div className="flex flex-col gap-2.5">
           {doc.tolerances.map((t) => (
             <ToleranceRow key={t.id} tol={t} datums={doc.datums}
@@ -144,14 +147,14 @@ export function PmiEditor({ onDone }: { onDone: () => void }) {
           <select value={newChar} onChange={(e) => setNewChar(e.target.value)} className={field}>
             {CHARACTERISTICS.map((c) => <option key={c.type} value={c.type}>{c.glyph} {c.label}</option>)}
           </select>
-          <button type="button" onClick={() => apply((p) => addEntity(p, 'tolerances', newTolerance(p, newChar)))}
-            className={smallBtn}><Plus className="size-3.5" /> Add</button>
+          <Button outline
+            onClick={() => apply((p) => addEntity(p, 'tolerances', newTolerance(p, newChar)))}>
+            <Plus data-slot="icon" /> Add
+          </Button>
         </div>
-      </div>
+      </RailSection>
 
-      {/* dimensions */}
-      <div>
-        <div className={section}>Dimensions</div>
+      <RailSection title="Dimensions">
         <div className="flex flex-col gap-2.5">
           {doc.dimensions.map((d) => (
             <DimensionRow key={d.id} dim={d} pickActive={pick?.key === 'dimensions' && pick.id === d.id}
@@ -166,11 +169,13 @@ export function PmiEditor({ onDone }: { onDone: () => void }) {
           <select value={newDim} onChange={(e) => setNewDim(e.target.value)} className={field}>
             {DIMENSION_KINDS.map((k) => <option key={k.type} value={k.type}>{k.label}</option>)}
           </select>
-          <button type="button" onClick={() => apply((p) => addEntity(p, 'dimensions', newDimension(p, newDim)))}
-            className={smallBtn}><Plus className="size-3.5" /> Add</button>
+          <Button outline
+            onClick={() => apply((p) => addEntity(p, 'dimensions', newDimension(p, newDim)))}>
+            <Plus data-slot="icon" /> Add
+          </Button>
         </div>
-      </div>
-    </div>
+      </RailSection>
+    </RailEditorShell>
   );
 }
 

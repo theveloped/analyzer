@@ -1,18 +1,18 @@
 import clsx from 'clsx';
-import { Crosshair, EyeOff, Plus, X } from 'lucide-react';
-import { useState } from 'react';
+import { Crosshair, EyeOff, X } from 'lucide-react';
 import { Button } from '../../catalyst/button';
 import { Input } from '../../catalyst/input';
-import { Switch } from '../../catalyst/switch';
 import type { SourceKind } from '../../processes/directions/build';
 import { PROVENANCE_LABELS } from '../../processes/directions/modes';
 import { provenanceCss } from '../../processes/directions/state';
 import { useDirectionSetup } from '../../processes/directions/useSetup';
 import { useStore } from '../../state/store';
+import {
+  Rail, RailBool, RailDivider, RailField, RailHeader, RailSection, RailStats,
+} from '../components/rail';
+import { VectorListField } from '../components/rail/fields/VectorListField';
 import { hintCls } from '../components/styles';
 
-const labelCls = 'text-sm/6 font-medium text-zinc-950 dark:text-white';
-const num = (v: any) => { const n = parseFloat(v); return isFinite(n) ? n : NaN; };
 const sameSet = (a: number[], b: number[]) =>
   a.length === b.length && a.every((x, i) => x === b[i]);
 
@@ -25,29 +25,21 @@ function Swatch({ source }: { source: SourceKind }) {
   );
 }
 
-function BoolRow({ label, hint, checked, onChange }: {
-  label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <div>
-        <div className={labelCls}>{label}</div>
-        {hint && <p className={hintCls}>{hint}</p>}
-      </div>
-      <Switch checked={checked} onChange={onChange} aria-label={label} />
-    </div>
-  );
-}
-
+/**
+ * The candidate-direction setup: a LIVE client-side set, not a param bag and
+ * not a job — `useDirectionSetup` owns it and the arrows follow every edit.
+ *
+ * That is why this rail is not driven by `ViewMode.params` like a lens is: the
+ * generated form edits `viewerParams`, and this edits a setup object with its
+ * own patch semantics plus viewer pick state. The xyz editor it used to own IS
+ * generic, though, and now lives in `components/rail/fields` as the default
+ * widget for every `vector_list` param.
+ */
 export function DirectionsRail() {
   const manifest = useStore((s) => s.manifest);
   const stats = useStore((s) => s.stats);
   const { setup, patch, params, setParam } = useDirectionSetup();
   const setUi = (name: string, value: any) => setParam('directions', name, value);
-
-  const [ax, setAx] = useState('0');
-  const [ay, setAy] = useState('0');
-  const [az, setAz] = useState('1');
 
   const picking = !!params.pickMode;
   const pendingBrep: number[] = params.pendingBrep ?? [];
@@ -65,11 +57,6 @@ export function DirectionsRail() {
     { src: 'average_normal', n: setup.brepGroups.length },
   ] as { src: SourceKind; n: number }[]).filter((s) => s.n > 0);
 
-  function addAxis() {
-    const v = [num(ax), num(ay), num(az)];
-    if (v.some((c) => !isFinite(c)) || v.every((c) => c === 0)) return;
-    patch({ manual: [...setup.manual, v] });
-  }
   function togglePick() {
     if (!picking) setUi('highlightBrep', []);
     setUi('pickMode', !picking);
@@ -85,23 +72,17 @@ export function DirectionsRail() {
     setUi('highlightBrep', sameSet(highlightBrep, group) ? [] : group);
   }
 
-  const fmt = (v: number[]) => v.map((c) => (+c).toFixed(2)).join(', ');
-
   return (
-    <div className="flex min-h-full flex-col gap-4 p-4">
-      <div>
-        <div className="flex items-center gap-2">
-          <Crosshair className="size-4 text-blue-600 dark:text-blue-400" />
-          <h2 className="text-sm/6 font-semibold text-zinc-950 dark:text-white">Candidate directions</h2>
-        </div>
-        <p className={clsx('mt-1', hintCls)}>
-          The orientations to investigate. Arrows update live; accessibility is computed later when a check needs it.
-        </p>
-      </div>
+    <Rail>
+      <RailHeader
+        icon={Crosshair}
+        title="Candidate directions"
+        blurb="The orientations to investigate. Arrows update live;
+          accessibility is computed later when a check needs it."
+      />
 
       {summary.length > 0 && (
-        <div>
-          <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">Sources</div>
+        <RailSection title="Sources">
           <ul className="flex flex-col gap-1">
             {summary.map(({ src, n }) => (
               <li key={src} className="flex items-center gap-2 text-sm/5 text-zinc-700 dark:text-zinc-300">
@@ -111,47 +92,42 @@ export function DirectionsRail() {
               </li>
             ))}
           </ul>
-        </div>
+        </RailSection>
       )}
 
-      <div className="h-px bg-zinc-950/10 dark:bg-white/10" />
+      <RailDivider />
 
-      <div>
-        <label className={labelCls}>Uniform sample count</label>
-        <div className="mt-2">
-          <Input
-            type="number" min="0" step="1" value={String(setup.count)}
-            onChange={(e) => patch({ count: Math.max(0, parseInt(e.target.value) || 0) })}
-          />
-        </div>
-      </div>
-      <BoolRow label="World X / Y / Z axes" checked={setup.axes}
+      <RailField label="Uniform sample count">
+        <Input
+          type="number" min="0" step="1" value={String(setup.count)}
+          aria-label="Uniform sample count"
+          onChange={(e) => patch({ count: Math.max(0, parseInt(e.target.value) || 0) })}
+        />
+      </RailField>
+      <RailBool label="World X / Y / Z axes" checked={setup.axes}
         onChange={(v) => patch({ axes: v })} />
-      <BoolRow label="Bounding-box (PCA) axes"
+      <RailBool label="Bounding-box (PCA) axes"
         hint="Part-aligned principal axes." checked={setup.bboxAxes}
         onChange={(v) => patch({ bboxAxes: v })} />
-      <BoolRow label={`Hole / cylinder axes${holeN ? ` (${holeN})` : ''}`}
+      <RailBool label={`Hole / cylinder axes${holeN ? ` (${holeN})` : ''}`}
         hint="Drill/bore axes from the analytic surfaces." checked={setup.holeAxes}
         onChange={(v) => patch({ holeAxes: v })} />
 
-      <div className="h-px bg-zinc-950/10 dark:bg-white/10" />
+      <RailDivider />
 
-      <div>
-        <label className={labelCls}>Add manual axis</label>
-        <div className="mt-2 flex items-center gap-2">
-          <Input type="number" step="0.1" aria-label="x" value={ax} onChange={(e) => setAx(e.target.value)} />
-          <Input type="number" step="0.1" aria-label="y" value={ay} onChange={(e) => setAy(e.target.value)} />
-          <Input type="number" step="0.1" aria-label="z" value={az} onChange={(e) => setAz(e.target.value)} />
-          <Button outline onClick={addAxis} aria-label="Add axis"><Plus data-slot="icon" /></Button>
-        </div>
-      </div>
+      <RailField label="Manual axes">
+        <VectorListField
+          vectors={setup.manual}
+          onChange={(manual) => patch({ manual })}
+        />
+      </RailField>
 
-      <div>
-        <label className={labelCls}>Averaged normal from BREP faces</label>
-        <p className={clsx('mt-1', hintCls)}>
-          Pick whole BREP faces in the viewer — their mean normal becomes one direction (for curved walls).
-        </p>
-        <div className="mt-2 flex items-center gap-2">
+      <RailField
+        label="Averaged normal from BREP faces"
+        hint="Pick whole BREP faces in the viewer — their mean normal becomes
+          one direction (for curved walls)."
+      >
+        <div className="flex items-center gap-2">
           {picking ? (
             <Button color="blue" onClick={togglePick}>
               <Crosshair data-slot="icon" /> Picking ({pendingBrep.length})
@@ -163,23 +139,11 @@ export function DirectionsRail() {
           )}
           <Button onClick={addGroup} disabled={!pendingBrep.length}>Add</Button>
         </div>
-      </div>
+      </RailField>
 
-      {(setup.manual.length > 0 || setup.brepGroups.length > 0) && (
-        <div>
-          <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">Added directions</div>
+      {setup.brepGroups.length > 0 && (
+        <RailSection title="Averaged groups">
           <ul className="flex flex-col gap-1">
-            {setup.manual.map((v, i) => (
-              <li key={`m${i}`} className="flex items-center gap-2 text-sm/5 text-zinc-700 dark:text-zinc-300">
-                <Swatch source="manual" />
-                <span className="flex-1">[{fmt(v)}]</span>
-                <button type="button" aria-label="remove"
-                  className="text-zinc-400 hover:text-red-600"
-                  onClick={() => patch({ manual: setup.manual.filter((_, j) => j !== i) })}>
-                  <X className="size-3.5" />
-                </button>
-              </li>
-            ))}
             {setup.brepGroups.map((g, i) => {
               const on = sameSet(highlightBrep, g);
               return (
@@ -203,7 +167,7 @@ export function DirectionsRail() {
               );
             })}
           </ul>
-        </div>
+        </RailSection>
       )}
 
       {setup.suppressed.length > 0 && (
@@ -212,12 +176,7 @@ export function DirectionsRail() {
         </Button>
       )}
 
-      {stats && (
-        <div className="mt-auto">
-          <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">In view</div>
-          <p className={clsx('whitespace-pre-wrap', hintCls)}>{stats}</p>
-        </div>
-      )}
-    </div>
+      {stats && <RailStats className="mt-auto" text={stats} />}
+    </Rail>
   );
 }

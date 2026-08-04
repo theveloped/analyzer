@@ -1,10 +1,16 @@
-// "Split faces" section shared by the mold-assignment and CNC setups
-// controls: the split-mode toggle, cut count, undo/clear buttons, a
-// re-run button for stale results and Escape-to-cancel handling.
+// "Split faces" section shared by the mold-assignment, CNC setups and turning
+// rails: the split-mode toggle, cut count, undo/clear buttons, a re-run button
+// for stale results and Escape-to-cancel handling.
+//
+// Built on the v2 rail vocabulary: it is embedded in three different surfaces,
+// so it was the one piece forcing all three to keep hosting the v1 markup.
 
 import { useEffect, useState } from 'react';
 import { fetchSplits, type SplitsState } from '../api/client';
+import { Button } from '../catalyst/button';
 import { useStore } from '../state/store';
+import { RailAlert, RailBool, RailSection } from '../v2/components/rail';
+import { hintCls } from '../v2/components/styles';
 import {
   clearAllCuts, resubmitAssignment, undoLastCut, type SplitHost,
 } from './splits';
@@ -56,61 +62,60 @@ export function SplitControls({ host }: { host: SplitHost }) {
   const cuts = state?.cuts.length ?? 0;
 
   return (
-    <>
-      <label className="check">
-        <input
-          type="checkbox" checked={params.splitMode === true}
-          onChange={(e) => {
-            set('splitMode', e.target.checked);
+    <RailSection title="Face splits">
+      <div className="flex flex-col gap-2">
+        <RailBool
+          label="Split faces"
+          hint={params.splitMode
+            ? 'Click a face, then two of its marked wire points (corner or '
+              + 'edge midpoint) — the cut runs between them. Esc cancels.'
+            : 'Two boundary clicks cut one face in two.'}
+          checked={params.splitMode === true}
+          onChange={(v) => {
+            set('splitMode', v);
             set('splitFace', null);
             set('splitStart', null);
           }}
         />
-        split faces (two boundary clicks)
-      </label>
 
-      {params.splitMode && (
-        <div className="hint">
-          click a face, then two of its marked wire points (corner or edge
-          midpoint) — the cut runs between them · Esc cancels
-        </div>
-      )}
+        {state?.stale && (
+          <RailAlert>
+            Cuts reference an older mesh — clear them to split again.
+          </RailAlert>
+        )}
 
-      {state?.stale && (
-        <div className="hint">
-          ⚠ cuts reference an older mesh — clear them to split again
-        </div>
-      )}
+        {cuts > 0 && (
+          <>
+            <RailBool
+              label="Show cut lines"
+              checked={params.showCuts !== false}
+              onChange={(v) => set('showCuts', v)}
+            />
+            <div className="flex gap-1.5">
+              <Button outline disabled={busy}
+                onClick={() => run(() => undoLastCut(host))}>
+                {`Undo last (${cuts})`}
+              </Button>
+              <Button plain disabled={busy}
+                onClick={() => run(() => clearAllCuts(host))}>
+                Clear all
+              </Button>
+            </div>
+          </>
+        )}
 
-      {cuts > 0 && (
-        <label className="check">
-          <input
-            type="checkbox" checked={params.showCuts !== false}
-            onChange={(e) => set('showCuts', e.target.checked)}
-          />
-          show cut lines
-        </label>
-      )}
-
-      {cuts > 0 && (
-        <div className="row">
-          <button disabled={busy} onClick={() => run(() => undoLastCut(host))}>
-            {`undo last cut (${cuts})`}
-          </button>
-          <button disabled={busy} onClick={() => run(() => clearAllCuts(host))}>
-            clear all cuts
-          </button>
-        </div>
-      )}
-
-      {result?.stale && (
-        <button
-          className="run" disabled={busy}
-          onClick={() => run(() => resubmitAssignment(host))}
-        >
-          re-run assignment for current cuts
-        </button>
-      )}
-    </>
+        {result?.stale && (
+          <div>
+            <Button disabled={busy} className="w-full"
+              onClick={() => run(() => resubmitAssignment(host))}>
+              Re-run assignment for current cuts
+            </Button>
+            <p className={`mt-1 ${hintCls}`}>
+              The stored assignment predates these cuts.
+            </p>
+          </div>
+        )}
+      </div>
+    </RailSection>
   );
 }

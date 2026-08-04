@@ -1,7 +1,5 @@
-import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 import clsx from 'clsx';
-import { ChevronDown, Play, RotateCw, Settings2 } from 'lucide-react';
-import { AnalysisPanel } from '../../components/AnalysisPanel';
+import { Play, RotateCw } from 'lucide-react';
 import { Button } from '../../catalyst/button';
 import { getPlugin } from '../../registry';
 import { useStore } from '../../state/store';
@@ -11,13 +9,20 @@ import { StatusBadge } from '../components/status';
 import type { Lens } from '../lenses';
 import { useActiveLens } from './hooks';
 import { useBusy } from './run';
-import './v1-controls.css';
 import { hintCls } from '../components/styles';
+import type { ParamSpec } from '../../api/types';
+import {
+  Rail, RailDivider, RailHeader, RailSection, RailStats,
+} from '../components/rail';
+import {
+  ParamsForm, type ParamWidget,
+} from '../components/rail/ParamsForm';
+import { lensActionFor } from './modeRails';
 
 
 /** Run state + a Run button for a lens that paints one analysis's result.
  * Without this a lens with nothing cached can only tell the user to go find
- * the analysis in the generic Compute panel — which is where the hole-feature
+ * the analysis in the generic Compute rail — which is where the hole-feature
  * lens dead-ended. */
 function RunBacking({ lens }: { lens: Lens }) {
   const ref = lens.analysis!;
@@ -76,12 +81,31 @@ function RunBacking({ lens }: { lens: Lens }) {
   );
 }
 
-/**
- * The right rail for an active inspection lens: label/blurb, the shared
- * paint stats, and — when the hosting plugin ships a Controls panel — a
- * Configure section rendering that panel verbatim under the `.v1-controls`
- * scope (the visual seam is accepted for now; see docs/ROUTE-ARCHITECTURE.md).
- */
+/** The generated settings section: the mode's declared params, bound to the
+ * process's viewerParams bag (which is per-PROCESS, so this is a view onto a
+ * subset of it rather than a private store). */
+function LensParams({ processId, specs, overrides }: {
+  processId: string;
+  specs: ParamSpec[];
+  overrides?: Record<string, ParamWidget>;
+}) {
+  const values = useStore((s) => s.viewerParams[processId]) ?? EMPTY;
+  const setParam = useStore((s) => s.setViewerParam);
+  return (
+    <RailSection title="Settings">
+      <ParamsForm
+        specs={specs}
+        values={values}
+        overrides={overrides}
+        target="viewer"
+        onChange={(name, value) => setParam(processId, name, value)}
+      />
+    </RailSection>
+  );
+}
+
+const EMPTY: Record<string, unknown> = {};
+
 export function LensRail() {
   const lens = useActiveLens();
   const stats = useStore((s) => s.stats);
@@ -89,78 +113,35 @@ export function LensRail() {
   const pick = useStore((s) => s.pick);
   if (!lens) return null;
   const Icon = lens.icon;
-  const Controls = lens.hasControls ? getPlugin(lens.processId)?.Controls : undefined;
+  const plugin = getPlugin(lens.processId);
+  const mode = plugin?.modes.find((m) => m.id === lens.modeId);
+  const specs = mode?.params ?? [];
+  // one header control some lenses carry (the flat-pattern DXF export)
+  const Action = lensActionFor(lens.processId, lens.modeId);
 
   return (
-    <div className="flex min-h-full flex-col gap-4 p-4">
-      <div>
-        <div className="flex items-center gap-2">
-          <Icon className="size-4 text-blue-600 dark:text-blue-400" />
-          <h2 className="text-sm/6 font-semibold text-zinc-950 dark:text-white">{lens.label}</h2>
-        </div>
-        {lens.blurb && <p className={clsx('mt-1', hintCls)}>{lens.blurb}</p>}
-      </div>
+    <Rail>
+      <RailHeader
+        icon={Icon}
+        title={lens.label}
+        blurb={lens.blurb}
+        actions={Action ? <Action /> : undefined}
+      />
+
+      {specs.length > 0 && (
+        <LensParams processId={lens.processId} specs={specs}
+          overrides={plugin?.paramWidgets} />
+      )}
 
       {lens.analysis && <RunBacking lens={lens} />}
 
-      {Controls && (
-        <Disclosure defaultOpen>
-          {({ open }) => (
-            <div>
-              <DisclosureButton className="flex w-full items-center justify-between rounded-lg px-1 py-1 text-xs/5 font-medium text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white">
-                <span className="flex items-center gap-1.5">
-                  <Settings2 className="size-3.5" /> Configure
-                </span>
-                <ChevronDown className={clsx('size-3.5 transition-transform', open && 'rotate-180')} />
-              </DisclosureButton>
-              <DisclosurePanel className="mt-2">
-                <div className="v1-controls">
-                  <Controls />
-                </div>
-              </DisclosurePanel>
-            </div>
-          )}
-        </Disclosure>
-      )}
+      <RailDivider />
 
-      {/* every analysis stays runnable while lenses grow their own flows:
-          the v1 compute panel (catalog picker + auto-generated param form)
-          hosted verbatim — enough to materialize any lens's prerequisites */}
-      <Disclosure defaultOpen={!Controls}>
-        {({ open }) => (
-          <div>
-            <DisclosureButton className="flex w-full items-center justify-between rounded-lg px-1 py-1 text-xs/5 font-medium text-zinc-500 hover:text-zinc-950 dark:text-zinc-400 dark:hover:text-white">
-              <span className="flex items-center gap-1.5">
-                <Play className="size-3.5" /> Compute
-              </span>
-              <ChevronDown className={clsx('size-3.5 transition-transform', open && 'rotate-180')} />
-            </DisclosureButton>
-            <DisclosurePanel className="mt-2">
-              <div className="v1-controls">
-                <AnalysisPanel />
-              </div>
-            </DisclosurePanel>
-          </div>
-        )}
-      </Disclosure>
+      <RailStats text={stats} error={error} empty="Loading…" />
 
-      <div className="h-px bg-zinc-950/10 dark:bg-white/10" />
-
-      <div>
-        <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">In view</div>
-        {error ? (
-          <p className="whitespace-pre-wrap text-xs/5 text-red-600 dark:text-red-500">⚠ {error}</p>
-        ) : stats ? (
-          <p className={clsx('whitespace-pre-wrap', hintCls)}>{stats}</p>
-        ) : (
-          <p className={hintCls}>Loading…</p>
-        )}
-      </div>
-
-      <div>
-        <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">Inspect</div>
+      <RailSection title="Inspect">
         <p className="whitespace-pre-wrap font-mono text-[11px]/4 text-zinc-500 dark:text-zinc-400">{pick}</p>
-      </div>
-    </div>
+      </RailSection>
+    </Rail>
   );
 }

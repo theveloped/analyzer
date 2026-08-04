@@ -12,7 +12,6 @@ import type {
 import {
   drawSplitOverlays, effectiveDescriptor, type SplitHost,
 } from '../../splits/splits';
-import { SplitControls } from '../../splits/SplitControls';
 
 // keep in sync with TURNING_SCHEMA in processes/cnc.py
 export const TURNING_SCHEMA = 2;
@@ -61,7 +60,7 @@ async function turningField(ctx: ViewCtx, result: ResultEntry, name: string) {
 function require(ctx: ViewCtx): ResultEntry {
   const result = latestTurning(ctx);
   if (!result) {
-    throw new Error('no turning result — run cnc/turning in the Compute panel');
+    throw new Error('no turning result — run cnc/turning in the Compute rail');
   }
   return result;
 }
@@ -247,13 +246,10 @@ export const turningSplitHost: SplitHost = {
   resultParam: 'turningResult',
 };
 
-/** Turning-mode section of the CNC controls: just the split interaction. */
-export function TurningControls() {
-  return <SplitControls host={turningSplitHost} />;
-}
-
 export const turningResidualMode: ViewMode = {
   id: 'turning_residual',
+  // no user knobs: what this paint reads is bound by the study/check
+  params: [],
   label: 'Revolution error',
   async paint(ctx) {
     const result = require(ctx);
@@ -310,6 +306,8 @@ const AXIS_ROLE_COLORS: RGB[] = [
  */
 export const axisRoleMode: ViewMode = {
   id: 'axis_role',
+  // no user knobs: what this paint reads is bound by the study/check
+  params: [],
   label: 'Turnability about one axis',
   async paint(ctx) {
     const hash = ctx.params.scanHash;
@@ -358,6 +356,8 @@ export const axisRoleMode: ViewMode = {
  */
 export const coverageMode: ViewMode = {
   id: 'coverage',
+  // no user knobs: what this paint reads is bound by the study/check
+  params: [],
   label: 'Combined coverage',
   async paint(ctx) {
     const ids: string[] = ctx.params.coverageFields ?? [];

@@ -6,6 +6,9 @@ import {
 } from '../../colorizers/core';
 import type { PaintInfo, ViewMode } from '../../registry/types';
 import {
+  ACCESS_PARAMS, CLASS_PARAMS, GAP_PARAMS, STICKOUT_PARAMS, UNIFIED_PARAMS,
+} from './params';
+import {
   accessKeep, faceAccess, requireSource, vertexGap, vertexMinStickout,
 } from './compose';
 import { currentTip, holderCylinders, wallThreshold } from './sources';
@@ -18,6 +21,7 @@ const num = (value: any) => {
 export const unifiedMode: ViewMode = {
   id: 'unified',
   label: 'Unified verdict (tool + holder)',
+  params: UNIFIED_PARAMS,
   async paint(ctx): Promise<PaintInfo> {
     const source = requireSource(ctx);
     const tip = currentTip(source, ctx.params);
@@ -83,6 +87,7 @@ export const unifiedMode: ViewMode = {
 export const accessMode: ViewMode = {
   id: 'access',
   label: 'Accessibility (undercuts)',
+  params: ACCESS_PARAMS,
   async paint(ctx): Promise<PaintInfo> {
     const source = requireSource(ctx);
     const access = await faceAccess(ctx, source);
@@ -107,6 +112,7 @@ export const accessMode: ViewMode = {
 export const classMode: ViewMode = {
   id: 'class',
   label: 'Surface class (normal vs direction)',
+  params: CLASS_PARAMS,
   async paint(ctx): Promise<PaintInfo> {
     const source = requireSource(ctx);
     const angles = faceAngles(ctx, ctx.directions[source.direction]);
@@ -140,6 +146,7 @@ export const classMode: ViewMode = {
 export const gapMode: ViewMode = {
   id: 'gap',
   label: 'Tip gap heatmap',
+  params: GAP_PARAMS,
   async paint(ctx): Promise<PaintInfo> {
     const source = requireSource(ctx);
     const tip = currentTip(source, ctx.params);
@@ -181,6 +188,7 @@ export const gapMode: ViewMode = {
 export const stickoutMode: ViewMode = {
   id: 'stickout',
   label: 'Required stickout heatmap',
+  params: STICKOUT_PARAMS,
   async paint(ctx): Promise<PaintInfo> {
     const source = requireSource(ctx);
     const minStick = await vertexMinStickout(ctx, source, currentTip(source, ctx.params));

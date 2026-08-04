@@ -179,7 +179,7 @@ export function ViewportToolbar() {
     // positioned in the free zone between the legend (bottom-left, 16rem) and
     // the axis gizmo (bottom-right, 128px + margin); wraps upward when tight.
     // On narrow columns the legend moves top-left, freeing the left edge.
-    <div className="pointer-events-none absolute bottom-3 left-[16rem] right-[8.5rem] flex justify-center @max-2xl:left-3">
+    <div data-overlay="viewport-toolbar" className="pointer-events-none absolute bottom-3 left-[16rem] right-[8.5rem] flex justify-center @max-2xl:left-3">
     <div
       className="pointer-events-auto flex flex-wrap items-center justify-center gap-1 rounded-xl border border-zinc-950/10 bg-white/90 p-1 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur transition-[margin] duration-200 ease-out dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10"
       // a fly-out widens the content by OPACITY_FLYOUT_PX: the negative

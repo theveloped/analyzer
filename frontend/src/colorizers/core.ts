@@ -2,7 +2,7 @@
 // ramp, per-face reductions of per-vertex fields, and generic mode
 // factories (mask / highlights) any plugin can reuse.
 
-import type { FieldDescriptor } from '../api/types';
+import type { FieldDescriptor, ParamSpec } from '../api/types';
 import { fetchBin } from '../fields/fields';
 import type {
   ColorBar, LegendEntry, LegendFocus, PaintInfo, RGB, ViewCtx, ViewMode,
@@ -373,6 +373,47 @@ export interface HeatmapOpts {
  * (The CNC gap/stickout modes predate this factory and keep their own
  * angle-dependent thresholds — folding them on is a possible follow-up.)
  */
+/**
+ * The params a HeatmapOpts already describes, in the declared ParamSpec shape.
+ *
+ * These facts were being stated three times — here, and again by hand in
+ * `v2/fieldLenses.ts`, and again as defaults in each plugin's `defaults()` —
+ * with nothing checking they agreed. Emitting them from the factory makes this
+ * the one that the rail reads.
+ *
+ * The band bounds are deliberately NOT included: a band is interpretation, and
+ * the field-lens rail edits it with a two-bound editor that a plain number
+ * field cannot express.
+ */
+function heatmapParams(opts: HeatmapOpts): ParamSpec[] {
+  const specs: ParamSpec[] = [];
+  if (opts.thresholdParam) {
+    specs.push({
+      name: opts.thresholdParam, type: 'number', default: null,
+      label: 'Limit', unit: opts.units,
+    });
+  }
+  if (opts.minParam) {
+    specs.push({
+      name: opts.minParam, type: 'number', default: null,
+      label: 'Scale minimum', unit: opts.units,
+    });
+  }
+  if (opts.scaleParam) {
+    specs.push({
+      name: opts.scaleParam, type: 'number', default: null,
+      label: 'Scale maximum', unit: opts.units,
+    });
+  }
+  if (opts.maskParam) {
+    specs.push({
+      name: opts.maskParam, type: 'bool', default: true,
+      label: 'Hide edge artifacts',
+    });
+  }
+  return specs;
+}
+
 export function heatmapMode(
   id: string, label: string,
   pickField: (ctx: ViewCtx) => FieldDescriptor | null,
@@ -385,6 +426,7 @@ export function heatmapMode(
   return {
     id,
     label,
+    params: heatmapParams(opts),
     async paint(ctx): Promise<PaintInfo> {
       const desc = pickField(ctx);
       if (!desc) {
@@ -592,6 +634,11 @@ export async function fetchFaceField(
  * User face splits show as their sub-face pieces when present. */
 export const brepFacesMode: ViewMode = {
   id: 'brep_faces',
+  // no user knobs — this paint reads the manifest, not viewerParams.
+  // Declared (rather than left undefined) so the rail knows it was
+  // audited and suppresses the panel instead of falling back to the
+  // host plugin's, which rendered an empty card here.
+  params: [],
   label: 'BREP faces',
   async paint(ctx) {
     const { ids, desc } = await loadBrepFaceIds(ctx);
@@ -613,6 +660,11 @@ export const brepFacesMode: ViewMode = {
  * click-to-fly legend entries. */
 export const faceAttrsMode: ViewMode = {
   id: 'face_attrs',
+  // no user knobs — this paint reads the manifest, not viewerParams.
+  // Declared (rather than left undefined) so the rail knows it was
+  // audited and suppresses the panel instead of falling back to the
+  // host plugin's, which rendered an empty card here.
+  params: [],
   label: 'STEP colors / names',
   async paint(ctx) {
     const url = ctx.manifest.face_attrs_url;
@@ -704,6 +756,11 @@ export const pmiMode: ViewMode = {
 /** "Last CLI highlights.json" — process-agnostic replay of the legacy result. */
 export const highlightsMode: ViewMode = {
   id: 'highlights',
+  // no user knobs — this paint reads the manifest, not viewerParams.
+  // Declared (rather than left undefined) so the rail knows it was
+  // audited and suppresses the panel instead of falling back to the
+  // host plugin's, which rendered an empty card here.
+  params: [],
   label: 'Last CLI highlights.json',
   async paint(ctx) {
     if (!ctx.highlights) throw new Error('no highlights.json in the working directory');

@@ -126,10 +126,9 @@ not `SidebarItem`. The empty-state upload target is a 78 px-high dashed tile wit
   (6 px for PMI chips), with neutral idle and dark active states.
 - Delete/close affordances are low-emphasis 12–14 px X/Trash icons; some only appear
   on group hover.
-- Legacy plugin controls are still rendered inside `.v1-controls`: hardcoded dark
-  blue-grey 5 px-radius buttons, 12 px text, 5 × 10 px padding, and a green primary
-  variant. This is intentionally a temporary visual seam, not part of the V2
-  button language.
+- The legacy `.v1-controls` seam is gone. Every rail control is now either a
+  Catalyst component or a `v2/components/rail/` primitive, so there is one
+  button language rather than two.
 
 ## 4. Lens buttons: one-by-one review sheet
 
@@ -385,5 +384,4 @@ For every row above, decide:
   `frontend/src/v2/nav/AppSidebar.tsx`
 - Pipeline cards/actions: `frontend/src/v2/workspace/PipelineRail.tsx`
 - Right-rail local actions: `frontend/src/v2/workspace/*Rail.tsx`
-- Legacy embedded controls: `frontend/src/v2/workspace/v1-controls.css`
 - Global V2 theme: `frontend/src/v2/app.css`

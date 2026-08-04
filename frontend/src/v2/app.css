@@ -13,15 +13,11 @@
 
 @plugin "@tailwindcss/forms";
 
-@theme {
-  --color-primary-50: #eff6ff;
-  --color-primary-500: #3b82f6;
-  --color-primary-600: #2563eb;
-  --color-primary-700: #1d4ed8;
-}
-
 /* Status palette for the app-level StatusDot/StatusBadge (validated, fixed
-   across light/dark). */
+   across light/dark). It is the only colour layer this app owns: everything
+   else comes from Catalyst's zinc/blue scales, so a `--color-primary-*` ramp
+   sat here for months with zero references and no way to notice. Anything
+   added back here has to be READ by a component in the same change. */
 :root {
   --status-good: #0ca30c;
   --status-warning: #fab219;

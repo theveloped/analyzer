@@ -72,7 +72,8 @@ Example: a new injection-molding check.
    `paint(ctx)` fetches the field with `ctx.getField(descriptor-from-manifest)` and
    paints via the helpers in `colorizers/core.ts` (mask or heatmap). No new plugin
    needed for an existing process.
-6. Verify: smoke workflow, run the analysis from the UI (AnalysisPanel), confirm the
+6. Verify: smoke workflow, run the analysis from the UI (the ▶ Compute rail on the
+   viewport toolbar — `v2/workspace/ComputeRail.tsx`), confirm the
    new view mode paints, and confirm the CLI-computed result also shows up in the UI
    (same cache). `npx tsc -b` must pass.
 

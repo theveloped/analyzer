@@ -571,6 +571,34 @@ regex.
 
 **Verify.** A test that fails if any `*_SCHEMA` differs across the seam.
 
+### 27. The right-rail dispatch: two branches nothing can reach
+
+**Problem.** Surfaced while putting every rail on one skeleton
+(`v2/components/rail/`, 2026-08-03). The skeleton work is done; these two
+are dispatch defects it could not fix from inside a rail.
+
+(a) `SettingsRail`'s check-scoped branch is unreachable. All four catalog
+analyses are ALSO field lenses, and `Workspace.tsx`'s chain tests
+`activeFieldLens` before `checkActive`, so selecting a check always lands
+on `FieldLensRail`. Clicking "Gap / clearance" opens the gap heatmap's band
+panel; the settings panel behind it renders for nothing. Either the branch
+is dead and goes, or the ordering is wrong — decide which, do not leave
+both.
+
+(b) `processes/directions/Controls.tsx` (`DirectionsControls`) is the last
+supplier of the retired `ProcessPlugin.Controls`, and only the v1 `App.tsx`
+renders it — v2 uses `DirectionsRail` over the same `useDirectionSetup()`
+hook. When v1 goes, the component, the plugin field and the `Controls?: FC`
+slot in `registry/types.ts` all go with it.
+
+**Where to start.** `v2/workspace/Workspace.tsx:85-99` (the chain),
+`v2/workspace/hooks.ts` (`useActiveFieldLens` / `useCheckActive`),
+`registry/types.ts:146`.
+
+**Verify.** For (a): a check whose analysis is not a field lens still opens
+`SettingsRail`; `v2-smoke.mjs` walks every lens with no page errors. For
+(b): `grep -rn "\.Controls" frontend/src` returns nothing.
+
 ## Meta
 
 - The port branch `claude/instapart-port` (10 commits) may still be

@@ -33,11 +33,13 @@ export function planField(
 
 export const bendPlanMode: ViewMode = {
   id: 'bend_plan',
+  // no user knobs — the paint reads the stored result
+  params: [],
   label: 'Bend plan (press brake)',
   async paint(ctx) {
     const result = latestBendPlan(ctx);
     if (!result) {
-      throw new Error('no bend plan result — run sheet_metal/bend_plan in the Compute panel (needs prep/aag)');
+      throw new Error('no bend plan result — run sheet_metal/bend_plan in the Compute rail (needs prep/aag)');
     }
     const s = result.stats;
 

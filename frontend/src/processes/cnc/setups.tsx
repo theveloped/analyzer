@@ -17,9 +17,6 @@ import {
   drawSplitOverlays, edgeDescriptors, effectiveDescriptor,
   type SplitHost,
 } from '../../splits/splits';
-import { SplitControls } from '../../splits/SplitControls';
-import { optimizeParting } from '../parting';
-import { runCtxAction } from '../../viewer/controller';
 
 const CONFLICT_FEATURE = 254;
 const INTERNAL_FEATURE = 255;
@@ -63,7 +60,7 @@ export async function loadSetups(ctx: ViewCtx): Promise<SetupsData> {
       (r) => r.process === 'cnc' && r.analysis === 'setups');
     throw new Error(stale
       ? 'stored result has an old schema — re-run setup combinations'
-      : 'no setups result yet — run the analysis below');
+      : 'no setups result yet — run cnc/setups in the Compute rail');
   }
   const result = results[ctx.params.setupsResult ?? 0] ?? results[results.length - 1];
   const option = ctx.params.setupsOption ?? 0;
@@ -283,91 +280,3 @@ export const setupsMode: ViewMode = {
   },
 };
 
-const EMPTY: Record<string, any> = {};
-
-/** Setups-mode section of the CNC controls (result/option/toggles). */
-export function SetupsControls() {
-  const manifest = useStore((s) => s.manifest);
-  const params = useStore((s) => s.viewerParams.cnc) ?? EMPTY;
-  const setParam = useStore((s) => s.setViewerParam);
-  const set = (name: string, value: any) => setParam('cnc', name, value);
-
-  const results = manifest ? setupsResults(manifest) : [];
-  const result = results[params.setupsResult ?? 0] ?? results[results.length - 1];
-  const options: any[] = result?.stats.options ?? [];
-  const fieldOptions: number[] = result?.stats.field_options ?? [];
-  const hasBrep = !!manifest?.fields.some((f) => f.id === 'brep_edges');
-
-  return (
-    <>
-      <label>Result (parameter set)</label>
-      <select
-        value={params.setupsResult ?? 0}
-        onChange={(e) => { set('setupsResult', parseInt(e.target.value)); set('setupsOption', 0); }}
-      >
-        {results.map((r, i) => (
-          <option key={r.hash} value={i}>{resultLabel(r)}</option>
-        ))}
-        {!results.length && <option value={0}>no results yet</option>}
-      </select>
-
-      <label>Setup plan</label>
-      <select
-        value={params.setupsOption ?? 0}
-        onChange={(e) => set('setupsOption', parseInt(e.target.value))}
-      >
-        {fieldOptions.map((index, k) => (
-          <option key={k} value={k}>{optionLabel(options[index])}</option>
-        ))}
-        {!fieldOptions.length && <option value={0}>—</option>}
-      </select>
-
-      <div className="row">
-        <label className="check">
-          <input
-            type="checkbox" checked={params.showLines !== false}
-            onChange={(e) => set('showLines', e.target.checked)}
-          />
-          setup boundaries
-        </label>
-        <label className="check">
-          <input
-            type="checkbox" checked={params.showArrows !== false}
-            onChange={(e) => set('showArrows', e.target.checked)}
-          />
-          direction arrows
-        </label>
-      </div>
-
-      <div className="hint">
-        click a face to cycle it between the setups that can machine it ·
-        faded stripes = other valid setups
-      </div>
-
-      <button
-        disabled={!hasBrep || !results.length}
-        onClick={() => void runCtxAction(async (ctx) => {
-          const data = await loadSetups(ctx);
-          const { summary, changed } = await optimizeParting(ctx, {
-            valid: data.valid, defaults: data.defaults, current: data.current,
-            option: data.option, overridesKey: data.overridesKey,
-            overridesUrl: data.result.overrides_url,
-          });
-          useStore.getState().set({ pick: summary });
-          return changed;
-        })}
-      >
-        optimize parting lines
-      </button>
-
-      <SplitControls host={cncSplitHost} />
-
-      {options.length > 0 && (
-        <div className="hint">
-          ranked: {options.slice(0, 6).map((o, i) =>
-            `#${i} ${o.machine}×${o.setups.length} ${o.feasible ? '✓' : '✗'}`).join(' · ')}
-        </div>
-      )}
-    </>
-  );
-}

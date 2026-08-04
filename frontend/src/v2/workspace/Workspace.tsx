@@ -3,6 +3,7 @@ import { useStore } from '../../state/store';
 import type { ViewportState } from '../../viewer/viewportState';
 import { catalogAnalysisFor } from '../checks/catalog';
 import { AnalysisToolbar } from './AnalysisToolbar';
+import { ComputeRail } from './ComputeRail';
 import { DirectionsRail } from './DirectionsRail';
 import { DirectionsTableRail } from './DirectionsTableRail';
 import { ExpressionRail } from './ExpressionRail';
@@ -10,7 +11,7 @@ import { DirectionTooltip } from './DirectionTooltip';
 import { FieldLensRail } from './FieldLensRail';
 import {
   useActiveFieldLens, useActiveLens, useAutoRunFieldLens, useCheckActive,
-  useDirectionsActive, useSelectedRouteCheck,
+  useDirectionsActive, useJobResync, useSelectedRouteCheck,
 } from './hooks';
 import { useV2 } from '../store';
 import { useActiveStudy } from '../studies';
@@ -21,7 +22,7 @@ import { SectionRail } from './SectionRail';
 import { PipelineRail } from './PipelineRail';
 import { RouteCheckRail } from './RouteCheckRail';
 import { PmiCallouts } from './PmiCallout';
-import { PmiRail } from './PmiRail';
+import { modeRailFor } from './modeRails';
 import { RightRail } from './RightRail';
 import { SettingsRail } from './SettingsRail';
 import { TopBar } from './TopBar';
@@ -45,13 +46,19 @@ export function Workspace() {
   const activeFieldLens = useActiveFieldLens();
   const selected = useSelectedRouteCheck();
   useAutoRunFieldLens(); // field lenses materialize themselves on first look
+  useJobResync(); // pick up jobs still running server-side after a reload
   // a selected non-threshold plan check (reach study/op/route) gets its own
   // rail; field lenses get the band panel; other checks the SettingsRail
   const planCheckRail = selected && !catalogAnalysisFor(selected.check);
   const measuring = useV2((s) => s.measure.active);
   const sectionRailOpen = useV2((s) => s.sectionRailOpen);
+  const computeRailOpen = useV2((s) => s.computeRailOpen);
   const activeStudy = useActiveStudy();
   const buildingExpression = useV2((s) => s.expressionDraft);
+  // lenses that own the whole rail (PMI, the voxel debug view) — a table, so
+  // the next one is an entry rather than another ternary arm
+  const processId = useStore((s) => s.processId);
+  const ModeRail = modeRailFor(processId, modeId);
   const setViewport = useV2((s) => s.setViewport);
 
   // PMI reads best as an xray shell with the BREP edges; only the annotated
@@ -78,17 +85,23 @@ export function Workspace() {
   const [railId, railWidth, rightRail]: [string, number, React.ReactNode] =
     measuring ? ['measure', 288, <MeasureRail />]
       : sectionRailOpen ? ['section', 288, <SectionRail />]
+        : computeRailOpen ? ['compute', 320, <ComputeRail />]
         // the builder outranks the check rail: you opened it to EDIT, and the
         // read-only card is what you would be dropped back onto
         : buildingExpression ? ['expression', 380, <ExpressionRail />]
         : activeStudy ? ['study', 672, <DirectionsTableRail />]
-          : modeId === 'pmi' ? ['pmi', 288, <PmiRail />]
+          : ModeRail ? [`mode:${modeId}`, 288, <ModeRail />]
             : directionsActive ? ['directions', 288, <DirectionsRail />]
               : planCheckRail ? ['planCheck', 288, <RouteCheckRail />]
                 : activeFieldLens ? ['fieldLens', 288, <FieldLensRail />]
                   : checkActive ? ['settings', 288, <SettingsRail />]
                     : activeLens ? ['lens', 288, <LensRail />]
                       : ['settings', 288, <SettingsRail />];
+
+  // most rails are named after what is painted, so the legend does not repeat
+  // it; these three name themselves and leave the lens unnamed on screen
+  const railNamesItself = railId === 'measure' || railId === 'section'
+    || railId === 'compute';
 
   return (
     <div className="flex h-full flex-col">
@@ -101,7 +114,7 @@ export function Workspace() {
           {modeId === 'pmi' && <PmiCallouts />}
           <AnalysisToolbar />
           {directionsActive && <DirectionTooltip />}
-          <Legend />
+          <Legend showTitle={railNamesItself} />
           <ViewportToolbar />
           {(!partId || !meshReady) && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center">

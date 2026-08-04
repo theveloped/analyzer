@@ -1,14 +1,16 @@
-import clsx from 'clsx';
-import { Ruler, X } from 'lucide-react';
+import { Ruler } from 'lucide-react';
+import { Button } from '../../catalyst/button';
 import { useStore } from '../../state/store';
 import { effectiveDescriptor, faceLabel } from '../../splits/splits';
 import {
   computeMeasurement, type MeasureFrame, type MeasurePick,
 } from '../../viewer/measure';
-import { useV2 } from '../store';
+import {
+  Rail, RailHeader, RailSection, RailSegmented,
+} from '../components/rail';
 import { hintCls } from '../components/styles';
+import { useV2 } from '../store';
 
-const sectionCls = 'text-[10px] font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400';
 const mm = (v: number) => `${v.toFixed(3)} mm`;
 const deg = (v: number) => `${v.toFixed(1)}°`;
 
@@ -45,11 +47,16 @@ function PickBlock({ tag, pick }: { tag: 'A' | 'B'; pick: MeasurePick }) {
  * model units. The reported distance is the straight-line picked-point
  * distance — two mesh picks do NOT establish the minimum distance between
  * the complete BREP faces.
+ *
+ * An instrument rather than a settings panel, so its sections use the `micro`
+ * heading. It is otherwise the same skeleton as every other rail — the two
+ * tool rails used to share a private dialect with each other and with nothing
+ * else.
  */
-const FRAMES: { id: MeasureFrame; label: string; hint: string }[] = [
-  { id: 'xyz', label: 'XYZ', hint: 'Component legs along the model axes' },
-  { id: 'normalA', label: 'Normal A', hint: "Along A's surface normal + in-plane rest" },
-  { id: 'normalB', label: 'Normal B', hint: "Along B's surface normal + in-plane rest" },
+const FRAMES: { id: MeasureFrame; label: string; title: string }[] = [
+  { id: 'xyz', label: 'XYZ', title: 'Component legs along the model axes' },
+  { id: 'normalA', label: 'Normal A', title: "Along A's surface normal + in-plane rest" },
+  { id: 'normalB', label: 'Normal B', title: "Along B's surface normal + in-plane rest" },
 ];
 
 export function MeasureRail() {
@@ -61,59 +68,33 @@ export function MeasureRail() {
   const readout = a && b ? computeMeasurement(a, b) : null;
 
   return (
-    <div className="flex min-h-full flex-col gap-4 p-4">
-      <div>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Ruler className="size-4 text-blue-600 dark:text-blue-400" />
-            <h2 className="text-sm/6 font-semibold text-zinc-950 dark:text-white">Measure</h2>
-          </div>
-          <button
-            type="button"
-            onClick={() => setMeasureActive(false)}
-            title="Exit measure (Esc)"
-            className="rounded-lg p-1 text-zinc-400 transition hover:bg-zinc-950/5 hover:text-zinc-950 dark:hover:bg-white/10 dark:hover:text-white"
-          >
-            <X className="size-4" />
-          </button>
-        </div>
-        <p className={`mt-1 ${hintCls}`}>
-          {!a ? 'Click a first point on the part.'
-            : !b ? 'Click a second point.'
+    <Rail>
+      <RailHeader
+        icon={Ruler}
+        title="Measure"
+        onClose={() => setMeasureActive(false)}
+        closeTitle="Exit measure (Esc)"
+        blurb={!a ? 'Click a first point on the part.'
+          : !b ? 'Click a second point.'
             : 'A third click starts a new measurement.'}
-        </p>
-      </div>
+      />
 
       {a && <PickBlock tag="A" pick={a} />}
       {b && <PickBlock tag="B" pick={b} />}
 
       {readout && (
         <>
-          <div>
-            <div className={sectionCls}>Component frame</div>
-            <div className="mt-1 flex gap-1">
-              {FRAMES.map((f) => (
-                <button
-                  key={f.id}
-                  type="button"
-                  onClick={() => setMeasureFrame(f.id)}
-                  title={f.hint}
-                  className={clsx(
-                    'flex-1 rounded-lg px-1 py-1 text-xs font-medium transition',
-                    frame === f.id
-                      ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-900'
-                      : 'text-zinc-600 hover:bg-zinc-950/5 dark:text-zinc-300 dark:hover:bg-white/10',
-                  )}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-          </div>
+          <RailSection title="Component frame" variant="micro">
+            <RailSegmented
+              options={FRAMES}
+              value={frame}
+              onChange={setMeasureFrame}
+              ariaLabel="Component frame"
+            />
+          </RailSection>
 
-          <div>
-            <div className={sectionCls}>Distance</div>
-            <div className="mt-1 flex flex-col gap-1">
+          <RailSection title="Distance" variant="micro">
+            <div className="flex flex-col gap-1">
               <Row label="picked points |B−A|" value={mm(readout.distance)} />
               {frame === 'xyz' && (
                 <>
@@ -139,27 +120,20 @@ export function MeasureRail() {
               Straight-line distance between the picked points — not the
               minimum distance between the faces.
             </p>
-          </div>
+          </RailSection>
 
-          <div>
-            <div className={sectionCls}>Angles</div>
-            <div className="mt-1 flex flex-col gap-1">
+          <RailSection title="Angles" variant="micro">
+            <div className="flex flex-col gap-1">
               <Row label="between normals (0–180°)" value={deg(readout.normalAngleDeg)} />
               <Row label="between planes (0–90°)" value={deg(readout.planeAngleDeg)} />
             </div>
-          </div>
+          </RailSection>
         </>
       )}
 
       {(a || b) && (
-        <button
-          type="button"
-          onClick={clearMeasurePicks}
-          className="rounded-lg border border-zinc-950/10 px-3 py-1.5 text-xs/5 font-medium text-zinc-700 transition hover:bg-zinc-950/5 dark:border-white/10 dark:text-zinc-300 dark:hover:bg-white/10"
-        >
-          Clear measurement
-        </button>
+        <Button outline onClick={clearMeasurePicks}>Clear measurement</Button>
       )}
-    </div>
+    </Rail>
   );
 }

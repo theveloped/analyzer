@@ -49,7 +49,7 @@ const rolesMode: ViewMode = {
   async paint(ctx) {
     const result = latestProfile(ctx);
     if (!result) {
-      throw new Error('no profile result — run tube_laser/profile in the Compute panel (needs prep/aag)');
+      throw new Error('no profile result — run tube_laser/profile in the Compute rail (needs prep/aag)');
     }
     const roles = await profileField(ctx, result, 'face_role') as Uint8Array;
     if (!roles) throw new Error('profile result carries no role field — re-run it');
@@ -64,7 +64,7 @@ const cutPatternMode: ViewMode = {
   async paint(ctx) {
     const result = latestProfile(ctx);
     if (!result) {
-      throw new Error('no profile result — run tube_laser/profile in the Compute panel (needs prep/aag)');
+      throw new Error('no profile result — run tube_laser/profile in the Compute rail (needs prep/aag)');
     }
     if (!result.stats.flat_size) {
       throw new Error('no unroll stored — re-run tube_laser/profile with unroll enabled');

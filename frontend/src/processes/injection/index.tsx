@@ -20,7 +20,7 @@ import {
   SENTINEL, skeletonResults,
 } from './skeleton';
 import {
-  loadSprue, markerGraph, sprueResults, weldSegments, type Proposal,
+  loadSprue, markerGraph, sprueResults, weldSegments,
 } from './sprue';
 import {
   loadSticking, simulateCached, stickingResults,
@@ -30,15 +30,12 @@ import {
   flowFillResults, flowVoxelResults, FROZEN_OK, FROZEN_UNJUDGED, loadFill,
   loadVertVoxel, loadVoxelGrid, voxelPositions, type FlowFill,
 } from './voxels';
-import { runAnalysisJob } from '../../viewer/jobs';
 import {
   drawSplitOverlays, edgeDescriptors, effectiveDescriptor, faceLabel,
   handleSplitPick, type SplitHost,
 } from '../../splits/splits';
-import { SplitControls } from '../../splits/SplitControls';
-import { optimizeParting } from '../parting';
+import { INJECTION_PARAM_WIDGETS } from './params';
 import { expressionMode } from '../../colorizers/expression';
-import { runCtxAction } from '../../viewer/controller';
 
 const CONFLICT_FEATURE = 254;
 const INTERNAL_FEATURE = 255;
@@ -51,7 +48,7 @@ const ARROW_COLORS: Record<string, RGB> = {
   main_b: [0.62, 0.8, 0.58], // side B
 };
 
-function resultsFor(manifest: Manifest, analysis: string) {
+export function resultsFor(manifest: Manifest, analysis: string) {
   return manifest.results.filter(
     (r) => r.process === 'injection_molding' && r.analysis === analysis
       && (analysis !== 'mold_orientation' || r.stats.schema === MOLD_SCHEMA));
@@ -91,14 +88,14 @@ interface AssignmentData {
   overridesKey: string;
 }
 
-async function loadAssignment(ctx: ViewCtx): Promise<AssignmentData> {
+export async function loadAssignment(ctx: ViewCtx): Promise<AssignmentData> {
   const results = resultsFor(ctx.manifest, 'mold_orientation');
   if (!results.length) {
     const legacy = ctx.manifest.results.some(
       (r) => r.process === 'injection_molding' && r.analysis === 'mold_orientation');
     throw new Error(legacy
       ? 'stored result predates the membership model — re-run mold orientation'
-      : 'no mold_orientation result yet — run the analysis below');
+      : 'no mold_orientation result yet — run injection_molding/mold_orientation in the Compute rail');
   }
   const result = pickResult(results, ctx.params.result)!;
   const option = ctx.params.option ?? 0;
@@ -139,7 +136,7 @@ async function loadAssignment(ctx: ViewCtx): Promise<AssignmentData> {
 }
 
 /** Split-interaction wiring for the mold assignment view. */
-const moldSplitHost: SplitHost = {
+export const moldSplitHost: SplitHost = {
   processId: 'injection_molding',
   modeId: 'assignment',
   currentResult: (manifest, params) =>
@@ -359,7 +356,7 @@ function pickSkeletonResult(ctx: ViewCtx) {
   const results = skeletonResults(ctx);
   const result = pickResult(results, ctx.params.skelResult);
   if (!result) {
-    throw new Error('no wall_skeleton result yet — run the analysis below');
+    throw new Error('no wall_skeleton result yet — run injection_molding/wall_skeleton in the Compute rail');
   }
   return result;
 }
@@ -369,6 +366,22 @@ const GATE: RGB = [1, 1, 1];
 const skeletonMode: ViewMode = {
   id: 'skeleton',
   label: 'Skeleton & fill flow',
+  params: [
+    {
+      name: 'skelResult', type: 'int', default: -1,
+      label: 'Result (parameter set)',
+    },
+    {
+      name: 'graph', type: 'select', default: 'cluster',
+      label: 'Skeleton graph',
+      options: ['cluster', 'raw'],
+      optionLabels: {
+        cluster: 'clustered (medial skeleton)',
+        raw: 'raw (one node per vertex)',
+      },
+      hint: 'Click the part to place the injection gate; click again to move it.',
+    },
+  ],
   async paint(ctx): Promise<PaintInfo> {
     const result = pickSkeletonResult(ctx);
     const which = ctx.params.graph === 'raw' ? 'raw' : 'cluster';
@@ -460,7 +473,7 @@ const sprueMode: ViewMode = {
     const results = sprueResults(ctx);
     const result = pickResult(results, ctx.params.sprueResult);
     if (!result) {
-      throw new Error('no sprue_proposals result yet — run the analysis below');
+      throw new Error('no sprue_proposals result yet — run injection_molding/sprue_proposals in the Compute rail');
     }
     const data = await loadSprue(ctx, result);
     const { skeleton: sk, proposals } = data;
@@ -681,7 +694,7 @@ const voxelFieldMode: ViewMode = {
     const results = flowVoxelResults(ctx.manifest);
     const result = pickResult(results, ctx.params.flowResult);
     if (!result) {
-      throw new Error('no flow_voxels result yet — run the analysis below');
+      throw new Error('no flow_voxels result yet — run injection_molding/flow_voxels in the Compute rail');
     }
     const grid = await loadVoxelGrid(ctx, result);
     const scalar = (VOXEL_SCALARS as readonly string[]).includes(
@@ -786,11 +799,17 @@ const voxelFieldMode: ViewMode = {
 const coolingMode: ViewMode = {
   id: 'cooling',
   label: 'Cooling time',
+  params: [{
+    name: 'coolCoef', type: 'number', default: 1, min: 0,
+    label: 'Cooling coefficient', unit: 's/mm²',
+    hint: 'Cooling time ∝ half-thickness² from the flow voxelization — run '
+      + 'Flow voxels (SDF) in Compute if the view is empty.',
+  }],
   async paint(ctx): Promise<PaintInfo> {
     const results = flowVoxelResults(ctx.manifest);
     const result = pickResult(results, ctx.params.flowResult);
     if (!result) {
-      throw new Error('no flow_voxels result yet — run the analysis below');
+      throw new Error('no flow_voxels result yet — run injection_molding/flow_voxels in the Compute rail');
     }
     const { vertHalf } = await loadVertVoxel(ctx, result);
     const coef = parseFloat(ctx.params.coolCoef) || 1.0;
@@ -841,7 +860,7 @@ const ejectorMode: ViewMode = {
     const results = stickingResults(ctx);
     const result = pickResult(results, ctx.params.stickResult);
     if (!result) {
-      throw new Error('no ejection_sticking result yet — run the analysis below');
+      throw new Error('no ejection_sticking result yet — run injection_molding/ejection_sticking in the Compute rail');
     }
     const data = await loadSticking(ctx, result);
     const sk = data.skeleton;
@@ -1133,594 +1152,7 @@ async function inspect(face: number, ctx: ViewCtx): Promise<string[]> {
   return lines;
 }
 
-const EMPTY: Record<string, any> = {};
 
-function NumberParam({ label, value, placeholder, onChange }: {
-  label: string; value: any; placeholder?: string; onChange: (v: string) => void;
-}) {
-  return (
-    <div>
-      <label>{label}</label>
-      <input
-        type="number" step="0.1" value={value} placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    </div>
-  );
-}
-
-/** Form-string to number with a fallback (0 is a valid value, so no ||). */
-function num(value: any, fallback: number): number {
-  const n = parseFloat(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function InjectionControls() {
-  const manifest = useStore((s) => s.manifest);
-  const modeId = useStore((s) => s.modeId);
-  const params = useStore((s) => s.viewerParams.injection_molding) ?? EMPTY;
-  const setParam = useStore((s) => s.setViewerParam);
-  const set = (name: string, value: any) => setParam('injection_molding', name, value);
-
-  const results = manifest ? resultsFor(manifest, 'mold_orientation') : [];
-  const result = pickResult(results, params.result);
-  const options: any[] = result?.stats.options ?? [];
-  const fieldOptions = options.slice(0, 3);
-  const hasBrep = !!manifest?.fields.some((f) => f.id === 'brep_edges');
-
-  const skelResults = (manifest?.results ?? []).filter(
-    (r) => r.process === 'injection_molding' && r.analysis === 'wall_skeleton');
-
-  const sprueResultList = (manifest?.results ?? []).filter(
-    (r) => r.process === 'injection_molding' && r.analysis === 'sprue_proposals'
-      && r.stats.schema === 2);
-  const sprueResult = pickResult(sprueResultList, params.sprueResult);
-  const proposals: Proposal[] = sprueResult?.stats.proposals ?? [];
-
-  const stickingList = (manifest?.results ?? []).filter(
-    (r) => r.process === 'injection_molding'
-      && r.analysis === 'ejection_sticking' && r.stats.schema === 2);
-  const pins: Pin[] = params.pins ?? [];
-  const ejSim = params.ejSim ?? null;
-
-  const partId = useStore((s) => s.partId);
-  const jobs = useStore((s) => s.jobs);
-  const busy = jobs.some((j) => j.part_id === partId
-    && (j.status === 'queued' || j.status === 'running'));
-  const flowList = manifest ? flowVoxelResults(manifest) : [];
-  const fillList = manifest ? flowFillResults(manifest) : [];
-
-  function submitFlow(analysis: 'flow_voxels' | 'flow_fill') {
-    if (!partId) return;
-    const voxel = Number.isFinite(parseFloat(params.flowVoxel))
-      ? parseFloat(params.flowVoxel) : null;
-    const jobParams: Record<string, any> = analysis === 'flow_voxels'
-      ? { voxel }
-      : {
-        voxel,
-        gate: params.gate,
-        delta0: num(params.flowDelta0, 0),
-        skin_coef: num(params.flowSkinCoef, 0.12),
-        fill_time: num(params.flowFillTime, 2),
-        iterations: Math.max(1, Math.round(num(params.flowIterations, 3))),
-        neighborhood: String(params.flowNeighborhood ?? '26'),
-      };
-    // the SDF grid is the shared prep/voxels stage; only the fill is an
-    // injection analysis (flowVoxelResults reads both, so older results in
-    // the retired injection_molding/flow_voxels location still load)
-    const [process, id] = analysis === 'flow_voxels'
-      ? ['prep', 'voxels'] : ['injection_molding', analysis];
-    runAnalysisJob(partId, process, id, jobParams)
-      .then(() => set(analysis === 'flow_voxels' ? 'flowResult' : 'fillResult', -1))
-      .catch((err) => useStore.getState().set({
-        error: err instanceof Error ? err.message : String(err),
-      }));
-  }
-
-  return (
-    <>
-      {modeId === 'sprue' && (
-        <>
-          <label>Result (parameter set)</label>
-          <select
-            value={params.sprueResult ?? -1}
-            onChange={(e) => {
-              set('sprueResult', parseInt(e.target.value));
-              set('proposal', null);
-            }}
-          >
-            {sprueResultList.length > 0 && <option value={-1}>latest</option>}
-            {sprueResultList.map((r, i) => (
-              <option key={r.hash} value={i}>
-                {`${r.stats.proposals?.length ?? 0} proposals · ${r.hash}`}
-              </option>
-            ))}
-            {!sprueResultList.length && <option value={-1}>no results yet</option>}
-          </select>
-
-          <div className="proposal-list">
-            {proposals.map((p) => (
-              <button
-                key={p.rank}
-                className={params.proposal === p.rank ? 'selected' : ''}
-                onClick={() => set('proposal', params.proposal === p.rank ? null : p.rank)}
-              >
-                {`#${p.rank} · ${p.score.toFixed(2)}`}
-                {p.gate_style !== 'unknown' && ` · ${p.gate_style === 'edge' ? 'edge gate' : 'hot tip'}`}
-                {p.side !== 'unknown' && ` · side ${p.side}`}
-              </button>
-            ))}
-          </div>
-
-          {params.proposal != null && proposals[params.proposal] && (
-            <>
-              <div className="hint">
-                {proposals[params.proposal].reasons.pros.map((r) => `+ ${r}`).join(' · ')}
-                {proposals[params.proposal].reasons.cons.length > 0 && (
-                  ` · ${proposals[params.proposal].reasons.cons.map((r) => `− ${r}`).join(' · ')}`)}
-              </div>
-              <button
-                onClick={() => {
-                  set('gate', proposals[params.proposal].point);
-                  useStore.getState().set({ modeId: 'skeleton' });
-                }}
-              >
-                open in fill-flow mode
-              </button>
-              <button onClick={() => set('proposal', null)}>clear selection</button>
-            </>
-          )}
-
-          <div className="row">
-            <label className="check">
-              <input
-                type="checkbox" checked={params.showCandidates === true}
-                onChange={(e) => set('showCandidates', e.target.checked)}
-              />
-              all candidates (score heatmap)
-            </label>
-            <label className="check">
-              <input
-                type="checkbox" checked={params.showWeld !== false}
-                onChange={(e) => set('showWeld', e.target.checked)}
-              />
-              weld indicator
-            </label>
-          </div>
-
-          <div className="hint">
-            click a marker on the part (or a proposal above) to inspect its fill
-          </div>
-        </>
-      )}
-
-      {modeId === 'ejector' && (
-        <>
-          <label>Result (parameter set)</label>
-          <select
-            value={params.stickResult ?? -1}
-            onChange={(e) => set('stickResult', parseInt(e.target.value))}
-          >
-            {stickingList.length > 0 && <option value={-1}>latest</option>}
-            {stickingList.map((r, i) => (
-              <option key={r.hash} value={i}>
-                {`${(r.stats.totals?.sticking_force_n ?? 0).toFixed(0)} N sticking · ${r.hash}`}
-              </option>
-            ))}
-            {!stickingList.length && <option value={-1}>no results yet</option>}
-          </select>
-
-          <div className="row">
-            <div>
-              <label>Pin diameter (mm)</label>
-              <select
-                value={params.pinDiameter ?? 3}
-                onChange={(e) => set('pinDiameter', parseFloat(e.target.value))}
-              >
-                {[2, 3, 4, 6, 8].map((d) => (
-                  <option key={d} value={d}>{`Ø${d}`}</option>
-                ))}
-              </select>
-            </div>
-            <label className="check">
-              <input
-                type="checkbox" checked={params.ejShowDraft === true}
-                onChange={(e) => set('ejShowDraft', e.target.checked)}
-              />
-              draft-angle view
-            </label>
-          </div>
-
-          <div className="row">
-            <NumberParam
-              label="E modulus (MPa)" value={params.ejE ?? 2000}
-              onChange={(v) => set('ejE', v)}
-            />
-            <NumberParam
-              label="Allowable pin pressure (MPa)" value={params.ejAllow ?? 80}
-              onChange={(v) => set('ejAllow', v)}
-            />
-          </div>
-
-          {pins.length > 0 && (
-            <div className="proposal-list">
-              {pins.map((p, i) => (
-                <button
-                  key={i}
-                  className={ejSim?.pins?.[i]?.over_limit ? 'over' : ''}
-                  onClick={() => set('pins', pins.filter((_, j) => j !== i))}
-                  title="remove this pin"
-                >
-                  {`#${i} · Ø${p.diameter}`}
-                  {ejSim?.pins?.[i] && (
-                    ` · ${ejSim.pins[i].force_n.toFixed(1)} N`
-                    + ` · ${ejSim.pins[i].pressure_mpa.toFixed(1)} MPa`
-                    + ` (${(100 * ejSim.pins[i].utilization).toFixed(0)}%)`
-                  )}
-                  {' ✕'}
-                </button>
-              ))}
-            </div>
-          )}
-          {pins.length > 0 && (
-            <button onClick={() => set('pins', [])}>clear pins</button>
-          )}
-
-          <div className="hint">
-            click the part to add a pin at the chosen diameter ·
-            click a pin (marker or list) to remove it
-          </div>
-        </>
-      )}
-
-      {modeId === 'skeleton' && (
-        <>
-          <label>Result (parameter set)</label>
-          <select
-            value={params.skelResult ?? -1}
-            onChange={(e) => set('skelResult', parseInt(e.target.value))}
-          >
-            {skelResults.length > 0 && <option value={-1}>latest</option>}
-            {skelResults.map((r, i) => (
-              <option key={r.hash} value={i}>
-                {`max r ${r.params.max_radius ?? '?'} mm · ${r.hash}`}
-              </option>
-            ))}
-            {!skelResults.length && <option value={-1}>no results yet</option>}
-          </select>
-
-          <label>Skeleton graph</label>
-          <select value={params.graph ?? 'cluster'} onChange={(e) => set('graph', e.target.value)}>
-            <option value="cluster">clustered (medial skeleton)</option>
-            <option value="raw">raw (one node per vertex)</option>
-          </select>
-
-          <div className="hint">
-            click the part to place the injection gate; click again to move it
-          </div>
-          {params.gate && (
-            <button onClick={() => set('gate', null)}>clear gate</button>
-          )}
-        </>
-      )}
-
-      {modeId === 'flowFill' && (
-        <>
-          <label>Fill result</label>
-          <select
-            value={params.fillResult ?? -1}
-            onChange={(e) => set('fillResult', parseInt(e.target.value))}
-          >
-            {fillList.length > 0 && <option value={-1}>latest</option>}
-            {fillList.map((r, i) => (
-              <option key={r.hash} value={i}>
-                {`gate (${(r.stats.gate?.point ?? [])
-                  .map((c: number) => c.toFixed(0)).join(', ')})`
-                  + ` · skin ${r.stats.fill?.skin_coef} · ${r.hash}`}
-              </option>
-            ))}
-            {!fillList.length && <option value={-1}>no results yet</option>}
-          </select>
-
-          <div className="row">
-            <NumberParam
-              label="Voxel size (mm)" value={params.flowVoxel ?? ''}
-              placeholder="auto" onChange={(v) => set('flowVoxel', v)}
-            />
-            <NumberParam
-              label="Fill time (s)" value={params.flowFillTime ?? 2}
-              onChange={(v) => set('flowFillTime', v)}
-            />
-          </div>
-          <div className="row">
-            <NumberParam
-              label="Skin growth (mm/√s)" value={params.flowSkinCoef ?? 0.12}
-              onChange={(v) => set('flowSkinCoef', v)}
-            />
-            <NumberParam
-              label="Initial skin (mm)" value={params.flowDelta0 ?? 0}
-              onChange={(v) => set('flowDelta0', v)}
-            />
-          </div>
-          <div className="row">
-            <div>
-              <label>Neighborhood</label>
-              <select
-                value={params.flowNeighborhood ?? '26'}
-                onChange={(e) => set('flowNeighborhood', e.target.value)}
-              >
-                <option value="26">26 (isotropic)</option>
-                <option value="6">6 (fast)</option>
-              </select>
-            </div>
-            <NumberParam
-              label="Skin passes" value={params.flowIterations ?? 3}
-              onChange={(v) => set('flowIterations', v)}
-            />
-          </div>
-
-          <button
-            className="run" disabled={!params.gate || busy || !partId}
-            onClick={() => submitFlow('flow_fill')}
-          >
-            {busy ? 'computing…' : 'Compute fill'}
-          </button>
-          {params.gate && (
-            <button onClick={() => set('gate', null)}>clear gate</button>
-          )}
-          <div className="hint">
-            click the part to place or move the gate, then compute — each
-            parameter set is cached and selectable above
-          </div>
-        </>
-      )}
-
-      {modeId === 'voxelField' && (
-        <>
-          <label>Voxel result</label>
-          <select
-            value={params.flowResult ?? -1}
-            onChange={(e) => set('flowResult', parseInt(e.target.value))}
-          >
-            {flowList.length > 0 && <option value={-1}>latest</option>}
-            {flowList.map((r, i) => (
-              <option key={r.hash} value={i}>
-                {`${r.stats.grid?.voxel?.toFixed(2)} mm · `
-                  + `${r.stats.interior_voxels} voxels · ${r.hash}`}
-              </option>
-            ))}
-            {!flowList.length && <option value={-1}>no results yet</option>}
-          </select>
-
-          <label>Field</label>
-          <select
-            value={params.voxelScalar ?? 'distance'}
-            onChange={(e) => set('voxelScalar', e.target.value)}
-          >
-            <option value="distance">wall distance (SDF)</option>
-            <option value="arrival">fill arrival (needs a fill result)</option>
-            <option value="frozen">frozen state (needs a fill result)</option>
-          </select>
-
-          <label className="check">
-            <input
-              type="checkbox" checked={params.voxelSurface === true}
-              onChange={(e) => set('voxelSurface', e.target.checked)}
-            />
-            project onto the surface
-          </label>
-
-          <div className="row">
-            <NumberParam
-              label="Voxel size (mm)" value={params.flowVoxel ?? ''}
-              placeholder="auto" onChange={(v) => set('flowVoxel', v)}
-            />
-          </div>
-          <button
-            className="run" disabled={busy || !partId}
-            onClick={() => submitFlow('flow_voxels')}
-          >
-            {busy ? 'computing…' : 'Compute voxels'}
-          </button>
-        </>
-      )}
-
-      {modeId === 'cooling' && (
-        <>
-          <NumberParam
-            label="Cooling coefficient (s/mm²)" value={params.coolCoef ?? 1}
-            onChange={(v) => set('coolCoef', v)}
-          />
-          <div className="hint">
-            cooling time ∝ half-thickness² from the flow voxelization —
-            run "Flow voxels (SDF)" below if the view is empty
-          </div>
-        </>
-      )}
-
-      {modeId === 'assignment' && (
-        <>
-          <label>Result (parameter set)</label>
-          <select value={params.result ?? -1} onChange={(e) => set('result', parseInt(e.target.value))}>
-            {results.length > 0 && <option value={-1}>latest</option>}
-            {results.map((r, i) => (
-              <option key={r.hash} value={i}>
-                {`max slides ${r.params.max_slides ?? '?'} · ${r.hash}`}
-              </option>
-            ))}
-            {!results.length && <option value={-1}>no results yet</option>}
-          </select>
-
-          <label>Orientation option</label>
-          <select value={params.option ?? 0} onChange={(e) => set('option', parseInt(e.target.value))}>
-            {fieldOptions.map((o, i) => (
-              <option key={i} value={i}>
-                {`±d${o.pair[0]} · ${o.slides.length} slide(s) · ${o.feasible ? 'feasible' : 'infeasible'}`}
-              </option>
-            ))}
-            {!fieldOptions.length && <option value={0}>—</option>}
-          </select>
-
-          <div className="row">
-            <label className="check">
-              <input
-                type="checkbox" checked={params.showLines !== false}
-                onChange={(e) => set('showLines', e.target.checked)}
-              />
-              parting lines
-            </label>
-            <label className="check">
-              <input
-                type="checkbox" checked={params.showArrows !== false}
-                onChange={(e) => set('showArrows', e.target.checked)}
-              />
-              direction arrows
-            </label>
-          </div>
-
-          <div className="hint">
-            click a face to cycle it between its valid sides/slides ·
-            faded stripes = other valid features
-          </div>
-
-          <button
-            disabled={!hasBrep || !results.length}
-            onClick={() => void runCtxAction(async (ctx) => {
-              const data = await loadAssignment(ctx);
-              const { summary, changed } = await optimizeParting(ctx, {
-                valid: data.valid, defaults: data.defaults, current: data.current,
-                option: data.option, overridesKey: data.overridesKey,
-                overridesUrl: data.result.overrides_url,
-              });
-              useStore.getState().set({ pick: summary });
-              return changed;
-            })}
-          >
-            optimize parting lines
-          </button>
-
-          <SplitControls host={moldSplitHost} />
-
-          {options.length > 0 && (
-            <div className="hint">
-              ranked: {options.map((o, i) =>
-                `#${i} ±d${o.pair[0]} ${o.feasible ? '✓' : '✗'} ${(o.coverage * 100).toFixed(0)}%`).join(' · ')}
-            </div>
-          )}
-        </>
-      )}
-
-      {modeId === 'thickness' && (
-        <>
-          <div className="row">
-            <NumberParam
-              label="Min thickness (mm)" value={params.minThickness ?? 1.0}
-              onChange={(v) => set('minThickness', v)}
-            />
-            <NumberParam
-              label="Heatmap max (mm)" value={params.thicknessScale ?? ''}
-              placeholder="auto" onChange={(v) => set('thicknessScale', v)}
-            />
-          </div>
-          <label className="check">
-            <input
-              type="checkbox" checked={params.maskExplained !== false}
-              onChange={(e) => set('maskExplained', e.target.checked)}
-            />
-            show edge-explained readings as ok
-          </label>
-        </>
-      )}
-
-      {modeId === 'gaps' && (
-        <>
-          <div className="row">
-            <NumberParam
-              label="Min gap (mm)" value={params.minGap ?? 0.5}
-              onChange={(v) => set('minGap', v)}
-            />
-            <NumberParam
-              label="Heatmap max (mm)" value={params.gapScale ?? ''}
-              placeholder="auto" onChange={(v) => set('gapScale', v)}
-            />
-          </div>
-          <label className="check">
-            <input
-              type="checkbox" checked={params.maskExplained !== false}
-              onChange={(e) => set('maskExplained', e.target.checked)}
-            />
-            show edge-explained readings as ok
-          </label>
-        </>
-      )}
-
-      {modeId === 'rayThickness' && (
-        <div className="row">
-          <NumberParam
-            label="Min thickness (mm)" value={params.minRayThickness ?? 1.0}
-            onChange={(v) => set('minRayThickness', v)}
-          />
-          <NumberParam
-            label="Heatmap max (mm)" value={params.rayThicknessScale ?? ''}
-            placeholder="auto" onChange={(v) => set('rayThicknessScale', v)}
-          />
-        </div>
-      )}
-
-      {modeId === 'rayGap' && (
-        <div className="row">
-          <NumberParam
-            label="Min gap (mm)" value={params.minRayGap ?? 0.5}
-            onChange={(v) => set('minRayGap', v)}
-          />
-          <NumberParam
-            label="Heatmap max (mm)" value={params.rayGapScale ?? ''}
-            placeholder="auto" onChange={(v) => set('rayGapScale', v)}
-          />
-        </div>
-      )}
-
-      {modeId === 'slenderness' && (
-        <div className="row">
-          <NumberParam
-            label="Max depth/width (×)" value={params.maxSlenderness ?? 2.0}
-            onChange={(v) => set('maxSlenderness', v)}
-          />
-          <NumberParam
-            label="Heatmap max (×)" value={params.slendernessScale ?? ''}
-            placeholder="auto" onChange={(v) => set('slendernessScale', v)}
-          />
-        </div>
-      )}
-
-      {modeId === 'thinSpan' && (
-        <div className="row">
-          <NumberParam
-            label="Max span/thickness (×)" value={params.maxSpanRatio ?? 5.0}
-            onChange={(v) => set('maxSpanRatio', v)}
-          />
-          <NumberParam
-            label="Heatmap max (×)" value={params.spanScale ?? ''}
-            placeholder="auto" onChange={(v) => set('spanScale', v)}
-          />
-        </div>
-      )}
-
-      {(modeId === 'thicknessAngle' || modeId === 'gapAngle') && (
-        <div className="row">
-          <NumberParam
-            label="Min angle (°)" value={params.minAngle ?? 60}
-            onChange={(v) => set('minAngle', v)}
-          />
-          <NumberParam
-            label="Heatmap max (°)" value={params.angleScale ?? 180}
-            onChange={(v) => set('angleScale', v)}
-          />
-        </div>
-      )}
-    </>
-  );
-}
 
 export const injectionPlugin: ProcessPlugin = {
   processId: 'injection_molding',
@@ -1753,7 +1185,7 @@ export const injectionPlugin: ProcessPlugin = {
     flowSkinCoef: '0.12', flowFillTime: '2', flowIterations: '3',
     flowNeighborhood: '26', coolCoef: '1',
   }),
-  Controls: InjectionControls,
+  paramWidgets: INJECTION_PARAM_WIDGETS,
   inspect,
   onPick(face, point, ctx) {
     const { modeId, setViewerParam } = useStore.getState();

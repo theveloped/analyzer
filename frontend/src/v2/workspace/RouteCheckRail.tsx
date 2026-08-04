@@ -1,34 +1,38 @@
-import clsx from 'clsx';
-import { Pencil, Play, RotateCw } from 'lucide-react';
+import { Pencil } from 'lucide-react';
 import type { Route, RouteCheck, RouteCheckStatus } from '../../api/types';
 import { Button } from '../../catalyst/button';
 import { useStore } from '../../state/store';
 import { describeCheck, useCheckEvaluation } from '../checks/catalog';
 import { planCheckState, statusKindOf } from '../checks/status';
-import { StatusBadge } from '../components/status';
+import {
+  Rail, RailError, RailHeader, RailRunButton, RailSection, RailStats,
+} from '../components/rail';
+import { hintCls } from '../components/styles';
 import { FindingRow } from './findings';
 import {
   editExpressionCheck, useRouteSection, useSelectedRouteCheck,
 } from './hooks';
 import { runRouteCheck, useBusy } from './run';
-import { hintCls } from '../components/styles';
-
 
 /**
  * Right rail for a non-threshold route check (reach study / per-operation /
- * route aggregate): execution + verdict against the pinned policy, run
- * control, and its derived findings. The lens params were
+ * route aggregate / expression): execution + verdict against the pinned
+ * policy, the run control, and its derived findings. The lens params were
  * bound by selectRouteCheck; the viewer paints the same slice being judged.
+ *
+ * The first rail converted to the shared skeleton (components/rail) — it has no
+ * params and no collapsed groups, so it is slots 1 · 2 · 5 · 6 · 7 and nothing
+ * else.
  */
 export function RouteCheckRail() {
   const selected = useSelectedRouteCheck();
   const section = useRouteSection();
   if (!selected || !section) return null;
-  return <Rail check={selected.check} status={selected.status}
+  return <CheckRail check={selected.check} status={selected.status}
     route={section.route} />;
 }
 
-function Rail({ check, status, route }: {
+function CheckRail({ check, status, route }: {
   check: RouteCheck; status: RouteCheckStatus | undefined; route: Route;
 }) {
   const manifest = useStore((s) => s.manifest);
@@ -51,91 +55,72 @@ function Rail({ check, status, route }: {
     || (state.verdict === 'pass' ? 'ok'
       : state.verdict === 'review' ? 'review'
       : state.verdict === 'fail' ? 'not producible'
-      : state.verdict === 'na' ? 'data' : 'computed');
-  const Icon = view.icon;
+        : state.verdict === 'na' ? 'data' : 'computed');
+
+  // what the action means, per kind — the hint belongs to the button, so it
+  // sits under it rather than floating between sections
+  const actionHint = view.kind === 'expression'
+    ? 'Runs every field the expression reads that is not already cached. '
+      + 'Editing the rule itself recomputes nothing — a band is '
+      + 'interpretation, not a param.'
+    : view.kind === 'reach_op' || view.kind === 'reach_route'
+      ? 'Shares the reach study\'s result — running any reach check computes '
+        + 'for all of them; direction changes only re-slice.'
+      : null;
 
   return (
-    <div className="flex min-h-full flex-col gap-4 p-4">
+    <Rail>
+      <RailHeader
+        icon={view.icon}
+        title={view.label}
+        status={statusKindOf(state)}
+        statusLabel={badgeText}
+        blurb={view.blurb}
+        actions={view.kind === 'expression' && (
+          <Button plain onClick={() => editExpressionCheck(check)}
+            title="Edit this expression">
+            <Pencil data-slot="icon" /> Edit
+          </Button>
+        )}
+      />
+
+      {/* slot 2: a params error blocks the run below it, so it reads first */}
+      <RailError>{status?.error}</RailError>
+
       <div>
-        <div className="flex items-center gap-2">
-          <Icon className="size-4 text-blue-600 dark:text-blue-400" />
-          <h2 className="text-sm/6 font-semibold text-zinc-950 dark:text-white">{view.label}</h2>
-          <StatusBadge status={statusKindOf(state)}>{badgeText}</StatusBadge>
-        </div>
-        <p className={clsx('mt-1', hintCls)}>{view.blurb}</p>
+        <RailRunButton
+          execution={state.execution}
+          busy={busy}
+          onRun={() => runRouteCheck(check, status)}
+          disabled={!meshReady || !!status?.error}
+        />
+        {actionHint && <p className={`mt-2 ${hintCls}`}>{actionHint}</p>}
       </div>
 
-      {view.kind === 'expression' && (
-        <Button outline className="w-full"
-          onClick={() => editExpressionCheck(check)}>
-          <Pencil data-slot="icon" /> Edit expression
-        </Button>
-      )}
-
-      <Button
-        onClick={() => runRouteCheck(check, status)}
-        disabled={!meshReady || busy || !!status?.error}
-        className="w-full"
-      >
-        {busy ? (
-          <><RotateCw data-slot="icon" className="animate-spin" /> Running…</>
-        ) : state.execution === 'current' ? (
-          <><RotateCw data-slot="icon" /> Re-run</>
-        ) : (
-          <><Play data-slot="icon" /> Run</>
-        )}
-      </Button>
-      {status?.error && (
-        <p className="text-xs/5 text-red-600 dark:text-red-500">⚠ {status.error}</p>
-      )}
-      {view.kind === 'expression' && (
-        <p className={hintCls}>
-          Runs every field the expression reads that is not already cached.
-          Editing the rule itself recomputes nothing — a band is
-          interpretation, not a param.
-        </p>
-      )}
-      {(view.kind === 'reach_op' || view.kind === 'reach_route') && (
-        <p className={hintCls}>
-          Shares the reach study's result — running any reach check computes
-          for all of them; direction changes only re-slice.
-        </p>
-      )}
-
-      <div className="h-px bg-zinc-950/10 dark:bg-white/10" />
-
-      <div>
-        <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">Findings</div>
+      <RailSection title="Findings">
         {!partId ? null : evaluating ? (
-          <p className={hintCls}>Evaluating against the plan…</p>
+          <p className={hintCls}>Evaluating against the route…</p>
         ) : state.execution === 'not_run' || state.execution === 'queued'
           || state.execution === 'running' ? (
-          <p className={hintCls}>Run the check to evaluate it.</p>
-        ) : evaluation?.verdict === 'pass' ? (
-          <p className={hintCls}>Within policy — nothing to review.</p>
-        ) : evaluation?.verdict === 'na' ? (
-          <p className={hintCls}>
-            Exploration data — the operation and route checks carry the verdicts.
-          </p>
-        ) : evaluation?.findings.length ? (
-          <div className="flex flex-col gap-2">
-            {evaluation.findings.map((f) => (
-              <FindingRow key={f.id} finding={f} />
-            ))}
-          </div>
-        ) : (
-          <p className={hintCls}>No findings.</p>
-        )}
-      </div>
+            <p className={hintCls}>Run the check to evaluate it.</p>
+          ) : evaluation?.verdict === 'pass' ? (
+            <p className={hintCls}>Within policy — nothing to review.</p>
+          ) : evaluation?.verdict === 'na' ? (
+            <p className={hintCls}>
+              Exploration data — the operation and route checks carry the verdicts.
+            </p>
+          ) : evaluation?.findings.length ? (
+            <div className="flex flex-col gap-2">
+              {evaluation.findings.map((f) => (
+                <FindingRow key={f.id} finding={f} />
+              ))}
+            </div>
+          ) : (
+            <p className={hintCls}>No findings.</p>
+          )}
+      </RailSection>
 
-      <div>
-        <div className="mb-1.5 text-xs/5 font-medium text-zinc-500 dark:text-zinc-400">In view</div>
-        {error ? (
-          <p className="whitespace-pre-wrap text-xs/5 text-red-600 dark:text-red-500">⚠ {error}</p>
-        ) : (
-          <p className={clsx('whitespace-pre-wrap', hintCls)}>{stats}</p>
-        )}
-      </div>
-    </div>
+      <RailStats text={stats} error={error} />
+    </Rail>
   );
 }

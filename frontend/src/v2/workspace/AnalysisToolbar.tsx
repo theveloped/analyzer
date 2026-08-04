@@ -1,6 +1,6 @@
 import { Popover, PopoverButton, PopoverPanel } from '@headlessui/react';
 import clsx from 'clsx';
-import { Crosshair, MoreHorizontal, Search, Wrench } from 'lucide-react';
+import { Crosshair, MoreHorizontal, Play, Search, Wrench } from 'lucide-react';
 import { useState } from 'react';
 import { LENS_CATEGORIES, lensesIn, PINNED_LENSES, type Lens } from '../lenses';
 import { useV2 } from '../store';
@@ -112,6 +112,8 @@ export function AnalysisToolbar() {
   const advanced = useV2((s) => s.advanced);
   const setAdvanced = useV2((s) => s.setAdvanced);
   const inDirections = useDirectionsActive();
+  const computeOpen = useV2((s) => s.computeRailOpen);
+  const setComputeOpen = useV2((s) => s.setComputeRailOpen);
 
   return (
     <div className="absolute left-1/2 top-3 flex -translate-x-1/2 items-center gap-1 rounded-xl border border-zinc-950/10 bg-white/90 p-1 shadow-lg ring-1 ring-zinc-950/5 backdrop-blur dark:border-white/10 dark:bg-zinc-800/90 dark:ring-white/10">
@@ -131,6 +133,18 @@ export function AnalysisToolbar() {
         className={clsx(btnCls, inDirections ? activeCls : idleCls)}
       >
         <Crosshair className="size-4" />
+      </button>
+
+      {/* the run-any-analysis hatch: a global capability, so it lives on the
+          toolbar rather than being repeated inside every lens rail */}
+      <button
+        type="button"
+        onClick={() => setComputeOpen(!computeOpen)}
+        title="Compute — run any analysis"
+        aria-pressed={computeOpen}
+        className={clsx(btnCls, computeOpen ? activeCls : idleCls)}
+      >
+        <Play className="size-4" />
       </button>
 
       <span className="mx-0.5 h-5 w-px bg-zinc-950/10 dark:bg-white/10" />

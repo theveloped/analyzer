@@ -47,6 +47,11 @@ export function RightRail({ id, defaultWidth = 288, children }: {
 
   return (
     <div
+      // a stable hook for the smoke walk to scope assertions to the open rail.
+      // It used to reach for an `ancestor::div[contains(@class,"w-72")]`, which
+      // stopped matching the day the width became a drag-resized inline style —
+      // so those assertions had been passing over nothing.
+      data-rail={id}
       className="relative flex h-full shrink-0 border-l border-zinc-950/5 bg-white dark:border-white/10 dark:bg-zinc-900"
       style={{ width }}
     >
